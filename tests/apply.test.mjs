@@ -165,12 +165,13 @@ test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills
 
 // ─── lib/tools.js 契约（T5-7 逐个替换 stub 为真实实现） ──────────
 //
-// `ppt_master_info` 自 T5 起是真实定义（其完整契约由 tests/tools-info.test.mjs
-// 锁定），故下面只对它断言「注册面仍成立」；两个仍为占位的工具（T6/T7 替换）
-// 保留逐字 deepEqual 的 stub 形态断言。
+// `ppt_master_info`（T5）与 `ppt_master_check_env`（T6）已是真实定义（各自的
+// 完整契约由 tests/tools-info.test.mjs、tests/tools-check-env.test.mjs 锁定），
+// 故下面只对它们断言「注册面仍成立」；最后一个仍为占位的工具（T7 替换）保留
+// 逐字 deepEqual 的 stub 形态断言。
 
 /** T5 之前的占位工具；T6/T7 逐个从这里移除并换成各自的真实定义断言。 */
-const PLACEHOLDER_TOOLS = ['ppt_master_check_env', 'ppt_master_setup_deps'];
+const PLACEHOLDER_TOOLS = ['ppt_master_setup_deps'];
 
 test('tools stub: createTools() 恰好 3 项，name 三键逐字', () => {
   const tools = createTools();

@@ -1,0 +1,32 @@
+# ppt-master check_env fixture — mixed requirement shapes (Task 6)
+# Comments (#) and blank lines must be stripped by parseRequirements().
+
+PyYAML
+python-pptx
+skia-pathops
+Pillow
+flask
+
+# A version pin: the distribution name wins, the specifier is dropped.
+PyYAML==6.0.1
+
+# Extras are stripped, the base distribution is kept.
+python-pptx[image]>=0.6.21
+
+# Environment markers and the alternate specifier spellings.
+Pillow>=10.0,<11
+beautifulsoup4~=4.12
+
+# Case variant: normalized to lower case, de-duplicated against `PyYAML` above.
+pyyaml
+
+# An include line: the included file is not read, the line is dropped.
+-r requirements-dev.txt
+
+# A global option line: dropped like every other `-`/`--` line.
+--index-url https://pypi.org/simple
+
+# Inline comments and trailing whitespace are stripped too.
+XlsxWriter  # Excel writer
+google-genai
+edge-tts
