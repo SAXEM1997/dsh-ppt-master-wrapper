@@ -44,5 +44,8 @@ export function apply(ctx, opts) {
     console.warn(`${name}: tools 不可用，降级仅注册 skill provider`);
     return;
   }
-  for (const tool of createTools()) register(tool);
+  // Same scan-root channel as the provider: the tools resolve SKILL_DIR from the
+  // very roots the provider lists from, so the two can never describe different
+  // trees. `undefined` (production) means each tool's packaged default.
+  for (const tool of createTools({ skillRoots: opts?.skillRoots })) register(tool);
 }

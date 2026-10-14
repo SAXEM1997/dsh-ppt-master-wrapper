@@ -158,6 +158,34 @@ test('apply: opts.skillRoots 正例子集注入 → 不 throw，provider 可 lis
   }
 });
 
+test('apply: opts.skillRoots 同时透传给 tools（注册面 SKILL_DIR 与 provider 同根）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    apply(ctx, { skillRoots: [root] });
+    const setupDeps = calls.tools.find((tool) => tool.name === 'ppt_master_setup_deps');
+
+    // 接线回归：apply 必须把扫描根同时交给 createTools，否则 setup_deps 会退回
+    // 包内 skills/（T14 前不存在）并在无 skill 目录时 fail-loud——即「注册成功但
+    // 一调用就炸」。注入根存在时命令里必须出现该根下的 SKILL_DIR。
+    const payload = await setupDeps.execute({}, {
+      run: async (command, args) => {
+        if (command === 'pip3') return { stdout: '', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    });
+    assert.equal(payload.installCmd[0], 'pip3');
+    assert.equal(payload.installExit, 0);
+    assert.ok(
+      payload.installCmd[3].startsWith(root),
+      `installCmd 指向注入根下的 SKILL_DIR，而非包内 skills/：${payload.installCmd[3]}`,
+    );
+    assert.ok(payload.installCmd[3].endsWith('requirements.txt'));
+  } finally {
+    await cleanup();
+  }
+});
+
 test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills/（T14 前 fail-loud）', () => {
   const { ctx } = makeCtx();
   assert.throws(() => apply(ctx), /skill root does not exist|no skill directory found/);
@@ -165,15 +193,13 @@ test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills
 
 // ─── lib/tools.js 契约（T5-7 逐个替换 stub 为真实实现） ──────────
 //
-// `ppt_master_info`（T5）与 `ppt_master_check_env`（T6）已是真实定义（各自的
-// 完整契约由 tests/tools-info.test.mjs、tests/tools-check-env.test.mjs 锁定），
-// 故下面只对它们断言「注册面仍成立」；最后一个仍为占位的工具（T7 替换）保留
-// 逐字 deepEqual 的 stub 形态断言。
+// `ppt_master_info`（T5）、`ppt_master_check_env`（T6）与 `ppt_master_setup_deps`
+// （T7）三工具已全部是真实定义（各自的完整契约由 tests/tools-info.test.mjs、
+// tests/tools-check-env.test.mjs、tests/tools-setup-deps.test.mjs 锁定），T4 的
+// 占位机制（PLACEHOLDER_TOOLS / PLACEHOLDER_TASKS）随之清空。下面保留的是**通用
+// 注册面**断言——不随任一工具的实现细节变动，故对三个真实工具一视同仁。
 
-/** T5 之前的占位工具；T6/T7 逐个从这里移除并换成各自的真实定义断言。 */
-const PLACEHOLDER_TOOLS = ['ppt_master_setup_deps'];
-
-test('tools stub: createTools() 恰好 3 项，name 三键逐字', () => {
+test('tools: createTools() 恰好 3 项，name 三键逐字', () => {
   const tools = createTools();
   assert.equal(tools.length, 3);
   assert.deepEqual(
@@ -182,17 +208,24 @@ test('tools stub: createTools() 恰好 3 项，name 三键逐字', () => {
   );
 });
 
-test('tools stub: 每项 parameters 为 object-rooted 且显式 additionalProperties:false', () => {
+test('tools: 每项 parameters 为 object-rooted 且显式 additionalProperties:false', () => {
   for (const tool of createTools()) {
-    assert.deepEqual(
-      tool.parameters,
-      { type: 'object', properties: {}, additionalProperties: false },
-      `${tool.name} parameters 形态`,
+    assert.equal(tool.parameters.type, 'object', `${tool.name} parameters object-rooted`);
+    assert.equal(
+      typeof tool.parameters.properties,
+      'object',
+      `${tool.name} parameters 显式声明 properties`,
     );
+    assert.equal(
+      tool.parameters.additionalProperties,
+      false,
+      `${tool.name} parameters 显式 AP:false`,
+    );
+    assert.equal(tool.parameters.type === 'json', false, `${tool.name} 不得用 type:'json'`);
   }
 });
 
-test('tools stub: 每项 output.schema 为 object-rooted 且显式 AP:false、render 为函数', () => {
+test('tools: 每项 output.schema 为 object-rooted 且显式 AP:false、render 为函数', () => {
   for (const tool of createTools()) {
     assert.equal(tool.output.schema.type, 'object', `${tool.name} schema object-rooted`);
     assert.equal(tool.output.schema.additionalProperties, false, `${tool.name} schema 显式 AP:false`);
@@ -201,24 +234,12 @@ test('tools stub: 每项 output.schema 为 object-rooted 且显式 AP:false、re
   }
 });
 
-test('tools stub: 占位工具 output.schema 为最小合法形态（逐字）', () => {
-  for (const name of PLACEHOLDER_TOOLS) {
-    const tool = createTools().find((entry) => entry.name === name);
-    assert.deepEqual(
-      tool.output.schema,
-      { type: 'object', properties: { placeholder: { type: 'string' } }, additionalProperties: false },
-      `${name} 占位 schema`,
-    );
-  }
-});
-
-test('tools stub: 占位工具 description 非空双语短句、execute 为异步占位返回空对象', async () => {
-  for (const name of PLACEHOLDER_TOOLS) {
-    const tool = createTools().find((entry) => entry.name === name);
-    assert.equal(typeof tool.description, 'string');
-    assert.ok(tool.description.length > 0, `${name} description 非空`);
-    assert.equal(typeof tool.output.render({}, {}), 'string', `${name} render 返回字符串`);
-    assert.equal(typeof tool.execute, 'function');
-    assert.deepEqual(await tool.execute({}, {}), {}, `${name} 仍为占位实现`);
+test('tools: 三工具 description 均为非空双语短句，execute 均为异步函数', () => {
+  for (const tool of createTools()) {
+    assert.equal(typeof tool.description, 'string', `${tool.name} description`);
+    assert.ok(tool.description.length > 0, `${tool.name} description 非空`);
+    assert.match(tool.description, /[\u4e00-\u9fff]/, `${tool.name} description 含中文段`);
+    assert.equal(typeof tool.execute, 'function', `${tool.name} execute`);
+    assert.equal(tool.execute.constructor.name, 'AsyncFunction', `${tool.name} execute 为异步`);
   }
 });
