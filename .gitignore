@@ -1,0 +1,8 @@
+.env
+.upstream/
+.skills-staging/
+__pycache__/
+*.pyc
+.mnemon/
+sync-report.txt
+.superpowers/
