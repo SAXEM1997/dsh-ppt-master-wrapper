@@ -658,27 +658,57 @@ function frontmatterScalar(block, pattern) {
 }
 
 /**
+ * 从 frontmatter 块提取 `description` 的**自身值**（不含其它键）。
+ *
+ * 上游真实形态是折叠标量（`description: >` 后跟缩进正文）。**只取本键的值**是
+ * 关键：若把整个 frontmatter 块当作 description 的值，则任何其它键的改动
+ * （`metadata.version` 版本 bump、`name`、`license`…）都会连带改变该值，把
+ * spec §4.3 规则① 的版本 bump 主路径误报成 🟡 description 变更（幻影报警）。
+ *
+ * 取值规则（覆盖 `>` / `|` 折叠与单行标量两种形态）：
+ *  - 从 `description:` 行起，到**下一个一列 0 的键行**（行首非空白且含 `:`）为止；
+ *  - 或到 frontmatter 块尾（description 是最后一个键）为止。
+ *
+ * 返回值经行尾空白归一（`.` → `''`，保留缩进以对齐 YAML 折叠语义）——
+ * 仅比较用，不参与落盘。
+ *
+ * @param {string} block frontmatter 块文本（不含定界行）。
+ * @returns {string|null} description 自身值；无该键 → null。
+ */
+function extractDescription(block) {
+  if (block === null) return null;
+  const lines = block.split('\n');
+  const startIndex = lines.findIndex((line) => FRONTMATTER_DESCRIPTION_LINE.test(line));
+  if (startIndex < 0) return null;
+
+  const collected = [lines[startIndex].replace(/\s+$/, '')];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 一列 0 的键行（行首非空白且含 `:`）即下一个键——description 值到此为止。
+    if (/^\S.*:/.test(line)) break;
+    collected.push(line.replace(/\s+$/, ''));
+  }
+
+  // 归一尾部空行（折叠块后常跟空行）：比较语义不受尾随换行数影响。
+  while (collected.length > 1 && collected[collected.length - 1] === '') collected.pop();
+  return collected.join('\n');
+}
+
+/**
  * SKILL.md 的 frontmatter 摘要：`{ name, version, description }`。
  *
  *  - `name` / `description` 缺失或不含 frontmatter → null（各自分类项据此报告）；
  *  - `version` 缺失或不可解析 → null（spec §4.2 行 3 的 🔴 判据）。
  *
- * `description` 的折叠标量（`description: >`）把块正文一并取入——只比首行会把
- * 「正文改写但首行不变」的显著变更漏判为无变更。
+ * 三个键各自**独立取值**（description 只取本键的折叠块，见 `extractDescription`），
+ * 因此某一键的改动不会污染其它键的比对结果。
  */
 function skillFrontmatter(skillDir) {
   const block = frontmatterBlock(join(skillDir, SKILL_FILE_NAME));
   if (block === null) return { name: null, version: null, description: null };
 
   const nameMatch = FRONTMATTER_NAME_LINE.exec(block);
-  const descriptionMatch = FRONTMATTER_DESCRIPTION_LINE.exec(block);
   const versionMatch = METADATA_VERSION_LINE.exec(block);
-
-  let description = null;
-  if (descriptionMatch !== null) {
-    const head = descriptionMatch[1].trim();
-    description = head === '>' || head === '|' || head === '>-' || head === '|-' ? block : head;
-  }
 
   let version = null;
   if (versionMatch !== null) {
@@ -690,7 +720,7 @@ function skillFrontmatter(skillDir) {
   return {
     name: nameMatch === null ? null : nameMatch[1].replace(/^["']|["']$/g, '').trim(),
     version,
-    description,
+    description: extractDescription(block),
   };
 }
 

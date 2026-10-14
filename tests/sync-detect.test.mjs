@@ -384,6 +384,132 @@ test('classifyChanges: description 折叠标量正文改写（首行不变）也
   assert.equal(changes.length, 1, `实得: ${JSON.stringify(result.yellow)}`);
 });
 
+// ── description 提取的对偶断言：只取 description 自身的值 ──────────
+//
+// 上游真实形态是 `description: >`（折叠标量）。若提取时把**整个 frontmatter 块**
+// 当作 description 的值，则任何其它 frontmatter 改动（版本 bump、name、license…）
+// 都会连带改变该值，把规则① 的版本 bump 主路径误报成 🟡 description 变更。
+// 下列用例是**对偶断言**（断 description-yellow 缺席）——只断「自家 kind 存在」
+// 的用例永远抓不到这类幻影报警。
+
+test('classifyChanges: 仅 metadata.version 行变更 → yellow 不含 description（消除版本 bump 幻影）', () => {
+  const result = classifyAfterSingleChange((workspace) => {
+    rewriteSkillLine(workspace, 'ppt-master', /^  version: ".*"$/m, '  version: "6.9.0"');
+  });
+
+  assert.deepEqual(
+    result.yellow.filter((change) => change.kind === 'description'),
+    [],
+    '纯版本 bump 不得误报 description 变更（description 提取耦合了整个 frontmatter 块）',
+  );
+  // 版本行变更本身不属任何红/黄分类项（行 3 只判 staging 侧缺失/不可解析），
+  // 但它是一次文件内容更新 → 落 🟢。
+  assert.equal(result.green, true);
+  assert.equal(result.vendorDiff, true);
+});
+
+test('classifyChanges: 仅 name 行变更 → yellow 不含 description（对偶断言）', () => {
+  const result = classifyAfterSingleChange((workspace) => {
+    rewriteSkillLine(workspace, 'ppt-master', /^name: ppt-master$/m, 'name: ppt-master-renamed');
+  });
+
+  assert.equal(result.red.some((change) => change.kind === 'name'), true);
+  assert.deepEqual(
+    result.yellow.filter((change) => change.kind === 'description'),
+    [],
+    'name 变更不得误报 description 变更',
+  );
+});
+
+test('classifyChanges: 仅 license 行变更 → yellow 不含 description（对偶断言）', () => {
+  const result = classifyAfterSingleChange((workspace) => {
+    rewriteSkillLine(workspace, 'ppt-master', /^  license: "MIT"$/m, '  license: "Apache-2.0"');
+  });
+
+  assert.deepEqual(result.yellow.filter((change) => change.kind === 'description'), []);
+  assert.equal(result.vendorDiff, true);
+});
+
+test('classifyChanges: description 单行标量形态变更 → yellow 仍在（非折叠形态同样检出）', () => {
+  const result = classifyAfterSingleChange((workspace) => {
+    rewriteSkillLine(
+      workspace,
+      'ppt-master',
+      /^description: >[\s\S]*?(?=\nmetadata:)/m,
+      'description: Single-line rewritten description for the plain scalar path.\n',
+    );
+  });
+
+  const changes = result.yellow.filter((change) => change.kind === 'description');
+  assert.equal(changes.length, 1, `实得: ${JSON.stringify(result.yellow)}`);
+});
+
+test('classifyChanges: version 与 description 同时变更 → description yellow 恰一条（不重复计数）', () => {
+  const result = classifyAfterSingleChange((workspace) => {
+    rewriteSkillLine(workspace, 'ppt-master', /^  version: ".*"$/m, '  version: "6.9.0"');
+    rewriteSkillLine(
+      workspace,
+      'ppt-master',
+      /^  deliberately newer than vendor-tree so classifyChanges has controlled diffs\.$/m,
+      '  genuinely rewritten folded description body.',
+    );
+  });
+
+  assert.equal(result.yellow.filter((change) => change.kind === 'description').length, 1);
+});
+
+test('classifyChanges: description 为最后一个键（块尾）时 —— 版本变更不幻影、自身变更仍检出', () => {
+  // 构造一个 description 位于 frontmatter **末尾**（无后随键行）的 vendor/staging 对，
+  // 覆盖取值规则「到块尾为止」分支。关键：两棵树的键序必须一致，否则键序变化本身
+  // 就会改变取值形态，混入非受控差异。
+  const skillText = (version, descriptionBody) => [
+    '---',
+    'name: ppt-master',
+    'metadata:',
+    `  version: "${version}"`,
+    'description: >',
+    descriptionBody,
+    '---',
+    '',
+    '# body',
+    '',
+  ].join('\n');
+
+  const workspace = makeWorkspace();
+  try {
+    stageInto(workspace); // staging 需先存在（本用例自行覆写两侧 SKILL.md）
+    const vendorSkill = join(workspace.vendorSkills, 'ppt-master', 'SKILL.md');
+    const stagedSkill = join(workspace.staging, 'ppt-master', 'SKILL.md');
+    const BODY = '  tail-key folded description body, identical in both trees.';
+    requireExists(vendorSkill, 'vendor ppt-master/SKILL.md');
+    requireExists(stagedSkill, 'staging ppt-master/SKILL.md');
+
+    // 两棵树同为「description 收尾」形态，仅版本不同。
+    writeFileSync(vendorSkill, skillText('6.7.0', BODY));
+    writeFileSync(stagedSkill, skillText('6.9.0', BODY));
+    // 前置：两棵树的 description 取值形态一致（只有版本行不同）。
+    assert.equal(readFileSync(vendorSkill, 'utf8').includes('description: >\n  tail-key'), true);
+
+    const versionOnly = classifyChanges(workspace.vendorSkills, workspace.staging, workspace.upstream, workspace.auxStatePath);
+    assert.deepEqual(
+      versionOnly.yellow.filter((change) => change.kind === 'description'),
+      [],
+      '块尾形态下版本变更不得幻影报 description',
+    );
+
+    // 只改描述正文 → 必须检出。
+    writeFileSync(stagedSkill, skillText('6.9.0', '  a genuinely different folded body for the tail-key path.'));
+    const descChanged = classifyChanges(workspace.vendorSkills, workspace.staging, workspace.upstream, workspace.auxStatePath);
+    assert.equal(
+      descChanged.yellow.filter((change) => change.kind === 'description').length,
+      1,
+      `实得: ${JSON.stringify(descChanged.yellow)}`,
+    );
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true });
+  }
+});
+
 test('classifyChanges: requirements.txt 依赖行增删 → yellow(kind=requirements)', () => {
   const result = classifyAfterSingleChange((workspace) => {
     const staged = stagingFile(workspace, 'ppt-master', 'requirements.txt');
