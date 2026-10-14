@@ -1,0 +1,3 @@
+# mini fixture requirements
+python-pptx>=1.0
+PyYAML>=6.0
