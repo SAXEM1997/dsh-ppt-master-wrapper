@@ -163,7 +163,14 @@ test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills
   assert.throws(() => apply(ctx), /skill root does not exist|no skill directory found/);
 });
 
-// ─── lib/tools.js stub 契约（T5-7 逐个替换为真实实现） ───────────
+// ─── lib/tools.js 契约（T5-7 逐个替换 stub 为真实实现） ──────────
+//
+// `ppt_master_info` 自 T5 起是真实定义（其完整契约由 tests/tools-info.test.mjs
+// 锁定），故下面只对它断言「注册面仍成立」；两个仍为占位的工具（T6/T7 替换）
+// 保留逐字 deepEqual 的 stub 形态断言。
+
+/** T5 之前的占位工具；T6/T7 逐个从这里移除并换成各自的真实定义断言。 */
+const PLACEHOLDER_TOOLS = ['ppt_master_check_env', 'ppt_master_setup_deps'];
 
 test('tools stub: createTools() 恰好 3 项，name 三键逐字', () => {
   const tools = createTools();
@@ -184,23 +191,33 @@ test('tools stub: 每项 parameters 为 object-rooted 且显式 additionalProper
   }
 });
 
-test('tools stub: 每项 output.schema 最小合法形态（object root + 显式 AP:false）、render 为函数', () => {
+test('tools stub: 每项 output.schema 为 object-rooted 且显式 AP:false、render 为函数', () => {
   for (const tool of createTools()) {
-    assert.deepEqual(tool.output.schema, {
-      type: 'object',
-      properties: { placeholder: { type: 'string' } },
-      additionalProperties: false,
-    });
+    assert.equal(tool.output.schema.type, 'object', `${tool.name} schema object-rooted`);
+    assert.equal(tool.output.schema.additionalProperties, false, `${tool.name} schema 显式 AP:false`);
+    assert.equal(tool.output.schema.type === 'json', false, `${tool.name} 不得用 type:'json'`);
     assert.equal(typeof tool.output.render, 'function', `${tool.name} output.render`);
-    assert.equal(typeof tool.output.render({}, {}), 'string', `${tool.name} render 返回字符串`);
   }
 });
 
-test('tools stub: 每项 description 非空双语短句、execute 为异步占位返回空对象', async () => {
-  for (const tool of createTools()) {
+test('tools stub: 占位工具 output.schema 为最小合法形态（逐字）', () => {
+  for (const name of PLACEHOLDER_TOOLS) {
+    const tool = createTools().find((entry) => entry.name === name);
+    assert.deepEqual(
+      tool.output.schema,
+      { type: 'object', properties: { placeholder: { type: 'string' } }, additionalProperties: false },
+      `${name} 占位 schema`,
+    );
+  }
+});
+
+test('tools stub: 占位工具 description 非空双语短句、execute 为异步占位返回空对象', async () => {
+  for (const name of PLACEHOLDER_TOOLS) {
+    const tool = createTools().find((entry) => entry.name === name);
     assert.equal(typeof tool.description, 'string');
-    assert.ok(tool.description.length > 0, `${tool.name} description 非空`);
+    assert.ok(tool.description.length > 0, `${name} description 非空`);
+    assert.equal(typeof tool.output.render({}, {}), 'string', `${name} render 返回字符串`);
     assert.equal(typeof tool.execute, 'function');
-    assert.deepEqual(await tool.execute({}, {}), {});
+    assert.deepEqual(await tool.execute({}, {}), {}, `${name} 仍为占位实现`);
   }
 });
