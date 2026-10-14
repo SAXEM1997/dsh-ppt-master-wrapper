@@ -4,10 +4,12 @@
  * sync-upstream.mjs — 一键把上游 ppt-master 的 skill 面同步进本包装层。
  *
  * 本文件按 spec §4 分三层递进实现（Task 10-13）：
- *  - **Task 10（本层，已实现）**：参数解析 + 纯函数层——`git ls-remote --tags`
+ *  - **Task 10（已实现）**：参数解析 + 纯函数层——`git ls-remote --tags`
  *    解析、最新 release tag 选取（数字元组逐段比较）、ref 规范化、codeload URL
  *    推导、缓存键、磁盘预算、`.upstream/last-sync.json` 状态读写助手。
- *  - Task 11（追加）：staging 复制 / 结构分类（🔴🟡🟢）/ marketplace 校验。
+ *  - **Task 11（本层，已实现）**：staging 复制（权威谓词过滤 + 含隐藏文件的逐字节
+ *    复制）、结构分类（🔴🟡🟢 分类矩阵 + 行 1 单向比对 + `vendorDiff` 字节差异
+ *    汇总 + aux-dir 状态记录读写）、上游仓库根 marketplace 版本一致性校验。
  *  - Task 12（追加）：版本判定规则（①④②③/no-change）。
  *  - Task 13（替换占位）：`main(options, deps)` 全流程编排与退出码闭环。
  *
@@ -39,7 +41,17 @@
  * @module dsh-ppt-master-wrapper/scripts/sync-upstream
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -509,6 +521,541 @@ export function writeLastSync(data, root) {
     throw error;
   }
   return payload;
+}
+
+// ─── Task 11：staging 复制 / 结构分类 / marketplace 校验 ─────────
+
+/** 权威谓词：一级目录且**直接子级**存在该文件即为 skill 目录（§3.4，与 T3 同源）。 */
+const SKILL_FILE_NAME = 'SKILL.md';
+
+/**
+ * 一级条目增删即判 🔴 的四个架构级目录（spec §4.2 行 4；仅比一级条目）。
+ */
+const STRUCTURAL_DIRS = ['workflows', 'scripts', 'templates', 'references'];
+
+/** frontmatter `metadata.version` 的期望行（`  version: "6.7.0"`，引号可选）。 */
+const METADATA_VERSION_LINE = /^\s{2}version\s*:\s*(.+?)\s*$/m;
+
+/** frontmatter 块内顶层 `name:` 行（缩进 0，避免命中 metadata 下的键）。 */
+const FRONTMATTER_NAME_LINE = /^name\s*:\s*(.*)$/m;
+
+/** frontmatter 块内顶层 `description:` 行（含 `>` / `|` 折叠标量形态）。 */
+const FRONTMATTER_DESCRIPTION_LINE = /^description\s*:\s*(.*)$/m;
+
+/** requirements.txt 的依赖行（非空、非注释）；比较以「行集合」为单位。 */
+const REQUIREMENT_LINE = /^\s*[^#\s][^#]*$/;
+
+/** aux-dir 状态记录的默认位置：`<vendorSkillsRoot 的父级>/.upstream/last-aux-dirs.json`。 */
+const AUX_STATE_REL = join('.upstream', 'last-aux-dirs.json');
+
+// ── 通用助手 ─────────────────────────────────────────────────────
+
+/** UTF-16 码单元序比较（localeCompare-free，与插件其余部分同一约定）。 */
+function compareByteOrder(left, right) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+/** 路径末段（POSIX 与绝对路径通吃）。 */
+function baseName(path) {
+  const separator = path.lastIndexOf('/');
+  return separator < 0 ? path : path.slice(separator + 1);
+}
+
+/**
+ * 逐字节比较两个文件。
+ *
+ * 与 Task 8 的比对思路同源（`Buffer.compare`，非文本归一化）——同步检测必须
+ * 对任何字节差异敏感，CRLF/LF 之别也是差异（vendor 面要求逐字节保真）。
+ * 任一侧不可读（不存在/是目录/权限）→ 视为**不相等**（调用方按「有差异」处置，
+ * 而非抛错中断分类）。
+ */
+function commonBytesEqual(leftFile, rightFile) {
+  try {
+    return Buffer.compare(readFileSync(leftFile), readFileSync(rightFile)) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** 目录下一级条目名（含 dotfile），按字节序排序；不可读 → []。 */
+function firstLevelEntries(directory) {
+  try {
+    return readdirSync(directory).sort(compareByteOrder);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 按权威谓词（一级目录且直接子级存在 SKILL.md，dotfile 同判）列出 skill 目录名。
+ *
+ * 与 T3 `listSkillDirs` 的谓词同源，但只返回**目录名**并容忍根缺失（返回 []）：
+ * 分类需要区分「vendor 面为空」与「vendor 面缺失」，而 staging 复制面的根必在。
+ * 只扫一级，绝不深入（`skills/.claude-plugin/` 这类无 SKILL.md 的目录被静默跳过）。
+ */
+function skillDirNames(root) {
+  const names = [];
+  for (const name of firstLevelEntries(root)) {
+    const directory = join(root, name);
+    try {
+      if (!statSync(directory).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    if (existsSync(join(directory, SKILL_FILE_NAME))) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * 递归收集目录下全部文件（含隐藏文件）的**相对路径**，按字节序排序。
+ *
+ * 逐字节比对必须覆盖整棵子树——隐藏文件（`.env.example`）与任意深度都在面内；
+ * 只用 `readdirSync` 的名字列表会漏掉「深层文件内容变了但名字没变」。
+ */
+function walkRelativeFiles(root) {
+  const files = [];
+  const visit = (current, prefix) => {
+    for (const name of firstLevelEntries(current)) {
+      const path = join(current, name);
+      const rel = prefix === '' ? name : `${prefix}/${name}`;
+      let stats;
+      try {
+        stats = statSync(path);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) visit(path, rel);
+      else files.push(rel);
+    }
+  };
+  visit(root, '');
+  return files.sort(compareByteOrder);
+}
+
+/** 提取 SKILL.md 的 frontmatter 块文本；无 frontmatter / 不可读 → null。 */
+function frontmatterBlock(skillFile) {
+  let text;
+  try {
+    text = readFileSync(skillFile, 'utf8');
+  } catch {
+    return null;
+  }
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!normalized.startsWith('---\n')) return null;
+  const end = normalized.indexOf('\n---\n', 4);
+  if (end < 0) return null;
+  return normalized.slice(4, end);
+}
+
+/** frontmatter 块内某顶层键的标量值（`>`/`|` 折叠标量为「块起始行 + 正文行」）。 */
+function frontmatterScalar(block, pattern) {
+  if (block === null) return null;
+  const match = pattern.exec(block);
+  if (match === null) return null;
+  return match[1].trim();
+}
+
+/**
+ * SKILL.md 的 frontmatter 摘要：`{ name, version, description }`。
+ *
+ *  - `name` / `description` 缺失或不含 frontmatter → null（各自分类项据此报告）；
+ *  - `version` 缺失或不可解析 → null（spec §4.2 行 3 的 🔴 判据）。
+ *
+ * `description` 的折叠标量（`description: >`）把块正文一并取入——只比首行会把
+ * 「正文改写但首行不变」的显著变更漏判为无变更。
+ */
+function skillFrontmatter(skillDir) {
+  const block = frontmatterBlock(join(skillDir, SKILL_FILE_NAME));
+  if (block === null) return { name: null, version: null, description: null };
+
+  const nameMatch = FRONTMATTER_NAME_LINE.exec(block);
+  const descriptionMatch = FRONTMATTER_DESCRIPTION_LINE.exec(block);
+  const versionMatch = METADATA_VERSION_LINE.exec(block);
+
+  let description = null;
+  if (descriptionMatch !== null) {
+    const head = descriptionMatch[1].trim();
+    description = head === '>' || head === '|' || head === '>-' || head === '|-' ? block : head;
+  }
+
+  let version = null;
+  if (versionMatch !== null) {
+    // 去引号后非空才算可解析（`version:` 空值 / `version: ""` → 不可解析）。
+    const raw = versionMatch[1].replace(/^["']|["']$/g, '').trim();
+    version = raw === '' ? null : raw;
+  }
+
+  return {
+    name: nameMatch === null ? null : nameMatch[1].replace(/^["']|["']$/g, '').trim(),
+    version,
+    description,
+  };
+}
+
+/** requirements.txt 的依赖行集合（忽略注释/空行/行序/**重复行**）；文件缺失 → null。 */
+function requirementLines(skillDir) {
+  let text;
+  try {
+    text = readFileSync(join(skillDir, 'requirements.txt'), 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = text
+    .split('\n')
+    .map((line) => line.replace(/\r$/, '').trim())
+    .filter((line) => REQUIREMENT_LINE.test(line));
+  // 去重：requirements 语义是「依赖集合」，同一行出现两次不构成依赖增删。
+  return [...new Set(lines)].sort(compareByteOrder);
+}
+
+/** 两个字符串数组的对称差（供依赖行增删的报告明细）。 */
+function symmetricDifference(left, right) {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return [
+    ...left.filter((item) => !rightSet.has(item)),
+    ...right.filter((item) => !leftSet.has(item)),
+  ].sort(compareByteOrder);
+}
+
+/** 两个数组是否逐项相等（已排序数组的元素比较）。 */
+function arraysEqual(left, right) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+// ── stageSkills：谓词过滤 + 含隐藏文件的逐字节复制 ───────────────
+
+/**
+ * 把上游 `skills/` 下的 skill 面复制进 staging（spec §4.1 步骤 3）。
+ *
+ * **复制源**：`<upstreamRoot>/skills/` 下每个满足权威谓词的一级目录——直接子级
+ * 存在 `SKILL.md`（dotfile 目录同判）。`skills/` 一级**不含** `SKILL.md` 的目录
+ * （如 `skills/.claude-plugin/`——Claude 插件清单，DSH 不消费）**不进入** staging。
+ *
+ * **复制面 = 含隐藏文件的逐字节全树复制**：dotfile 不排除（`.env.example` 实测被
+ * 上游 git 跟踪、README 指引依赖它），且逐字节保真（`cpSync` 不作文本归一化）。
+ * 目标 skill 目录先清空再复制——staging 是每次运行的等价快照，残留会让分类把
+ * 「上次运行的遗留文件」误判为上游变更。
+ *
+ * @param {string} upstreamRoot 上游解压树根（`<root>/skills/…`）。
+ * @param {string} stagingRoot staging 根（`.skills-staging/`）。
+ * @returns {string[]} 已复制的 skill 目录名数组（字节序）。
+ * @throws {Error} `upstreamRoot/skills` 缺失或不是目录（fail-loud：把「拉取/解压
+ *   失败」误当作「上游无 skill」会让后续替换把 vendor 面清空）。
+ */
+export function stageSkills(upstreamRoot, stagingRoot) {
+  const skillsRoot = join(upstreamRoot, 'skills');
+  if (!existsSync(skillsRoot) || !statSync(skillsRoot).isDirectory()) {
+    throw new Error(`上游 skills/ 目录不可用（不存在或非目录）: ${skillsRoot}`);
+  }
+
+  const copied = skillDirNames(skillsRoot);
+  mkdirSync(stagingRoot, { recursive: true });
+
+  for (const name of copied) {
+    const target = join(stagingRoot, name);
+    rmSync(target, { recursive: true, force: true });
+    cpSync(join(skillsRoot, name), target, { recursive: true });
+  }
+
+  return copied;
+}
+
+// ── aux-dir 状态记录（`.upstream/last-aux-dirs.json`）────────────
+
+/** aux-dir 状态文件路径：显式参数优先，否则 `<vendorSkillsRoot 父级>/.upstream/…`。 */
+function auxStateFile(vendorSkillsRoot, auxStatePath) {
+  if (typeof auxStatePath === 'string' && auxStatePath !== '') return auxStatePath;
+  return join(dirname(vendorSkillsRoot), AUX_STATE_REL);
+}
+
+/**
+ * 读上次同步的辅助目录清单；无文件 / JSON 损坏 / 结构不符 → null（等价「首灌」）。
+ *
+ * 与 `readLastSync` 同一宽容哲学：状态文件是可留存缓存的便利设施，其缺失只应
+ * 降级为「全部视为新增」，不应让分类崩溃。
+ */
+function readAuxDirs(file) {
+  if (!existsSync(file)) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.auxDirs)) return null;
+  if (!parsed.auxDirs.every((item) => typeof item === 'string')) return null;
+  return [...parsed.auxDirs].sort(compareByteOrder);
+}
+
+/** 写辅助目录清单（建目录 + 原子写；结构固定为 `{ auxDirs: string[] }`）。 */
+function writeAuxDirs(file, auxDirs) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify({ auxDirs }, null, 2)}\n`, 'utf8');
+    renameSync(tmp, file);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * 上游 `skills/` 一级**辅助目录**名（不含 `SKILL.md` 的目录，无论是否 dotfile）。
+ *
+ * 数据源是上游全树（spec §4.2 行 7）——vendor 树本身不含辅助目录（staging 丢弃
+ * 对象），故增删只能与**上次同步的记录**比对，见 `classifyChanges`。
+ */
+function auxDirNames(upstreamRoot) {
+  const skillsRoot = join(upstreamRoot, 'skills');
+  const names = [];
+  for (const name of firstLevelEntries(skillsRoot)) {
+    const directory = join(skillsRoot, name);
+    try {
+      if (!statSync(directory).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    if (!existsSync(join(directory, SKILL_FILE_NAME))) names.push(name);
+  }
+  return names.sort(compareByteOrder);
+}
+
+// ── classifyChanges：🔴🟡🟢 分类 ─────────────────────────────────
+
+/**
+ * 结构变化分类（spec §4.2 单表；数据源 = vendor 树 vs staging 为主）。
+ *
+ * 返回 `{ red, yellow, green, vendorDiff }`——
+ *
+ *  - `red` / `yellow`：`Change[]`，每项 `{ kind, detail }`。`kind` 取值
+ *    `skill-dir` / `name` / `metadata.version` / `top-level-entries` /
+ *    `requirements` / `description` / `aux-dir`。
+ *  - `green: boolean` = 存在**常规内容变更**（其余文件内容更新——含 `LICENSE`、
+ *    `SKILL.md` 正文、`SPONSORS*`、`.env.example` 等 skill 目录根级文件），
+ *    即「有常规更新要走自动同步」。它与红/黄**正交**：某次同步可以同时有
+ *    🔴 项与常规内容变更。
+ *  - `vendorDiff: boolean` = vendor skill 面与 staging 之间存在**任何字节差异**
+ *    （含红/黄类变更涉及的文件与常规文件）——Task 12 `decideVersion` 规则①/④
+ *    的判别输入，故命名与之一致、桥接零转换。`green` 是它的**子集语义**：
+ *    有常规变更必有差异，但红/黄类变更可以只置 `vendorDiff` 而不置 `green`。
+ *
+ * **行 1 单向性**：skill-dir 比对只在上游→vendor 方向报告——staging 有而 vendor
+ * 无 → 🔴；vendor 多出的 skill 目录**不产生 red**（那是包装层人工变更，属 §4.3
+ * 规则③域）。
+ *
+ * **aux-dir 契约**：vendor 树不含辅助目录（staging 丢弃对象），故增删判定 = 上游
+ * `skills/` 一级当前辅助目录 vs **上次同步的记录** `.upstream/last-aux-dirs.json`
+ * （路径可由第五参数 `auxStatePath` 覆盖）。本函数**负责读写该记录**：分类后把
+ * 当前清单落盘。记录缺失（首灌）→ 当前全部辅助目录列为新增（🟡 知悉）。
+ *
+ * 所有分类项均以 `vendorDiff` 汇总——不做「红/黄项不置 diff」的短路，因为规则①
+ * 的「上游版本变 + 有 diff」与规则④的「无 diff」正是靠本字段区分。
+ *
+ * @param {string} vendorSkillsRoot vendor 侧 skill 根（其下直接是各 skill 目录）。
+ * @param {string} stagingRoot staging 根（`stageSkills` 产物）。
+ * @param {string} upstreamRoot 上游解压树根（aux-dir 数据源）。
+ * @param {string} [auxStatePath] aux-dir 状态文件路径（缺省由 vendorSkillsRoot 推导）。
+ * @returns {{ red: Array<{kind: string, detail: string}>,
+ *   yellow: Array<{kind: string, detail: string}>, green: boolean, vendorDiff: boolean }}
+ */
+export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, auxStatePath) {
+  const red = [];
+  const yellow = [];
+  let green = false;
+  let vendorDiff = false;
+
+  const vendorSkills = skillDirNames(vendorSkillsRoot);
+  const stagedSkills = skillDirNames(stagingRoot);
+  const vendorSet = new Set(vendorSkills);
+  const stagedSet = new Set(stagedSkills);
+
+  // 行 1（单向 上游→vendor）：staging 有而 vendor 无 → 🔴；反向不报告。
+  for (const name of stagedSkills) {
+    if (!vendorSet.has(name)) {
+      vendorDiff = true;
+      red.push({ kind: 'skill-dir', detail: `上游新增 skill 目录: ${name}（vendor 树中不存在）` });
+    }
+  }
+
+  // 逐 skill：仅比对双方共有的目录（单侧存在的已由行 1 / 包装层域处置）。
+  for (const name of stagedSkills) {
+    if (!vendorSet.has(name)) continue;
+    const vendorDir = join(vendorSkillsRoot, name);
+    const stagedDir = join(stagingRoot, name);
+
+    // ── 全树逐字节比对：任何差异都置 vendorDiff（含红/黄涉及的文件）──
+    const vendorFiles = walkRelativeFiles(vendorDir);
+    const stagedFiles = walkRelativeFiles(stagedDir);
+    const vendorFileSet = new Set(vendorFiles);
+    const stagedFileSet = new Set(stagedFiles);
+
+    const onlyStaged = stagedFiles.filter((rel) => !vendorFileSet.has(rel));
+    const onlyVendor = vendorFiles.filter((rel) => !stagedFileSet.has(rel));
+    const contentChanged = stagedFiles.filter(
+      (rel) => vendorFileSet.has(rel) && !commonBytesEqual(join(vendorDir, rel), join(stagedDir, rel)),
+    );
+
+    if (onlyStaged.length > 0 || onlyVendor.length > 0 || contentChanged.length > 0) vendorDiff = true;
+
+    // ── frontmatter 三键 ──
+    const vendorMeta = skillFrontmatter(vendorDir);
+    const stagedMeta = skillFrontmatter(stagedDir);
+
+    if (stagedMeta.name !== vendorMeta.name) {
+      red.push({
+        kind: 'name',
+        detail: `[${name}] SKILL.md frontmatter name 变更: ${JSON.stringify(vendorMeta.name)} → ${JSON.stringify(stagedMeta.name)}`,
+      });
+    }
+
+    if (stagedMeta.version === null) {
+      red.push({
+        kind: 'metadata.version',
+        detail: `[${name}] SKILL.md frontmatter metadata.version 缺失或不可解析（版本 bump 无法执行）`,
+      });
+    }
+
+    if (stagedMeta.description !== vendorMeta.description) {
+      yellow.push({
+        kind: 'description',
+        detail: `[${name}] SKILL.md frontmatter description 变更（技能展示/路由描述变化，知悉）`,
+      });
+    }
+
+    // ── 四个架构级目录的一级条目增删 ──
+    for (const dirName of STRUCTURAL_DIRS) {
+      const before = firstLevelEntries(join(vendorDir, dirName));
+      const after = firstLevelEntries(join(stagedDir, dirName));
+      const added = after.filter((entry) => !before.includes(entry));
+      const removed = before.filter((entry) => !after.includes(entry));
+      if (added.length === 0 && removed.length === 0) continue;
+      const parts = [];
+      if (added.length > 0) parts.push(`新增 ${added.join(', ')}`);
+      if (removed.length > 0) parts.push(`删除 ${removed.join(', ')}`);
+      red.push({ kind: 'top-level-entries', detail: `[${name}] ${dirName}/ 一级条目增删: ${parts.join('；')}` });
+    }
+
+    // ── requirements.txt 依赖行增删 ──
+    const vendorRequirements = requirementLines(vendorDir);
+    const stagedRequirements = requirementLines(stagedDir);
+    if (vendorRequirements !== null && stagedRequirements !== null
+      && !arraysEqual(vendorRequirements, stagedRequirements)) {
+      const diff = symmetricDifference(vendorRequirements, stagedRequirements);
+      yellow.push({
+        kind: 'requirements',
+        detail: `[${name}] requirements.txt 依赖行增删: ${diff.join(', ')}（提醒重跑 ppt_master_setup_deps）`,
+      });
+    }
+
+    // ── 🟢 常规内容变更（spec §4.2 末行「其余文件内容常规更新」）──
+    //
+    // 红类的 `top-level-entries` 只覆盖**四个架构级目录的一级条目增删**；因此
+    // 下列差异都落常规路径，而非被判成结构变化——
+    //  - SKILL.md 的**正文**变更（frontmatter 三键已单独分类，正文属常规更新）；
+    //  - 四个目录下**更深层**文件的增删与内容变更（一级条目集不变即非结构信号）；
+    //  - skill 根级其余文件（LICENSE / SPONSORS* / requirements.txt 内容本身 /
+    //    `.env.example` 等 dotfile）的增删与内容变更——分类空白在此消除。
+    //
+    // 判据按**一级条目集是否变化**表述（与红类同源），而不是「路径是否在某目录下」：
+    // 后者会把 `scripts/svg_quality/cli.py` 的内容变更错判为无常规更新。
+    const structuralRelPaths = new Set(STRUCTURAL_DIRS);
+    const isStructuralTopLevelEntry = (rel) => {
+      const segments = rel.split('/');
+      if (segments.length !== 2) return false; // 深层路径：不是一级条目
+      return structuralRelPaths.has(segments[0]) && segments[1] !== '';
+    };
+    const isRegularChange = (rel) => !isStructuralTopLevelEntry(rel);
+    const regularChanged = contentChanged.filter(isRegularChange);
+    const regularOnlyStaged = onlyStaged.filter(isRegularChange);
+    const regularOnlyVendor = onlyVendor.filter(isRegularChange);
+    if (regularChanged.length > 0 || regularOnlyStaged.length > 0 || regularOnlyVendor.length > 0) {
+      green = true;
+    }
+  }
+
+  // ── aux-dir（🟡）：上游 skills/ 一级辅助目录增删 vs 上次同步记录 ──
+  const auxFile = auxStateFile(vendorSkillsRoot, auxStatePath);
+  const currentAuxDirs = auxDirNames(upstreamRoot);
+  const previousAuxDirs = readAuxDirs(auxFile);
+  const previousSet = new Set(previousAuxDirs ?? []);
+  const currentSet = new Set(currentAuxDirs);
+
+  const addedAux = currentAuxDirs.filter((name) => !previousSet.has(name));
+  const removedAux = (previousAuxDirs ?? []).filter((name) => !currentSet.has(name));
+  for (const name of addedAux) {
+    yellow.push({ kind: 'aux-dir', detail: `上游 skills/ 一级辅助目录新增: ${name}（staging 丢弃对象，仅知悉）` });
+  }
+  for (const name of removedAux) {
+    yellow.push({ kind: 'aux-dir', detail: `上游 skills/ 一级辅助目录删除: ${name}（staging 丢弃对象，仅知悉）` });
+  }
+  if (addedAux.length > 0 || removedAux.length > 0 || previousAuxDirs === null) {
+    writeAuxDirs(auxFile, currentAuxDirs);
+  }
+
+  return { red, yellow, green, vendorDiff };
+}
+
+// ── checkMarketplaceVersion：上游仓库根 marketplace 一致性 ───────
+
+/**
+ * 校验上游 skill 版本与上游仓库根 `.claude-plugin/marketplace.json` 的一致性
+ * （spec §4.1 步骤 3 / §4.3）。
+ *
+ * **路径钉子**：数据源是**上游仓库根**的 `.claude-plugin/marketplace.json`，与
+ * `<upstreamRoot>/skills/.claude-plugin/plugin.json` 是**两个不同路径**——后者是
+ * staging 丢弃对象，其 `version` 不得被当作 marketplace 数据源。
+ *
+ * **豁免语义（警告级，不判失败）**：文件缺失、不可解析、或无可用的 `version`
+ * 字段 → `{ ok: true, note: '…豁免…' }`。上游未来删除/移动该文件时记警告并豁免
+ * 该子校验（同 §6 链接越界豁免逻辑）。豁免 note 由 T13 编排并入 🟡 汇总输出。
+ *
+ * 调用点在 T13 编排的 staging 步；本函数是纯函数（只读，无副作用）。
+ *
+ * @param {string} upstreamRoot 上游解压树根。
+ * @param {string} skillVersion staging `SKILL.md` frontmatter `metadata.version`
+ *   （不一致时以 SKILL.md 为准并提示）。
+ * @returns {{ ok: boolean, note: string }} 不一致 → `ok:false`。
+ */
+export function checkMarketplaceVersion(upstreamRoot, skillVersion) {
+  const file = join(upstreamRoot, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(file)) {
+    return {
+      ok: true,
+      note: `豁免: 上游未提供 .claude-plugin/marketplace.json（${file}），版本一致性校验跳过`,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return {
+      ok: true,
+      note: `豁免: 上游 .claude-plugin/marketplace.json 不可解析（${file}），版本一致性校验跳过`,
+    };
+  }
+
+  const marketplaceVersion = parsed !== null && typeof parsed === 'object' ? parsed.version : undefined;
+  if (typeof marketplaceVersion !== 'string' || marketplaceVersion.trim() === '') {
+    return {
+      ok: true,
+      note: `豁免: 上游 .claude-plugin/marketplace.json 无 version 字段（${file}），版本一致性校验跳过`,
+    };
+  }
+
+  const expected = String(skillVersion ?? '');
+  if (marketplaceVersion !== expected) {
+    return {
+      ok: false,
+      note: `marketplace.json version（${marketplaceVersion}）与 SKILL.md metadata.version（${expected}）不一致——以 SKILL.md 为准`,
+    };
+  }
+
+  return { ok: true, note: `marketplace.json version（${marketplaceVersion}）与 SKILL.md 一致` };
 }
 
 // ─── main：编排占位（Task 13 替换）────────────────────────────────

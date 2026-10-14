@@ -1,0 +1,1 @@
+# Attribution guard fixture placeholder

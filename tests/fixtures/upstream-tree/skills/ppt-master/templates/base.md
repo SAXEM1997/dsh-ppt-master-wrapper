@@ -1,0 +1,1 @@
+# Template (upstream fixture)

@@ -1,0 +1,5 @@
+{
+  "name": "ppt-master-fixture-helper",
+  "description": "Fixture stand-in for upstream skills/.claude-plugin/plugin.json — a non-skill first-level directory under skills/ that staging must drop.",
+  "version": "0.1.0"
+}

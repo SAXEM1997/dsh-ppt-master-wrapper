@@ -1,0 +1,1 @@
+# Sponsors (upstream fixture)

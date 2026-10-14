@@ -1,0 +1,11 @@
+{
+  "name": "ppt-master",
+  "description": "Fixture stand-in for the upstream repository root .claude-plugin/marketplace.json — the data source of the version consistency check.",
+  "version": "6.8.0",
+  "plugins": [
+    {
+      "name": "ppt-master",
+      "source": "./skills/ppt-master"
+    }
+  ]
+}
