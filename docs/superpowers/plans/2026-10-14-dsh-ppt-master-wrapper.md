@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-14-dsh-ppt-master-wrapper-design.md`（212 行终态，3 轮审查 + 最终通读 PASS——执行者必须同时读 spec）
 
-**环境前置**：git 仓库已 init 于 main 分支；参考实现克隆位于 /tmp/ref/dsh-ppt-master（T2 借鉴解析器思路，非硬依赖——「算法由测试确定」兜底）；上游克隆 /tmp/ref/ppt-master（事实核对用）
+**环境前置**：git 仓库已 init 于 main 分支；参考实现克隆位于 /tmp/ref/dsh-ppt-master（T2 借鉴解析器思路，非硬依赖——「算法由测试确定」兜底）；上游克隆 /tmp/ref/ppt-master（事实核对用；注意该克隆位于 v6.7.0 之后 15 个 commit 的工作树——核对 v6.7.0 事实请先 git checkout v6.7.0）
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@
 **Interfaces:**
 - Produces: `package.json`（name=`dsh-ppt-master-wrapper`、version=`0.0.0` 占位待 Task 14 定版、type=module、main=index.js、engines.node>=20、dsh.engines.dsh=">=0.1.1-rc.1"、dsh.bundle.patch="./cordis.patch.yml"、files=[index.js,lib,skills,scripts,cordis.patch.yml,README.md,LICENSE]、exports 三条目）；`.gitignore` 七项（Global Constraints 清单）
 
-- [ ] **Step 1: 写失败测试** `tests/skeleton.test.mjs`：断言 package.json 解析后 name/零依赖/files 含 LICENSE/exports 含 `./cordis.patch.yml`；cordis.patch.yml 含 `- id: dsh-ppt-master-wrapper` 与 `name:` 行；.gitignore 逐项含七条目；LICENSE 首行含 "MIT License"
+- [ ] **Step 1: 写失败测试** `tests/skeleton.test.mjs`：断言 package.json 解析后 name/零依赖/files 含 LICENSE/exports 含 `./cordis.patch.yml`/`dsh.engines.dsh=">=0.1.1-rc.1"`/`dsh.bundle.patch="./cordis.patch.yml"`/`type: "module"`/`main: "index.js"`；cordis.patch.yml 含 `- id: dsh-ppt-master-wrapper` 与 `name:` 行；.gitignore 逐项含七条目；LICENSE 首行含 "MIT License"
 - [ ] **Step 2: 运行确认失败** `node --test tests/skeleton.test.mjs` → FAIL（文件不存在）
 - [ ] **Step 3: 创建五个文件**（package.json/.gitignore/cordis.patch.yml/LICENSE/README.md——package.json 字段清单见本任务 Interfaces，.gitignore 七项见 Global Constraints）——cordis.patch.yml 文件内容 = spec §3.3 代码块原文（4 行，无额外注释；spec 的设计意图说明段属文档正文、不写入文件）；LICENSE 为本插件自身 MIT（版权行 `dsh-ppt-master-wrapper contributors`，README 将致谢上游）；README.md 仅骨架标题+TODO 指向 spec
 - [ ] **Step 4: 运行测试通过**
@@ -74,7 +74,7 @@
 - Consumes: Task 2 的 `parseFrontmatter`
 - Produces: `createSkillProvider(roots?: string[]) → { name, list(options?), get(candidate, options?) }`；候选字段含 `name/description/metadata/invocation{modelInvocable:true,userInvocable:true}/provider/source:'custom'/resourceBase{kind:'directory',path}/rank:550/locator/path`；`get` 返回含 `content`（frontmatter 后正文）；`SKILL_RANK=550` 导出
 
-- [ ] **Step 1: 写失败测试**：fixture 上 `list()` 收录 alpha 与 .hidden、跳过 beta；`get(alpha)` 往返一致且 content 正确；`broken`（含 SKILL.md 但 description 缺失）→ `list()` **throw**（fail-loud）；name 非 kebab-case → throw；`roots` 参数指向 fixture（扫描根注入）；roots 不存在 → throw（空根 fail-loud，spec §3.4 扫描根注入契约）
+- [ ] **Step 1: 写失败测试**：fixture 上 `list()` 收录 alpha 与 .hidden、跳过 beta；`get(alpha)` 往返一致且 content 正确；`broken`（含 SKILL.md 但 description 缺失）→ **注册时 throw**（provider 注册阶段对含 SKILL.md 但 frontmatter 非法的目录 fail-loud；list() 触发同一注册校验）；name 非 kebab-case → throw；`roots` 参数指向 fixture（扫描根注入）；roots 不存在 → throw（空根 fail-loud，spec §3.4 扫描根注入契约）；roots 指向存在但零 skill 目录的空目录 → 注册时 throw（空根 fail-loud 含"不存在或为空"两判据，spec §3.4）
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**——谓词=「`skills/` 一级目录且直接子级存在 `SKILL.md`（无论是否 dotfile）」；dotfile 含 SKILL.md 收录；缺 name/description 或 name 非 kebab → 注册时 throw（spec §3.4 权威谓词与两级判据：仅 name≠目录名为警告级，不在 provider 判定）；**不沿用**参考实现的 readFile 直读（其对无 SKILL.md 目录实测抛 ENOENT）——本实现先做 SKILL.md 存在性判定再读取，此为 spec §3.4 权威谓词要求的必要偏离
 - [ ] **Step 4: 运行通过**
@@ -84,6 +84,7 @@
 
 **Files:**
 - Create: `index.js`
+- Create: lib/tools.js（stub——3 个最小合法契约占位定义，见 Interfaces）
 - Test: `tests/apply.test.mjs`
 
 **Interfaces:**
@@ -104,9 +105,9 @@
 - Test: `tests/tools-info.test.mjs`（复用 Task 3 fixture + 追加 `zeta/SKILL.md` 制造多目录）
 
 **Interfaces:**
-- Produces（`createTools()` 数组第一项）: `{ name:'ppt_master_info', description: 双语短句, parameters:{}, output:{ schema: object-rooted JSON Schema（显式字段定义 + `additionalProperties: false`）, render }, execute: async (args, exec) => info`；info 对象含 `pluginVersion/upstreamVersion/skillDirs:string[]/primarySkillDir/primarySkillName/repository`——该字段集即 output.schema 的属性集（**不得用 `type:'json'`**：实测被 SDK 静默降级为空契约；object 根缺显式 `additionalProperties: false` 实测抛 JsonSchemaError）；主目录锚定 `ppt-master`（name 匹配；无匹配回退目录名排序第一并标注 `fallback:true`）；SKILL_DIR 定位谓词同 Task 3
+- Produces（`createTools()` 数组第一项）: `{ name:'ppt_master_info', description: 双语短句, parameters:{}, output:{ schema: object-rooted JSON Schema（显式字段定义 + `additionalProperties: false`）, render }, execute: async (args, exec) => info`；info 对象含 `pluginVersion/upstreamVersion/skillDirs:string[]/primarySkillDir/primarySkillName/repository`——该字段集即 output.schema 的属性集（**不得用 `type:'json'`**：实测被 SDK 静默降级为空契约；additionalProperties 归因修正：**defineTool 的 valueSchemaSpec 路径**实测强制显式 additionalProperties——register() 裸路径实测不强制（同一无 AP schema 经 assertSupportedJsonSchema ACCEPTED）；本计划统一写显式 `additionalProperties: false` 作为编码规范，为 defineTool 路径与未来收紧预留）；主目录锚定 `ppt-master`（按 name（无 name 时 metadata）匹配本体 skill；无匹配回退目录名排序第一并标注 `fallback:true`）；SKILL_DIR 定位谓词同 Task 3
 
-- [ ] **Step 1: 写失败测试**：单 skill fixture → primarySkillDir 正确、upstreamVersion 解析自 metadata；双 skill（alpha+zeta）→ primary=zeta 若其 name=ppt-master，否则标注 fallback；无 skill 目录 → throw（fail-loud）
+- [ ] **Step 1: 写失败测试**：单 skill fixture → primarySkillDir 正确、upstreamVersion 解析自 metadata；双 skill（alpha+zeta）→ primary=zeta 若其 name=ppt-master，否则标注 fallback；无 skill 目录 → throw（fail-loud）；alpha/SKILL.md 的 metadata.version 预设 "9.9.9"（供 upstreamVersion 解析断言）
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**——读 package.json version、扫描定位（复用 provider 谓词逻辑，可从 lib/skill-provider.js 导出 `listSkillDirs(root)` 辅助）
 - [ ] **Step 4: 运行通过**
@@ -119,10 +120,10 @@
 - Test: `tests/tools-check-env.test.mjs`、fixture `tests/fixtures/requirements-fixture.txt`（含 PyYAML、python-pptx、skia-pathops、Pillow、flask 等混合）
 
 **Interfaces:**
-- Produces: 工具定义含 description: 双语短句（同 Task 5 约定，spec §3.5 三工具统一要求）；`execute` 返回诊断对象 `{ python: {found, version, meetsSkillRequirement≥3.10 informational}, guard: {ran, exitCode}|{skipped}, deps: [{dist, importName|'UNKNOWN', installed: boolean|'UNKNOWN', source:'metadata'|'import'|'unknown'}], envFileExists: boolean }`；内置 `DIST_TO_IMPORT` 映射表（PyYAML→yaml、Pillow→PIL、python-pptx→pptx、beautifulsoup4→bs4、PyMuPDF→fitz、skia-pathops→pathops、XlsxWriter→xlsxwriter、google-genai→google.genai、edge-tts→edge_tts…）；元数据查询经 `python3 -c "import importlib.metadata..."` 子进程，退出码解析定死：**PackageNotFoundError（python 退出码 1 + 该异常名）→ `installed: false`**；仅 spawn 级失败（ENOENT 等）→ 该项 UNKNOWN；**不读 .env 内容**
+- Produces: 工具定义含 description: 双语短句（同 Task 5 约定，spec §3.5 三工具统一要求）；`execute` 返回诊断对象 `{ python: {found, version, meetsSkillRequirement≥3.10 informational}, guard: {ran, exitCode}|{skipped}（skipped 触发条件=python3 缺失（spawn 失败）时 guard 未运行；python3 存在则为 ran 形态）, deps: [{dist, importName|'UNKNOWN', installed: boolean|'UNKNOWN', source:'metadata'|'import'|'unknown'}], envFileExists: boolean }`——该字段集（python/guard/deps/envFileExists）即 output.schema 的属性集（object-rooted JSON Schema + 显式 `additionalProperties: false`，同 Task 5 句式与编码规范）；内置 `DIST_TO_IMPORT` 映射表（PyYAML→yaml、Pillow→PIL、python-pptx→pptx、beautifulsoup4→bs4、PyMuPDF→fitz、skia-pathops→pathops、XlsxWriter→xlsxwriter、google-genai→google.genai、edge-tts→edge_tts…）；元数据查询经 `python3 -c "import importlib.metadata..."` 子进程，退出码解析定死：**PackageNotFoundError（python 退出码 1 + 该异常名）→ `installed: false`**；仅 spawn 级失败（ENOENT 等）→ 该项 UNKNOWN；**不读 .env 内容**
 - 纯函数导出（供测试）：`parseRequirements(text) → string[]`（顶层发行版名，剥版本钉扎/extras/注释/`-r` 行）、`mapDistToImport(dist) → string|'UNKNOWN'`
 
-- [ ] **Step 1: 写失败测试**：`parseRequirements` 对 fixture 输出正确发行版名列表；`mapDistToImport('PyYAML')==='yaml'`、`('skia-pathops')==='pathops'`、`('not-a-real-dist')==='UNKNOWN'`；元数据子进程边界（stub exec）：退出码 1 且 stderr 含 `PackageNotFoundError` → `installed: false`、仅 spawn 级失败（ENOENT 等）→ 该项 UNKNOWN；无 python3 环境（stub run 抛 ENOENT）→ python.found=false 且 deps 全 UNKNOWN 而非 FAIL（整体不 throw）
+- [ ] **Step 1: 写失败测试**：`parseRequirements` 对 fixture 输出正确发行版名列表；`mapDistToImport('PyYAML')==='yaml'`、`('skia-pathops')==='pathops'`、`('not-a-real-dist')==='UNKNOWN'`；元数据子进程边界（stub exec）：退出码 1 且 stderr 含 `PackageNotFoundError` → `installed: false`、仅 spawn 级失败（ENOENT 等）→ 该项 UNKNOWN；无 python3 环境（stub run 抛 ENOENT）→ python.found=false 且 guard.skipped===true 且 deps 全 UNKNOWN 而非 FAIL（整体不 throw）
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**——子进程调用统一经可注入 `exec` 助手（尊重 `exec.signal`）；≥3.10 仅 informational（spec §3.5 与 §4.1 步骤 4：≥3.10 属 check_env 探测项、不参与退出码体系）
 - [ ] **Step 4: 运行通过**（本机有 python3 时顺带跑一次真实验证但不依赖其存在）
@@ -135,7 +136,7 @@
 - Test: `tests/tools-setup-deps.test.mjs`
 
 **Interfaces:**
-- Produces: `{ name:'ppt_master_setup_deps', description: 双语短句（同 Task 5 约定，spec §3.5 三工具统一要求）, parameters:{ user:{type:'boolean'}, breakSystemPackages:{type:'boolean'} }, execute }`——构造 `pip install -r <SKILL_DIR>/requirements.txt`（按参数附 `--user`/`--break-system-packages`）；装完复跑 check_env 逻辑汇报；命令构造为纯函数导出 `buildPipArgs(requirementsPath, opts) → string[]`；`execute(args, exec)` 尊重 `exec.signal`（spec §3.5 三工具统一要求，与 T5/T6 同）
+- Produces: `{ name:'ppt_master_setup_deps', description: 双语短句（同 Task 5 约定，spec §3.5 三工具统一要求）, parameters:{ user:{type:'boolean'}, breakSystemPackages:{type:'boolean'} }, execute }`——构造 `pip install -r <SKILL_DIR>/requirements.txt`（按参数附 `--user`/`--break-system-packages`）；装完复跑 check_env 逻辑汇报——execute 返回结构 `{ installCmd: string[], installExit: number, checkEnv: <Task 6 诊断对象> }`，该字段集（执行的 install 命令/退出码/复跑的 check_env 摘要）即 output.schema 的属性集（object-rooted JSON Schema + 显式 `additionalProperties: false`，同 Task 5 句式与编码规范）；命令构造为纯函数导出 `buildPipArgs(requirementsPath, opts) → string[]`；`execute(args, exec)` 尊重 `exec.signal`（spec §3.5 三工具统一要求，与 T5/T6 同）
 
 - [ ] **Step 1: 写失败测试**：`buildPipArgs` 参数组合 4 例（默认/user/break/both）；execute 在 stub exec 下调用序列=install→check_env
 - [ ] **Step 2: 运行确认失败**
@@ -147,24 +148,25 @@
 
 **Files:**
 - Create: `scripts/verify-plugin.mjs`
-- Test: `tests/verify-plugin.test.mjs`、fixture `tests/fixtures/mini-vendor/`（自造含 SKILL.md 门标记/LICENSE/SPONSORS×2/9 个门文件占位/requirements/一个 workflows 链接文件/一个越界链接）、fixture `tests/fixtures/mini-upstream/`（=mini-vendor 完整拷贝）
+- Test: `tests/verify-plugin.test.mjs`、fixture `tests/fixtures/mini-vendor/`（自造含 SKILL.md 门标记/LICENSE/SPONSORS×2/9 个门文件占位/requirements/一个 workflows 链接文件——**基线树不含越界链接**，否则与基线用例「warnings 空」互斥；越界链接断言用独立构造树或篡改副本承载）、fixture `tests/fixtures/mini-upstream/`（=mini-vendor 完整拷贝）
 
 **Interfaces:**
 - Consumes: `index.js` apply（真实 provider 驱动）
 - Produces: `node scripts/verify-plugin.mjs [--root <dir>] [--upstream <dir>] [--skip-guard]`（`--skip-guard` 仅向 runVerify 透传 skipGuard；**无 `[--skip-guard-marker note]` 参数**）；导出纯函数 `normalizedSha256(bytes: Uint8Array) → string`（BOM 拒绝→UTF-8 解码→CRLF/CR→LF→sha256 hex）、`parseExpectedDigest(guardSource: string) → string`（正则 `_LICENSE_DIGEST = "..."`；无匹配 → throw）、`runVerify(root, opts?: { skipGuard?: boolean, upstream?: string }) → { problems: string[], warnings: string[] }`（skipGuard=true → 输出/warnings 含「guard 未运行」标记，Review Focus #5）；`--upstream <dir>` 缺省语义：缺省时第⑥项（全量逐字节比对）fail-loud 报 problems 提示「需提供 --upstream 比对树」（与脚本推送前置门定位一致，不静默跳过）
 
 - [ ] **Step 1: 写失败测试**：
-  - `normalizedSha256`：LF 版与 CRLF 版同内容 → 同摘要；带 BOM → throw——真实上游 LICENSE 原始字节与归一化摘要相同（文件无 CRLF），故 CRLF 用例**必须构造 CRLF 副本**（同一内容 LF 版与 CRLF 版 → 同摘要；带 BOM → throw），不得依赖真实文件
+  - `normalizedSha256`：LF 版与 CRLF 版同内容 → 同摘要；带 BOM → throw（解释性事实，非测试依据：真实上游 LICENSE 无 CRLF 故两摘要相同——因此测试必须构造 CRLF 副本，与真实文件无关）
   - `parseExpectedDigest`：正常源 → 摘要；无常量 → throw（fail-loud）
-  - `runVerify` fixture 全绿：problems 空、warnings 空；list/get 往返（驱动真实 index.js）；mock ctx 断言 3 工具注册、且各工具 `output.schema` 为 object-rooted JSON Schema（显式字段定义 + `additionalProperties: false`；实测 `type:'json'` 被 SDK 静默降级为空契约、object 根缺显式 additionalProperties 抛 JsonSchemaError）（工具面）
+  - `runVerify` fixture 全绿：problems 空、warnings 空；list/get 往返（驱动真实 index.js）；mock ctx 断言 3 工具注册、且各工具 `output.schema` 为 object-rooted JSON Schema（显式字段定义 + `additionalProperties: false`——断言检查 **schema 形态符合计划规范**而非「缺 AP 必抛」：**defineTool 的 valueSchemaSpec 路径**实测强制显式 additionalProperties，register() 裸路径实测不强制（同一无 AP schema 经 assertSupportedJsonSchema ACCEPTED），显式 AP:false 为计划编码规范；实测 `type:'json'` 被 SDK 静默降级为空契约）（工具面）
   - `runVerify(root, { skipGuard: true })` → 输出/warnings 含「guard 未运行」标记（Review Focus #5）
   - 篡改用例①：mini-vendor 副本改 LICENSE 一字节 → guard 等价清单拦截（digest 不匹配）
   - 篡改用例②：改某非门文件 1 字节 + `--upstream` 指向干净树 → **全量逐字节比对拦截**（Review Focus #6）
   - frontmatter 两级：name≠目录名 → warnings 含之不进 problems；name 缺失 → problems
   - description 缺失 → problems 含该项（spec §6 verify 行「description 非空」判据）
-  - 链接：越界链接（`../../../docs/x.md`）→ warnings；子树内死链 → problems
+  - 链接：越界链接（`../../../docs/x.md`）→ warnings（**用独立构造树或 mini-vendor 篡改副本断言 warnings 含之**——fixture 基线树不含越界链接，基线用例保持 problems 空、warnings 空）；子树内死链 → problems
+  - name 非 kebab → problems（fixture 用例）
 - [ ] **Step 2: 运行确认失败**
-- [ ] **Step 3: 实现**——检查清单=spec §6 verify 行逐项（①归一化摘要取**被验目标树**内 guard 的期望值 ②frontmatter 逐字精确值三键 ③归属文件 ④9 门文件 ⑤门标记计数 ⑥全量比对 ⑦链接 ⑧门标记存在 ⑨3 工具注册且各工具 output.schema 为 object-rooted JSON Schema（显式字段 + `additionalProperties: false`））；problems 非空 → exit 1 列出全部
+- [ ] **Step 3: 实现**——检查清单=spec §6 verify 行逐项（①归一化摘要取**被验目标树**内 guard 的期望值 ②frontmatter 逐字精确值三键 ③归属文件 ④9 门文件 ⑤门标记计数 ⑥全量比对 ⑦链接 ⑧门标记存在 ⑨3 工具注册且各工具 output.schema 为 object-rooted JSON Schema（显式字段 + `additionalProperties: false`））；problems 非空 → **exit 1**（verify-plugin 自身退出码，spec §6 仅要求非零）列出全部——sync-upstream 编排内该失败**映射为退出码 4**（spec §4.1 单表；两层退出码勿混用）
 - [ ] **Step 4: 运行通过**
 - [ ] **Step 5: Commit** `feat: verify-plugin（guard 逐项等价+全量比对+两级判据）`
 
@@ -175,9 +177,9 @@
 - Test: `tests/compat.test.mjs`
 
 **Interfaces:**
-- Produces: 导出 `resolveDshModules(explicit?: string, env: object) → { path: string, via: string }`（顺序：参数 > `$DSH_NODE_MODULES` > `$DSH_PROFILE_DIR/node_modules` > `$DSH_HOME/profiles/$DSH_PROFILE/node_modules` > `$DSH_HOME/profiles/node_modules`；**按序探测、命中即用——有序优先级即消歧**；「多候选 → 报错列出候选」仅适用于**无序扫描**场景（不带环境变量的目录扫描发现多个 profile 时）；全失败 → 报错退出）；`node scripts/check-dsh-compat.mjs --dsh-modules <dir>` 主流程（CLI 形态对齐 spec §6）：定位→动态 import dsh-skill SkillRegistry 挂载 provider 读回→验证 ToolRuntime register 接受手写工具定义（缺 `output` 会 TypeError 的契约核实）→ rank 550 < BUNDLED_SKILL_RANK 600 相对关系→读回 superpowers-dsh 实际常量比对（漂移告警）；主流程接受可注入依赖（动态 import 函数与期望 rank 常量，参照 Task 13 的 deps 模式）
+- Produces: 导出 `resolveDshModules(explicit?: string, env: object) → { path: string, via: string }`（顺序：参数 > `$DSH_NODE_MODULES` > `$DSH_PROFILE_DIR/node_modules` > `$DSH_HOME/profiles/$DSH_PROFILE/node_modules` > `$DSH_HOME/profiles/node_modules`；**按序探测、命中即用——有序优先级即消歧**；第五级（`$DSH_HOME/profiles/node_modules`）不存在时，回落**扫描** `$DSH_HOME/profiles/*/node_modules`（>1 命中 → throw 列出候选要求显式指定）——此即「无序扫描」场景的唯一入口；「多候选 → 报错列出候选」仅适用于**无序扫描**场景（不带环境变量的目录扫描发现多个 profile 时）；全失败 → 报错退出）；`node scripts/check-dsh-compat.mjs --dsh-modules <dir>` 主流程（CLI 形态对齐 spec §6）：定位→动态 import dsh-skill SkillRegistry 挂载 provider 读回→验证 ToolRuntime register 接受手写工具定义（缺 `output` 会 TypeError 的契约核实；compat 验证注册的是 `createTools()` 真实三工具产物（非临时最小定义）——生产 schema 在真实 SDK 上验证（Y3 契约链第三传导点））→ rank 550 < BUNDLED_SKILL_RANK 600 相对关系→读回 superpowers-dsh 实际常量比对（漂移告警）；主流程接受可注入依赖（动态 import 函数与期望 rank 常量，参照 Task 13 的 deps 模式）
 
-- [ ] **Step 1: 写失败测试**：`resolveDshModules` 用 fake env 五级优先级逐一断言；有序优先级命中即用（前级命中不再探测后级、不报多候选）；无序扫描场景（不带环境变量的目录扫描发现多个 profile，tmp 构造）→ throw 列出候选；env 无 DSH_HOME → throw；注入期望 rank=550 与 stub superpowers-dsh 常量 600 不一致 → 告警且非零退出（漂移检出分支可触发）
+- [ ] **Step 1: 写失败测试**：`resolveDshModules` 用 fake env 五级优先级逐一断言；有序优先级命中即用（前级命中不再探测后级、不报多候选）；无序扫描场景（不带环境变量的目录扫描发现多个 profile，tmp 构造；用例经「五级全失败后回落扫描」路径驱动——五级均未命中才进入 `$DSH_HOME/profiles/*/node_modules` 扫描，此为无序扫描唯一入口）→ throw 列出候选；env 无 DSH_HOME → throw；注入期望 rank=550 与 stub superpowers-dsh 常量 600 不一致 → 告警且非零退出（漂移检出分支可触发）；compat 挂载入口=本插件根 index.js（非参考实现的 lib/index.js——显式断言入口路径防照抄）
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**（本机 `$DSH_PROFILE_DIR=/dsh-home/profiles/web`——该变量为 profile 根、其下无 @deepseek-ai，SDK 实际位于 `$DSH_PROFILE_DIR/node_modules`——真实可跑，作为 Step 4 验证）
 - [ ] **Step 4: 运行通过 + 真实环境 smoke**：`node scripts/check-dsh-compat.mjs` → 本机真实 SDK 上全绿；若 register 拒绝手写工具定义 → 按 spec §3.5 回退声明 `@deepseek-ai/dsh-tools` 为 peerDependency 并 import defineTool，重跑本验证（peerDependency 不违反 Global Constraints 的零 dependencies 约束——该约束禁运行时依赖，peerDep 仅声明宿主必带包的兼容范围，且仅在 compat 验证失败时启用）
@@ -194,13 +196,13 @@
   - `parseArgs(argv) → Options{repo?, ref?, refresh?, confirmStructural?, skipGuard?, noPush?, dryRun?}`（非法组合 `--skip-guard` 未与 `--no-push`/`--dry-run` 联用 → `{ usageError: true }`）
   - `parseLsRemote(text) → Array<{sha, ref, tagName?}>`（剥 `^{}` 松散行成对逻辑单独返回 annotated 映射）
   - `pickLatestTag(entries) → { name, sha } | null`（`^v?\d+\.\d+\.\d+$` 过滤 + 数字元组逐段比较；null=无匹配）
-  - `normalizeRef(ref) → string`（tag→`refs/tags/<远端原名>`、branch→`refs/heads/`、40 位 sha 原样；**不得产生 `refs/tags/refs/tags/…`**）
+  - `normalizeRef(ref) → string`（tag→`refs/tags/<远端原名>`、branch→`refs/heads/`、40 位 sha 原样；**不得产生 `refs/tags/refs/tags/…`**；commit ref 必须为 40 位全长 sha（codeload 对短 sha 接受性未验证且不假设）；非 40 位且不匹配 tag/branch 形态 → usageError 明确报错）
   - `buildCodeloadUrl(repo, normalizedRef) → string`
   - `cacheKey(ref, sha) → string`（`<ref>@<sha>`；sha 取该 tag 的 `^{}` 行 commit sha，否则 tag 行）
-  - `diskBudget(tarballBytes?) → number`（无参=启动保守 260MB；有参=实际三项和）
+  - `diskBudget(tarballBytes?) → number`（无参=启动保守 260MB；有参=实际三项和——三项口径定死：①codeload **全仓库** tarball 实际字节（Content-Length；实测 ≈48.6MB，注意非 skills 子树 tarball ≈17.5MB）②解压后 `.upstream` 全树（实测 ≈114MB）③staging 副本（≈78MB））
 - 状态文件契约：`.upstream/last-sync.json` `{ref, sha, version, at}` 读写助手
 
-- [ ] **Step 1: 写失败测试**：ls-remote fixture（含 v2.13.0 在 v2.2.0 之前的无序输出 + `^{}` 行）→ pickLatest 正确取 v2.13.0 且 **pickLatestTag 保留远端原名（带 v）**；`v6.7.0` → normalizeRef 产出 `refs/tags/v6.7.0`（远端原名保留 v 前缀；实测 41 个 semver tag 全部 v 前缀，`refs/tags/6.7.0` 实测 404）；无 v 前缀 tag 仅作 normalizeRef 防御性分支断言（不与 codeload 真实性绑定）；tag 重推 sha 变 → cacheKey 不同（Review Focus #4）；`parseArgs(['--skip-guard'])` → usageError；`parseArgs(['--skip-guard','--no-push'])` → 合法；diskBudget(50969212) ≈ 114MB+78MB+50MB 量级；diskBudget 两段测试：无参 → 260MB 固定值；有参 → 三项实际之和
+- [ ] **Step 1: 写失败测试**：ls-remote fixture（含 v2.13.0 在 v2.2.0 之前的无序输出 + `^{}` 行）→ pickLatest 正确取 v2.13.0 且 **pickLatestTag 保留远端原名（带 v）**；`v6.7.0` → normalizeRef 产出 `refs/tags/v6.7.0`（远端原名保留 v 前缀；实测 41 个 semver tag 全部 v 前缀，`refs/tags/6.7.0` 实测 404）；无 v 前缀 tag 仅作 normalizeRef 防御性分支断言（不与 codeload 真实性绑定）；normalizeRef 边界用例：短 sha（如 `abc123`——非 40 位且不匹配 tag/branch 形态）→ usageError 明确报错（commit ref 必须 40 位全长 sha；codeload 对短 sha 接受性未验证且不假设）；tag 重推 sha 变 → cacheKey 不同（Review Focus #4）；`parseArgs(['--skip-guard'])` → usageError；`parseArgs(['--skip-guard','--no-push'])` → 合法；diskBudget(50969212)（入参≈48.6MB 为全仓库 tarball 实测值）→ 返回三项之和 ≈240MB（48.6+114+78）；diskBudget 两段测试：无参 → 260MB 固定值；有参 → 三项实际之和
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**
 - [ ] **Step 4: 运行通过**
@@ -213,13 +215,14 @@
 - Test: `tests/sync-detect.test.mjs`、fixtures `tests/fixtures/upstream-tree/`（多 skill：`skills/ppt-master/` mini + `skills/second-skill/SKILL.md` + `skills/.claude-plugin/plugin.json` + 根 `.claude-plugin/marketplace.json`）与 `tests/fixtures/vendor-tree/`（仅旧版 ppt-master）
 
 **Interfaces:**
-- Produces: `stageSkills(upstreamRoot, stagingRoot) → string[]`（复制源=谓词过滤的全部 skill 目录；**不进入** staging：`skills/` 一级不含 SKILL.md 的目录）；`classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot) → { red: Change[], yellow: Change[], green: boolean, vendorDiff }`（vendorDiff 命名与 Task 12 decideVersion 输入一致，Task 13 桥接零转换；Change 含 `kind`（skill-dir/name/metadata.version/top-level-entries/requirements/description/aux-dir）、`detail`；数据源：vendor vs staging 为主、辅助目录与 marketplace 用 `.upstream` 全树）；行 1（skill-dir）比对为**单向（上游→vendor）**——vendor 侧多出的 skill 目录属包装层变更（规则③），不入 red；`checkMarketplaceVersion(upstreamRoot, skillVersion) → { ok: boolean, note }`（文件缺失 → `{ok:true, note:'豁免'}` 警告语义）；classifyChanges 的 yellow 汇总含 marketplace.json 豁免 note（checkMarketplaceVersion 返回豁免时并入 🟡 提示，供步骤 6 🟡 汇总输出）
+- Produces: `stageSkills(upstreamRoot, stagingRoot) → string[]`（复制源=谓词过滤的全部 skill 目录；**不进入** staging：`skills/` 一级不含 SKILL.md 的目录；复制面=**含目录内隐藏文件**的逐字节复制，dotfile 不排除——如 `.env.example`（实测被上游 git 跟踪、README 指引依赖它，不得被复制面排除））；`classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot) → { red: Change[], yellow: Change[], green: boolean, vendorDiff }`（vendorDiff 命名与 Task 12 decideVersion 输入一致，Task 13 桥接零转换；vendorDiff 推导语义=vendor skill 面与 staging 之间存在**任何**字节差异（含红/黄类变更涉及的文件与常规文件）——供 T12 规则①/④判别；Change 含 `kind`（skill-dir/name/metadata.version/top-level-entries/requirements/description/aux-dir）、`detail`；skill 目录**根级**其余文件（LICENSE/SKILL.md/SPONSORS*/requirements.txt/.env.example 等）内容变更 → 🟢 green（常规同步；含 .env.example）——消除分类空白；数据源：vendor vs staging 为主、辅助目录与 marketplace 用 `.upstream` 全树）；行 1（skill-dir）比对为**单向（上游→vendor）**——vendor 侧多出的 skill 目录属包装层变更（规则③），不入 red；`checkMarketplaceVersion(upstreamRoot, skillVersion) → { ok: boolean, note }`（文件缺失 → `{ok:true, note:'豁免'}` 警告语义）；classifyChanges 的 yellow 汇总含 marketplace.json 豁免 note（checkMarketplaceVersion 返回豁免时并入 🟡 提示，供步骤 6 🟡 汇总输出）
 
 - [ ] **Step 1: 写失败测试**：
   - fixture 上游比 vendor 多 `second-skill` → **red 含 skill-dir 变更**（Review Focus #3）
   - vendor 树比 staging 多一个 skill 目录 → 不产生 red（行 1 单向比对：上游→vendor）
   - `skills/.claude-plugin/` 存在 → staging **不包含**它（**前置 existsSync 断言 fixture 中 `skills/.claude-plugin/plugin.json` 确实存在，防空断言假绿**）；classify 的 yellow 含 aux-dir（数据源=upstream 全树）
-  - SKILL.md name 变更 → red(kind=name)；metadata.version 缺失 → red；description 变更 → yellow；requirements 行增删 → yellow；仅正文文件变更 → green 路径
+  - fixture skill 目录含隐藏文件（如 `skills/ppt-master/.env.example`）→ staging 保留该 dotfile（前置 existsSync 防空断言；vendor 侧经编排替换后同样保留——复制面含隐藏文件）
+  - SKILL.md name 变更 → red(kind=name)；metadata.version 缺失 → red；description 变更 → yellow；requirements 行增删 → yellow；仅正文文件变更 → green 路径；仅常规文件变更 → vendorDiff=true（green 路径同时 vendorDiff=true——vendorDiff 含任何字节差异）
   - marketplace.json version 与 skillVersion 不一致 → ok:false；文件缺失 → 豁免
   - §4.2 行 4：fixture 上游树某 skill 的 `scripts/` 下增删一级子目录 → red 含 `kind=top-level-entries`
 - [ ] **Step 2: 运行确认失败**
@@ -241,7 +244,7 @@
   - ③仅包装层变更（vendorDiff=false 且 wrapperPending）→ `-r`+1；**docs-only（两者皆无）→ no-change**（不落③）
   - 解析助手 `parseRSuffix(version) → { base, n }`（无后缀 n=0）
 
-- [ ] **Step 1: 写失败测试**：六分支 + 边界（current=`6.7.0-r3` 上游升 `6.8.0` → `6.8.0` + 归零 note；current=`6.7.0` 同版本 tag 重推 diff → `6.7.0-r1`；`6.7.0-r1` 再重推 → `6.7.0-r2`；docs-only → no-change；②③同时命中按②）
+- [ ] **Step 1: 写失败测试**：五分支五枚举值（①④②③/no-change）+ 边界组合（current=`6.7.0-r3` 上游升 `6.8.0` → `6.8.0` + 归零 note；current=`6.7.0` 同版本 tag 重推 diff → `6.7.0-r1`；`6.7.0-r1` 再重推 → `6.7.0-r2`；docs-only → no-change；②③同时命中按②；纯③（仅 wrapperPending=true，vendorDiff=false）→ `6.7.0`→`6.7.0-r1`；纯④（上游版本变+vendorDiff=false）→ rule=④、version=`6.8.0`；upstreamVersion: null（理论上由 §4.2 行 3 🔴 前置拦截，纯函数契约仍需自洽）→ 返回 no-change（不 throw））
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**（优先级互斥、命中即止）
 - [ ] **Step 4: 运行通过**
@@ -250,28 +253,41 @@
 ### Task 13: sync 流程编排（门/verify 前置/替换/tag/幂等/push/退出码）
 
 **Files:**
-- Modify: `scripts/sync-upstream.mjs`（`main(options, deps?)`——deps 可注入 `{ fetchTarball, runGit, runPython, now }` 供测试）
+- Modify: `scripts/sync-upstream.mjs`（`main(options, deps?)`——deps 可注入 `{ fetchTarball, runGit, runPython, now, runVerify, freeSpace }` 供测试；runVerify 为注入位——编排不直接 import verify-plugin，经 deps 调用）
 - Test: `tests/sync-orchestrate.test.mjs`
 
 **Interfaces:**
 - Consumes: Task 10-12 全部纯函数；`scripts/verify-plugin.mjs` 的 `runVerify`
-- Produces: `main(options, deps) → Promise<number>`（退出码）；编排序列=spec §4.1 步骤 1-8（解析[`--confirm-structural` 且未显式传 `--ref` 时，ref 取 `.upstream/last-sync.json` 记录值（固定上次检出的 ref）]→拉取[缓存键/两段预检]→staging[marketplace 校验]→guard[逐 skill；3/7 细则：解释器级=7、guard 业务=3]→结构检测→自动路径[verify 前置 staging→替换 skill 面→bump→🟡 汇总→commit→tag 先行检测映射 6→写 sync-report.txt（仓库根，每次覆盖）→push→清理 staging（spec §4.1 步骤 6 末尾动作）]→结构路径[报告+sync-report.txt 落盘，码 2]→幂等[范围=vendor+包装层待发布；短路前 ref sha 先比——ref sha 先比是**可选优化**（命中可省下载；省略亦正确——幂等判定本身在 staging 完成后执行，spec 允许）]）；PAT 解析顺序 env→credential fill→指引；push 一次性 URL；无匹配 tag → 5；网络失败 → 5；绝不 force push、绝不覆盖 tag；wrapperPending 取值语义：编排内仅以**未推送的包装层提交**（`git log @{u}..HEAD` 范围内有涉及包装层文件的提交，或无 upstream 时以 HEAD 相对上次同步记录判断）作为 wrapperPending=true 的依据；工作区未提交的内容级变更不参与（与 spec 规则③「开发者手动执行 bump」对齐）
+- Produces: `main(options, deps) → Promise<number>`（退出码）；编排序列=spec §4.1 步骤 1-8（解析[`--confirm-structural` 且未显式传 `--ref` 时，ref 取 `.upstream/last-sync.json` 记录值（固定上次检出的 ref）]→拉取[缓存键/两段预检；last-sync.json 写入时机：拉取成功即写 ref/sha（`git checkout` 前落盘），version 字段于 bump 后更新，退出码 2（结构变化）也先写 ref/sha——保证 `--confirm-structural` 重跑固定 ref 有值可取]→staging[marketplace 校验]→guard[逐 skill；3/7 细则：解释器级=7、guard 业务=3]→结构检测→自动路径[verify 前置 staging——以 `runVerify(stagingRoot, { skipGuard, upstream: <解压树路径> })` 调用（编排必须显式传 upstream，否则按 T8 缺省 fail-loud 语义第⑥项恒 exit 4）→替换 skill 面→bump→🟡 汇总（三类指引来源 spec §4.1 步骤 6：依赖变更→提醒重跑 ppt_master_setup_deps；description 变更→知悉；辅助目录增删→知悉）→commit→tag 先行检测映射 6→写 sync-report.txt（仓库根，每次覆盖）→push→清理 staging（spec §4.1 步骤 6 末尾动作）]→结构路径[报告+sync-report.txt 落盘，码 2]→幂等[范围=vendor+包装层待发布；短路前 ref sha 先比——ref sha 先比是**可选优化**（命中可省下载；省略亦正确——幂等判定本身在 staging 完成后执行，spec 允许）；短路禁用有**两个**触发条件（spec §4.1 步骤 8）——①工作区相对 HEAD 存在包装层 diff；②存在未推送的包装层提交；任一命中即禁用短路（继续走 bump 流程）——「工作区未提交的内容级变更不参与」限定语仅适用于 wrapperPending 取值（规则③判定），**不适用于幂等禁用**，两处语义分开表述]）；PAT 解析顺序 env→credential fill→指引；push 一次性 URL；无匹配 tag → 5；网络失败 → 5；绝不 force push、绝不覆盖 tag；wrapperPending 取值语义：编排内仅以**未推送的包装层提交**作为 wrapperPending=true 的依据——探测序列：先 `git rev-parse --abbrev-ref @{u}` 安全探测 upstream 存在（实测无 upstream/空仓库时 `@{u}` 直接 exit 128 fatal，不得裸跑 `git log @{u}..HEAD`）；探测成功 → 以 `git log @{u}..HEAD` 范围内有涉及包装层文件的提交判定；探测失败 → 走回退分支（HEAD 相对 `.upstream/last-sync.json` 记录判断）；工作区未提交的内容级变更不参与 wrapperPending 取值（与 spec 规则③「开发者手动执行 bump」对齐——该限定仅约束 wrapperPending 取值，不约束幂等禁用）
 - 退出码全集：0/1/2/3/4/5/6/7（spec §4.1 单表）；磁盘预检不足（两段任一）→ 退出码 5（环境失败组）
 
 - [ ] **Step 1: 写失败测试**（全部用 stub deps，无网络）：
   - usage：`--skip-guard` 默认推送 → 1（Review Focus #5）
   - `--skip-guard --no-push` 编排路径下 verify 收到 skipGuard 标记（runVerify 以 `{ skipGuard: true }` 被调用且输出含「guard 未运行」，Task 8 契约联动）
+  - verify stub 断言收到 upstream 参数：runVerify 以 `{ skipGuard, upstream: <解压树路径> }` 被调用（漏传 upstream → verify 报 problems（verify-plugin 自身退出码 1）→ **sync 编排映射为退出码 4**——编排接线必须显式传参，stub 断言之；两层退出码见 Task 8 Step 3 注）
   - 幂等：ref sha 相同 + 树无 diff + 无包装层待发布 → 0 且未跑 guard/verify；有未推送包装层提交 → 不短路
+  - 幂等补充①：工作区相对 HEAD 有包装层 diff（未提交）→ **不短路**（spec §4.1 步骤 8 明文防吞场景：未提交包装层变更不得被幂等短路吞掉）
+  - 幂等补充②：无 remote 裸仓库（`git rev-parse --abbrev-ref @{u}` exit 128 fatal）→ 走回退分支不崩（T14 首灌场景：空仓库/无 upstream）
+  - 幂等补充③：vendorDiff=false 且 wrapperPending=false（no-change）→ 编排出口=无 commit/无 tag、退出 0 并报告 already up to date
   - guard stub 返回 78 → 3；stub python ENOENT → 7（不 --skip-guard）
   - verify stub problems 非空 → 4 且 **vendor 树未变**（断言替换未发生）
   - 结构变化（inject 上游多 skill fixture）→ 2 + sync-report.txt 写入
   - tag 冲突：stub git rev-parse 已存在 → 6 且未 push（前提注明：rev-parse 检测依赖仓库已有 commit，实测空仓库对已存在 tag 也返回 1——fixture 需先创建初始 commit）
   - push 失败 → 6；`--no-push` → 本地 commit+tag、无 push 调用；成功路径断言 sync-report.txt 已写入
   - `--dry-run` → 只报告，无替换/commit/push
-  - ref 缺省回退：上次 last-sync 记录 ref=X，重跑不传 `--ref` → fetchTarball 收到 X
+  - ref 缺省回退（补前提标志）：上次 last-sync 记录 ref=X，带 `--confirm-structural` 且不传 `--ref` 重跑 → fetchTarball 收到 X（回退仅在「`--confirm-structural` 且未显式传 `--ref`」前提下生效）；对照用例：不带 `--confirm-structural` 重跑不传 `--ref` → 不走 last-sync 回退、正常解析最新 tag（fetchTarball 收到最新 tag 的 ref）
+  - `--confirm-structural` 强制走自动路径：结构检测 🔴 存在时不再退 2 → 强制进入自动路径（替换/bump/commit/tag）→ exit 0
+  - last-sync.json 写入时机：拉取成功即写 ref/sha（`git checkout` 前落盘）；version 字段于 bump 后更新；结构变化退出码 2 路径也先写 ref/sha（`--confirm-structural` 重跑固定 ref 有值可取）
   - PAT：env 提供 → push URL 含 oauth2: 且不落任何文件；env 缺失且 credential stub 失败 → 指引错误（不崩）
   - 无匹配 tag：ls-remote stub 结果无 `^v?\d+\.\d+\.\d+$` 匹配 → 退出码 5 且错误指引用 `--ref`
   - 网络失败：fetchTarball stub 抛网络错误 → 退出码 5
+  - 磁盘两段预检（freeSpace 注入 stub）：启动预检不足 → 退出码 5（下载前拦截）；二次预检不足（拉取后、解压前）→ 退出码 5 且**不解压**（断言解压未发生）
+  - 声明未测合集（补测，五条；③落在 Task 8 Step 1 链接用例后，非 T13）：
+    - ① `--refresh` 绕过缓存（stub fetchTarball 被调用即使缓存目录存在）
+    - ② tag 冲突远端预判（ls-remote stub 结果含同名 tag → 不依赖本地 rev-parse 也拦截 → 6）
+    - ③ T8 补「name 非 kebab → problems」fixture 用例（在 Task 8 Step 1，非 T13）
+    - ④ staging 清理断言（成功路径末尾 `.skills-staging/` 不存在）
+    - ⑤ PAT credential helper 成功路径（env 缺失但 credential stub 返回 PAT → 推送成功且 URL 不含 env 来源标注）
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现**（编排按 spec 单表顺序；每个退出码路径单一 return；sync-report.txt 写仓库根）
 - [ ] **Step 4: 运行通过 + 全套回归**：`node --test tests/`（全部任务测试绿）——保持显式 `tests/` 参数：裸 `node --test` 会扫全 cwd，vendor 树 `scripts/tests/` 含上游 pytest 文件（实测 56 个，虽无 .js/.mjs 不致误收，仍显式指定以防上游未来添加 .mjs 测试）
@@ -280,14 +296,13 @@
 ### Task 14: 首次 bootstrap（真实 vendor + 推送 GitLab + README）
 
 **Files:**
-- Modify: `README.md`（完整化）、`package.json`（version 定 `6.7.0`）
+- Modify: `README.md`（完整化）、`package.json`（version `6.7.0` 由首次同步 bump 定版，非手动编辑）
 - Test: 手动验证步骤（本任务为交付任务，测试=三个脚本真实运行）
 
 **Interfaces:**
 - Consumes: 全部前序任务
 
-- [ ] **Step 1: 运行首次同步** `node scripts/sync-upstream.mjs --no-push` → 真实拉取 v6.7.0、guard EXIT=0、verify 全绿；首次运行 vendor 基线为空，结构检测 🔴 全量命中属**预期**（退出码 2）→ 按既定人工路径以 `--confirm-structural --no-push` 重跑完成首灌，version=6.7.0（空基线不需要脚本特判）；首次结构路径写入的 sync-report.txt 即**基线报告**（无历史可比对，作为后续同步的差异基准留档）
-- [ ] **Step 2: 三脚本真实验证**：`node scripts/verify-plugin.mjs`（真实 78MB 树）+ `node scripts/check-dsh-compat.mjs`（本机 SDK）全绿；`node -e "import('./index.js')"` 装配无错
-- [ ] **Step 3: README 完整化**：安装（`dsh plugin --profile <name> add link:<path>` / GitLab URL）、三工具说明、`.env` 首次使用指引（spec §3.1 布局注释与 §5）、同步脚本用法（含 `--repo/--refresh/--confirm-structural/--skip-guard/--no-push/--dry-run`）、致谢上游与 MIT 归属说明（双 LICENSE）
-- [ ] **Step 4: git 远端配置与推送**：`git remote add origin <GitLab URL>`（无凭据）；PAT 经 `DSH_PPT_GITLAB_PAT` 环境变量（**用户提供，绝不写入文件**）；`git push origin main --tags`（一次性 URL）；验证 GitLab 上 tag `v6.7.0` 存在
-- [ ] **Step 5: Commit** `feat: 首次 bootstrap（vendor v6.7.0 + README + 定版）` 并推送
+- [ ] **Step 1: README 完整化**：安装（`dsh plugin --profile <name> add link:<path>` / GitLab URL）、三工具说明、`.env` 首次使用指引（spec §3.1 布局注释与 §5）、同步脚本用法（含 `--repo/--refresh/--confirm-structural/--skip-guard/--no-push/--dry-run`）、致谢上游与 MIT 归属说明（双 LICENSE）——先于首次同步完成，使首灌 commit/tag 树内已含 README（消除「tag v6.7.0 不含 README/version 定版」问题）
+- [ ] **Step 2: 运行首次同步** `node scripts/sync-upstream.mjs --no-push` → 真实拉取 v6.7.0、guard EXIT=0、verify 全绿；首次运行 vendor 基线为空，结构检测 🔴 全量命中属**预期**（退出码 2）→ 按既定人工路径以 `--confirm-structural --no-push` 重跑完成首灌，version=6.7.0（空基线不需要脚本特判）；**定版/commit/tag 随首灌一次完成**：version=6.7.0 由本次同步 bump 产生（package.json 无手动定版，消除定版与 bump 冗余），commit 与 tag `v6.7.0` 一次产生且树内已含 Step 1 的 README（README 变更已在工作树中，随首灌 commit 入库）；首次结构路径写入的 sync-report.txt 即**基线报告**（无历史可比对，作为后续同步的差异基准留档）
+- [ ] **Step 3: 三脚本真实验证**：`node scripts/verify-plugin.mjs --upstream .upstream/<ref>@<sha>/…`（真实 78MB 树；`--upstream` 取实际路径——从 `.upstream/last-sync.json` 记录或缓存目录名 `<ref>@<sha>` 拼出；裸跑不传按 T8 缺省语义第⑥项 fail-loud 恒 exit 1，必须显式传）+ `node scripts/check-dsh-compat.mjs`（本机 SDK）全绿；`node -e "import('./index.js')"` 装配无错
+- [ ] **Step 4: git 远端配置与单次推送（定版/commit/tag 已由 Step 2 一次完成）**：`git remote add origin <GitLab URL>`（无凭据）；PAT 经 `DSH_PPT_GITLAB_PAT` 环境变量（**用户提供，绝不写入文件**）；`git push origin main --tags`（一次性 URL，**单 tag 单推送**——README/定版已在 tag 树内，无第二次 commit/推送）；验证 GitLab 上 tag `v6.7.0` 存在且指向含 README 与 version=6.7.0 的树
