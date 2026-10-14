@@ -30,22 +30,28 @@ export const inject = ['skills', 'tools'];
  * @throws {Error} When `ctx.skills.registerProvider` is missing or not a function.
  */
 export function apply(ctx, opts) {
-  const registerProvider = ctx?.skills?.registerProvider;
-  if (typeof registerProvider !== 'function') {
+  const skills = ctx?.skills;
+  if (typeof skills?.registerProvider !== 'function') {
     throw new Error(`${name}: ctx.skills.registerProvider is required`);
   }
 
   // The registry takes a factory, matching the upstream reference shape.
   const provider = createSkillProvider(opts?.skillRoots);
-  registerProvider(() => provider);
+  // Method-form invocation (`skills.registerProvider(...)`, never extracting the
+  // function first): on a real cordis context every service access is wrapped by a
+  // traceable proxy that rebinds `this` for method calls only — a detached call
+  // lands in the implementation with `this === undefined` and throws. Caught by
+  // scripts/check-dsh-compat.mjs against the installed SDK (Task 9).
+  skills.registerProvider(() => provider);
 
-  const register = ctx?.tools?.register;
-  if (typeof register !== 'function') {
+  const tools = ctx?.tools;
+  if (typeof tools?.register !== 'function') {
     console.warn(`${name}: tools 不可用，降级仅注册 skill provider`);
     return;
   }
   // Same scan-root channel as the provider: the tools resolve SKILL_DIR from the
   // very roots the provider lists from, so the two can never describe different
   // trees. `undefined` (production) means each tool's packaged default.
-  for (const tool of createTools({ skillRoots: opts?.skillRoots })) register(tool);
+  // Method form here too, for the same traceable-`this` reason as above.
+  for (const tool of createTools({ skillRoots: opts?.skillRoots })) tools.register(tool);
 }
