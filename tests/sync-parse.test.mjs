@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildCodeloadUrl,
@@ -461,26 +462,84 @@ test('readLastSync: JSON 合法但非状态对象（数组/字符串/缺字段�
   });
 });
 
-test('readLastSync/writeLastSync: root 缺省=仓库根（cwd 无关，以模块位置定位）', () => {
+test('readLastSync/writeLastSync: 缺省 root 锚定仓库根，与 cwd 无关', () => {
+  const original = process.cwd();
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+  // 本用例**绝不写仓库根 `.upstream/`**（T11/T13/T14 起那里是真实缓存，探针写入
+  // 会无备份地覆盖真实 last-sync.json，`rmSync(recursive)` 更会把整个真实缓存
+  // 目录删掉且不抛错——force 对非空目录同样生效）。因此：
+  //  ① 缺省 root 的锚定由**只读**断言验证（不落盘）；
+  //  ② 写/读往返在独立 tmp root 上驱动（顺带覆盖 root 参数路径）。
+  try {
+    process.chdir(tmpdir());
+
+    // ① 只读：缺省 root 必须锚定仓库根。cwd 切到 tmpdir 后，若实现误用 cwd，
+    // 读到的是 tmpdir 下的路径；此处断言其行为与显式 repoRoot 完全一致。
+    assert.deepEqual(readLastSync(), readLastSync(repoRoot), '缺省 root 必须等价于显式仓库根');
+
+    // ② tmp root 往返：root 参数路径被写/读两侧一致驱动。
+    withTmpRoot('sync-state-default-', (root) => {
+      writeLastSync({ ref: 'refs/tags/v9.9.9-cwd-probe', sha: '9'.repeat(40), version: '9.9.9' }, root);
+      process.chdir(tmpdir());
+      assert.equal(readLastSync(root).ref, 'refs/tags/v9.9.9-cwd-probe');
+      assert.equal(readLastSync(root).sha, '9'.repeat(40));
+
+      // 反向：tmp root 下的状态不得被缺省 root 读到（两处 root 彼此独立）。
+      const viaDefault = readLastSync();
+      assert.equal(
+        viaDefault === null || viaDefault.ref !== 'refs/tags/v9.9.9-cwd-probe',
+        true,
+        '缺省 root 不得读到 tmp root 的状态——证明锚定的是仓库根而非 cwd',
+      );
+    });
+
+    // ③ 缺省 root 的**写**语义由下一用例（带备份/恢复）单独证明——本用例刻意
+    // 只读，避免触碰仓库根 `.upstream/`。
+  } finally {
+    process.chdir(original);
+  }
+});
+
+test('writeLastSync/readLastSync: 缺省 root 写入的是仓库根 .upstream（备份/恢复真实状态）', () => {
+  // 缺省 root 的**写**语义必须被证明（否则「cwd 无关」只覆盖了读）。为不破坏
+  // T11/T13/T14 的真实缓存，这里对真实 last-sync.json 做备份/恢复，且只删探针
+  // 文件本身——绝不 rmSync 目录。
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const statePath = join(repoRoot, '.upstream', 'last-sync.json');
+  const upstreamDir = join(repoRoot, '.upstream');
+
+  const hadDir = existsSync(upstreamDir);
+  const hadState = existsSync(statePath);
+  const backup = hadState ? readFileSync(statePath, 'utf8') : null;
+  const createdDir = !hadDir;
+
   const original = process.cwd();
   try {
     process.chdir(tmpdir());
-    // 缺省 root 锚定模块位置的仓库根——与 cwd 无关：不 throw 且不得读到 tmp 下的
-    // 伪状态（tmpdir 下无 .upstream/last-sync.json，故为 null 或仓库根真实值）。
-    const state = readLastSync();
-    assert.equal(state === null || typeof state.ref === 'string', true);
+    writeLastSync({ ref: 'refs/tags/v9.9.9-probe', sha: '9'.repeat(40), version: '9.9.9' });
 
-    const repoRoot = join(original);
-    writeLastSync({ ref: 'refs/tags/v9.9.9-cwd-probe', sha: '9'.repeat(40), version: '9.9.9' }, repoRoot);
-    const fromTmpCwd = readLastSync();
-    assert.equal(fromTmpCwd.ref, 'refs/tags/v9.9.9-cwd-probe', '缺省 root 必须锚定仓库根而非 cwd');
+    // 缺省 root 落到仓库根，而非 cwd。
+    assert.equal(readFileSync(statePath, 'utf8').includes('refs/tags/v9.9.9-probe'), true);
+    assert.equal(existsSync(join(tmpdir(), '.upstream', 'last-sync.json')), false, '不得写到 cwd');
+    assert.equal(readLastSync().ref, 'refs/tags/v9.9.9-probe');
   } finally {
     process.chdir(original);
-    rmSync(join(original, '.upstream', 'last-sync.json'), { force: true });
-    try {
-      rmSync(join(original, '.upstream'), { recursive: true, force: true });
-    } catch {
-      /* 目录非空（真实缓存）时保留 */
+    // 恢复：有备份则还原原内容，否则只删探针文件本身。
+    if (backup !== null) writeFileSync(statePath, backup, 'utf8');
+    else rmSync(statePath, { force: true });
+    // 仅当本次新建了 .upstream/ 时才尝试移除该目录，且必须用 `rmdirSync`（空目录
+    // 语义）：`rmSync` 即便 recursive:false 也对目录抛 EISDIR（force 只抑制
+    // ENOENT），非空时 rmdirSync 抛 ENOTEMPTY 被捕获——该目录因此受保护，真实的
+    // `.upstream/` 缓存（T11/T13/T14 起为真）绝不可能被删。
+    if (createdDir) {
+      // 前置守卫：只有目录确为空时才尝试移除（他人在本机上并发创建了缓存则跳过）。
+      if (existsSync(upstreamDir) && readdirSync(upstreamDir).length > 0) return;
+      try {
+        rmdirSync(upstreamDir);
+      } catch {
+        /* 非空（真实缓存已出现或他人在用）——保留，绝不递归删除 */
+      }
     }
   }
 });
