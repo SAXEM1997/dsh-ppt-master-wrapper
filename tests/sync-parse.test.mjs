@@ -364,10 +364,13 @@ test('parseArgs: 标志与取值混排（--refresh 在 --ref 前）→ 合法且
   assert.equal(options.noPush, true);
 });
 
-// ─── main 占位 ───────────────────────────────────────────────────
+// ─── main 编排入口（T13 已实现）───────────────────────────────────
 
-test('main: T10 为占位（T13 替换），调用即 throw TODO', async () => {
-  await assert.rejects(() => main({}, {}), /TODO|T13/);
+test('main: T13 编排已替换占位——不再 throw TODO（usageError → 退出码 1）', async () => {
+  // 占位时代的「调用即 throw」契约已被 T13 替换：最轻的调用路径（usage 错误）直接
+  // 返回退出码 1。完整编排序列与退出码全集由 tests/sync-orchestrate.test.mjs 固定。
+  const code = await main({ usageError: true }, {});
+  assert.equal(code, 1);
 });
 
 // ─── last-sync 状态文件读写 ──────────────────────────────────────

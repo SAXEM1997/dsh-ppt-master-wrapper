@@ -12,7 +12,11 @@
  *    汇总 + aux-dir 状态记录读写）、上游仓库根 marketplace 版本一致性校验。
  *  - **Task 12（本层，已实现）**：版本判定规则（①④②③/no-change）——`parseRSuffix`
  *    解析助手 + `decideVersion` 互斥判定纯函数（spec §4.3）。
- *  - Task 13（替换占位）：`main(options, deps)` 全流程编排与退出码闭环。
+ *  - **Task 13（本层，已实现）**：`main(options, deps)` 全流程编排与退出码闭环
+ *    （spec §4.1 步骤 1-8：解析→拉取→staging→guard→结构检测→自动/人工路径→幂等）。
+ *    deps 可注入 `{ fetchTarball, runGit, runPython, now, runVerify, freeSpace }`
+ *    供测试驱动；编排不直接 import verify-plugin（runVerify 为注入位，缺省经动态
+ *    import 注入）。
  *
  * 用法（完整选项见 spec §4；本层仅解析、不执行）：
  *   node scripts/sync-upstream.mjs [--ref <tag|branch|commit>] [--repo <url>]
@@ -50,11 +54,17 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statfsSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { get as httpGet } from 'node:http';
+import { get as httpsGet } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { parseFrontmatter } from '../lib/skill-provider.js';
 
 /** 仓库根——以**模块位置**定位（src/scripts/ 的上一级），与 cwd 无关。 */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1176,22 +1186,768 @@ export function decideVersion(input) {
   return { version: current, rule: 'no-change', notes: [] };
 }
 
-// ─── main：编排占位（Task 13 替换）────────────────────────────────
+// ─── main：Task 13 全流程编排（spec §4.1 步骤 1-8 + 退出码闭环）───
+
+/** PAT 环境变量名（spec §5 解析顺序第一级）。 */
+const PAT_ENV = 'DSH_PPT_GITLAB_PAT';
 
 /**
- * 同步主编排（spec §4.1 步骤 1-8 + 退出码闭环）。
- *
- * **Task 10 占位**：本任务只交付解析/纯函数层，编排（拉取/预检/staging/guard/
- * 结构检测/替换/bump/commit/tag/push 与 0-7 退出码）由 Task 13 替换本实现。
- * 占位即 throw——绝不静默返回 0 让调用方误以为同步成功。
- *
- * @param {object} options parseArgs 产物（或等价显式对象）。
- * @param {object} [deps] 可注入依赖（T13：fetchTarball / runGit / runPython /
- *   runVerify / now / freeSpace）。
- * @returns {Promise<number>} 退出码。
+ * guard 输出中判「解释器级失败」（→ 7）的 stderr 特征：python 语法/缩进错误类。
+ * 其余非零退出（guard 完整运行后的业务判定，实测 78 一类）→ 3。
  */
-export async function main(options, deps) {
-  void options;
-  void deps;
-  throw new Error('TODO: T13——sync 编排（拉取/预检/staging/guard/结构检测/替换/commit/tag/push）尚未实现');
+const INTERPRETER_ERROR_PATTERN = /SyntaxError|IndentationError|TabError/;
+
+/**
+ * 编排日志助手工厂：stdout=流程信息、stderr=失败报告（退出码路径的说明走 stderr）。
+ *
+ * 经 deps 注入（`deps.log` / `deps.logError`，缺省 console）：测试注入收集器捕获
+ * 输出断言（already up to date / 指引文案 / 🟡 汇总等）——不让编排直写进程
+ * stdout（隔离式 node --test 子进程内直写会与 runner 的报告流串流）。
+ */
+function makeLoggers(deps) {
+  const info = (...parts) => deps.log(parts.join(' '));
+  const fail = (...parts) => deps.logError(parts.join(' '));
+  return { info, fail };
+}
+
+/** 字节数 → 人类可读 MB（预检报错用）。 */
+function mb(bytes) {
+  return `${Math.round(Number(bytes) / (1024 * 1024))}MB`;
+}
+
+/**
+ * spawn 一个命令并捕获 stdout/stderr。
+ *
+ * 非零退出码**原样返回**（调用方按语义分支）；spawn 级失败（ENOENT 等）reject——
+ * 编排按「解释器级失败」类映射（runPython → 退出码 7）。
+ */
+function spawnCapture(command, args, opts = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: opts.cwd ?? process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const outChunks = [];
+    const errChunks = [];
+    child.stdout.on('data', (chunk) => outChunks.push(chunk));
+    child.stderr.on('data', (chunk) => errChunks.push(chunk));
+    if (opts.stdin !== undefined && opts.stdin !== null) {
+      // EPIPE 容忍：git credential fill 读完即退出，stdin 写入竞态不应误报失败。
+      child.stdin.on('error', () => {});
+      child.stdin.write(opts.stdin);
+    }
+    child.stdin.end();
+    child.on('error', rejectPromise);
+    child.on('close', (code) => {
+      resolvePromise({
+        code: code ?? -1,
+        stdout: Buffer.concat(outChunks).toString('utf8'),
+        stderr: Buffer.concat(errChunks).toString('utf8'),
+      });
+    });
+  });
+}
+
+/** 缺省 runGit：真实 git（cwd 由调用方经 opts 注入）。 */
+async function defaultRunGit(args, opts = {}) {
+  return spawnCapture('git', args, opts);
+}
+
+/** 缺省 runPython：真实 python3（spawn ENOENT → reject → 编排映射退出码 7）。 */
+async function defaultRunPython(args, opts = {}) {
+  return spawnCapture('python3', args, opts);
+}
+
+/** 按 URL scheme 选 http/https get。 */
+function getOf(url) {
+  return url.startsWith('http://') ? httpGet : httpsGet;
+}
+
+/** 下载 URL 全量字节（跟随重定向，≤5 跳）。 */
+function downloadBytes(url, redirectsLeft = 5) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    getOf(url)(url, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        response.resume();
+        if (redirectsLeft <= 0) {
+          rejectPromise(new Error(`重定向次数超限: ${url}`));
+          return;
+        }
+        const next = new URL(response.headers.location, url).toString();
+        downloadBytes(next, redirectsLeft - 1).then(resolvePromise, rejectPromise);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        rejectPromise(new Error(`HTTP ${response.statusCode}: ${url}`));
+        return;
+      }
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolvePromise(Buffer.concat(chunks)));
+      response.on('error', rejectPromise);
+    }).on('error', rejectPromise);
+  });
+}
+
+/**
+ * 缺省 fetchTarball：真实下载 codeload tarball 到 dest。
+ *
+ * 契约（与测试 stub 一致）：只下载不解压，返回 `{ bytesPath, contentLength }`——
+ * 解压由编排执行，二次磁盘预检因此在解压前发生。contentLength 取实际落盘字节
+ * （不依赖 Content-Length 头的存在）。
+ */
+async function defaultFetchTarball(url, dest) {
+  mkdirSync(dirname(dest), { recursive: true });
+  const bytes = await downloadBytes(url);
+  writeFileSync(dest, bytes);
+  return { bytesPath: dest, contentLength: bytes.length };
+}
+
+/**
+ * 解压 tarball 到目标目录（`--strip-components=1`：剥掉 tarball 的顶层目录，
+ * 落地为仓库根形态——`skills/`、`.claude-plugin/` 在解压树根）。
+ */
+async function extractTarball(bytesPath, destDir) {
+  mkdirSync(destDir, { recursive: true });
+  const result = await spawnCapture('tar', ['-xzf', bytesPath, '-C', destDir, '--strip-components=1']);
+  if (result.code !== 0) {
+    throw new Error(`tar 解压失败（exit ${result.code}）: ${bytesPath}\n${result.stderr.trim()}`);
+  }
+}
+
+/** 缺省 freeSpace：root 所在文件系统的可用字节数（statfs bavail×bsize）。 */
+function defaultFreeSpace(root) {
+  return async () => {
+    const stats = statfsSync(root);
+    return Number(stats.bavail) * Number(stats.bsize);
+  };
+}
+
+/** 仓库根 package.json 的 version（缺失/不可解析/非字符串 → null）。 */
+function readPackageVersion(root) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) return null;
+    return typeof pkg.version === 'string' && pkg.version.trim() !== '' ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 更新仓库根 package.json 的 version（保留其余字段；文件缺失则创建最小骨架）。 */
+function writePackageVersion(root, version) {
+  const file = join(root, 'package.json');
+  let pkg = {};
+  try {
+    pkg = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    pkg = {};
+  }
+  if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) pkg = {};
+  pkg.version = version;
+  writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * staging 某 skill 的 frontmatter `metadata.version`（decideVersion 的
+ * upstreamVersion 数据源）。
+ *
+ * 接缝归一（钉子 #4）：缺失/空值/不可解析 → **null**（绝不让 `''` 混入
+ * decideVersion——其内部对 null 自洽处置为 no-change，空串会被当作合法版本参与
+ * 字符串比较造成假判定）。
+ */
+function readStagedVersion(stagingRoot, skillName) {
+  if (typeof skillName !== 'string' || skillName === '') return null;
+  try {
+    const raw = readFileSync(join(stagingRoot, skillName, SKILL_FILE_NAME), 'utf8');
+    const parsed = parseFrontmatter(raw.replace(/^\uFEFF/, ''));
+    const version = parsed?.data?.metadata?.version;
+    if (typeof version !== 'string') return null;
+    const trimmed = version.trim().replace(/^["']|["']$/g, '');
+    return trimmed === '' ? null : trimmed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 包装层文件判据：路径不在 vendored `skills/` 面内即包装层（index.js / lib/ /
+ * scripts/ / package.json / README.md / tests/ …）。
+ *
+ * 用于两个独立语义（勿混）：
+ *  - 幂等禁用①（工作区相对 HEAD 的包装层 diff——未提交变更也算）；
+ *  - wrapperPending（未推送提交中触及包装层文件）。
+ */
+const isWrapperPath = (path) => {
+  const trimmed = path.trim();
+  return trimmed !== '' && trimmed !== 'skills' && !trimmed.startsWith('skills/');
+};
+
+/**
+ * 从 `git credential fill` 的 stdout 解析 `password=<PAT>` 行。
+ */
+function parseCredentialPassword(stdout) {
+  for (const line of String(stdout ?? '').split('\n')) {
+    const match = /^password=(.*)$/.exec(line.trim());
+    if (match !== null && match[1] !== '') return match[1];
+  }
+  return null;
+}
+
+/**
+ * 构造一次性推送 URL：`https://host/path` → `https://oauth2:<PAT>@host/path`。
+ * 非 http(s) 形态（ssh 等）→ null（env PAT 模式无法构造）。
+ */
+function buildOneShotUrl(originUrl, pat) {
+  const match = /^(https?:\/\/)(.+)$/.exec(originUrl);
+  if (match === null) return null;
+  return `${match[1]}oauth2:${pat}@${match[2]}`;
+}
+
+/**
+ * 同步主编排（spec §4.1 步骤 1-8 + 退出码单表）。
+ *
+ * 序列：usage 检查（→1）→ 启动磁盘预检（→5）→ 解析来源[ls-remote 固定
+ * `--tags`；`--confirm-structural` 且未显式传 `--ref` 时固定 last-sync 记录 ref]
+ * → 拉取[缓存键/两段预检；拉取成功即写 last-sync ref/sha]→ staging[marketplace
+ * 校验]→ 幂等判定[短路禁用两触发：工作区包装层 diff / 未推送包装层提交]→
+ * guard[逐 skill；解释器级=7、业务=3]→ 结构检测[🔴 且未确认 →2]→ 自动路径
+ * [verify 前置（显式传 upstream）→ 替换 → bump → 🟡 汇总 → commit → tag 先行
+ * 检测（→6）→ sync-report → push（PAT env→credential fill→指引；→6）→ 清理
+ * staging]。每个退出码路径单一 return。
+ *
+ * @param {object} options parseArgs 产物或等价显式对象（测试可另传 `root` 覆盖
+ *   仓库根，缺省 = 本模块所属仓库根）。
+ * @param {object} deps_ 可注入依赖 `{ fetchTarball, runGit, runPython, now,
+ *   log, logError, runVerify, freeSpace }`（全部缺省为真实实现；runVerify 缺省经
+ *   动态 import 注入 verify-plugin——编排不静态 import 它；log/logError 缺省
+ *   console——测试注入收集器捕获输出断言）。
+ * @returns {Promise<number>} 退出码 0/1/2/3/4/5/6/7。
+ */
+export async function main(options, deps_) {
+  const opts = options ?? {};
+  const root = typeof opts.root === 'string' && opts.root !== '' ? opts.root : REPO_ROOT;
+
+  const upstreamDir = join(root, '.upstream');
+  const stagingRoot = join(root, '.skills-staging');
+  const vendorSkillsRoot = join(root, 'skills');
+  const reportPath = join(root, 'sync-report.txt');
+
+  const deps = {
+    fetchTarball: deps_?.fetchTarball ?? defaultFetchTarball,
+    runGit: deps_?.runGit ?? defaultRunGit,
+    runPython: deps_?.runPython ?? defaultRunPython,
+    now: deps_?.now ?? (() => new Date()),
+    log: deps_?.log ?? ((text) => console.log(text)),
+    logError: deps_?.logError ?? ((text) => console.error(text)),
+    runVerify:
+      deps_?.runVerify ??
+      (async (verifyRoot, verifyOpts) => {
+        const module = await import('./verify-plugin.mjs');
+        return module.runVerify(verifyRoot, verifyOpts);
+      }),
+    freeSpace: deps_?.freeSpace ?? defaultFreeSpace(root),
+  };
+  const { info: logInfo, fail: logFail } = makeLoggers(deps);
+  /** runGit 绑定仓库根 cwd（编排内全部 git 操作都在仓库根执行）。 */
+  const git = (args, extra = {}) => deps.runGit(args, { cwd: root, ...extra });
+  const writeReport = (text) => writeFileSync(reportPath, `${text.trim()}\n`, 'utf8');
+  const cleanupStaging = () => rmSync(stagingRoot, { recursive: true, force: true });
+
+  // ── usage 错误 → 退出码 1（含 --skip-guard 未与 --no-push/--dry-run 联用）──
+  if (opts.usageError === true) {
+    logFail(USAGE_TEXT, '\n用法错误：参数组合非法（如 --skip-guard 必须与 --no-push 或 --dry-run 联用）。退出码 1。');
+    return 1;
+  }
+
+  // ── 启动磁盘预检（保守固定阈值 260MB；不足 → 退出码 5，下载前拦截）──
+  const startupFree = await deps.freeSpace();
+  if (startupFree < diskBudget()) {
+    logFail(`磁盘空间不足：启动预检需 ≥${mb(diskBudget())}，实际可用 ${mb(startupFree)}（环境失败，退出码 5）。`);
+    return 5;
+  }
+
+  // ── 步骤 1：解析来源 ────────────────────────────────────────────
+  const repo = nonEmpty(opts.repo) ?? DEFAULT_REPO;
+  const previousSync = readLastSync(root); // 拉取前快照（幂等比对/回退 ref/回退锚点）
+  let normalizedRef = null;
+
+  if (nonEmpty(opts.ref) !== null) {
+    try {
+      normalizedRef = normalizeRef(opts.ref);
+    } catch (error) {
+      if (error?.usageError === true) {
+        logFail(error.message, '\n退出码 1（用法错误）。');
+        return 1;
+      }
+      throw error;
+    }
+  } else if (opts.confirmStructural === true && previousSync !== null) {
+    // --confirm-structural 且未显式传 --ref：固定上次检出的 ref（spec §4.1 步骤 7
+    // ——人工介入期间上游发新 tag 时，重跑对象仍与人工评估对象一致）。
+    try {
+      normalizedRef = normalizeRef(previousSync.ref);
+    } catch (error) {
+      if (error?.usageError === true) {
+        logFail(`.upstream/last-sync.json 记录的 ref 不可用（${previousSync.ref}）：${error.message}`);
+        return 1;
+      }
+      throw error;
+    }
+    logInfo(`--confirm-structural 重跑：固定上次检出 ref ${previousSync.ref}（.upstream/last-sync.json）。`);
+  }
+
+  // ls-remote 固定 `--tags` 形态（parseLsRemote 对非 --tags 输出静默返回 []——
+  // 命令形态错了会导致「无可用 release tag」误报，此处为唯一调用形态）。
+  const lsRemote = await git(['ls-remote', '--tags', repo]);
+  if (lsRemote.code !== 0) {
+    logFail(
+      `git ls-remote --tags 失败（exit ${lsRemote.code}，网络/来源失败，退出码 5）:\n${lsRemote.stderr.trim()}`,
+    );
+    return 5;
+  }
+  const tagEntries = parseLsRemote(lsRemote.stdout);
+
+  let refSha = null;
+  if (normalizedRef === null) {
+    const latest = pickLatestTag(tagEntries);
+    if (latest === null) {
+      logFail(
+        `上游无可用 release tag（${repo} 无 ^v?\\d+\\.\\d+\\.\\d+$ 形态 tag）——`,
+        `请用 --ref 显式指定 tag（如 v6.7.0）、branch 或 40 位 commit sha。退出码 5。`,
+      );
+      return 5;
+    }
+    normalizedRef = `refs/tags/${latest.name}`;
+    refSha = latest.sha;
+    logInfo(`解析来源：最新 release tag ${latest.name}（${latest.sha}）。`);
+  } else if (FULL_SHA_PATTERN.test(normalizedRef)) {
+    refSha = normalizedRef; // 显式 40 位 sha：ref 即 commit
+  } else if (normalizedRef.startsWith('refs/tags/')) {
+    const wanted = normalizedRef.slice('refs/tags/'.length);
+    const found = tagEntries.find((entry) => entry.tagName === wanted);
+    if (found !== undefined) refSha = commitShaOf(found);
+    else if (previousSync !== null && previousSync.ref === normalizedRef) refSha = previousSync.sha; // 固定 ref 重跑：tag 已不在远端
+  }
+
+  // ── 步骤 2：拉取（缓存键 + 两段预检 + 解压）─────────────────────
+  const key = cacheKey(normalizedRef, refSha ?? 'no-sha');
+  const cacheDir = join(upstreamDir, key);
+  const tarballPath = join(upstreamDir, `${key}.tar.gz`);
+
+  if (existsSync(cacheDir) && opts.refresh !== true) {
+    logInfo(`复用 .upstream/ 缓存: ${key}`);
+  } else {
+    let codeloadUrl;
+    try {
+      codeloadUrl = buildCodeloadUrl(repo, normalizedRef);
+    } catch (error) {
+      if (error?.usageError === true) {
+        logFail(error.message, '\n退出码 1（用法错误）。');
+        return 1;
+      }
+      throw error;
+    }
+    let download;
+    try {
+      mkdirSync(upstreamDir, { recursive: true });
+      download = await deps.fetchTarball(codeloadUrl, tarballPath);
+    } catch (error) {
+      logFail(`下载失败（网络/拉取失败，退出码 5）: ${error.message}`);
+      return 5;
+    }
+    // 二次预检（解压前）：tarball 实际字节 + 解压全树 + staging 副本三项之和。
+    const freeNow = await deps.freeSpace();
+    if (freeNow < diskBudget(download.contentLength)) {
+      rmSync(tarballPath, { force: true });
+      logFail(
+        `磁盘空间不足：二次预检需 ≥${mb(diskBudget(download.contentLength))}`
+          + `（tarball ${mb(download.contentLength)} + 解压全树 114MB + staging 副本 78MB），`
+          + `实际可用 ${mb(freeNow)}——不解压，退出码 5。`,
+      );
+      return 5;
+    }
+    try {
+      await extractTarball(download.bytesPath, cacheDir);
+    } catch (error) {
+      rmSync(tarballPath, { force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+      logFail(`${error.message}（来源失败，退出码 5）。`);
+      return 5;
+    }
+    rmSync(tarballPath, { force: true }); // 缓存以解压树形态留存；tarball 及时回收
+  }
+
+  // 拉取成功（下载+解压完成）即写 ref/sha——「git checkout 前」落盘：后续任何
+  // 失败（guard/verify/结构退出码 2）都不丢锚点，--confirm-structural 重跑固定
+  // ref 有值可取。version 保持当前值，bump 后另行更新。
+  const currentVersion = readPackageVersion(root) ?? previousSync?.version ?? '0.0.0';
+  writeLastSync({ ref: normalizedRef, sha: refSha ?? '', version: currentVersion }, root);
+
+  // ── 步骤 3：staging + marketplace 一致性校验 ─────────────────────
+  let stagedSkills;
+  try {
+    stagedSkills = stageSkills(cacheDir, stagingRoot);
+  } catch (error) {
+    logFail(`staging 失败（来源形态异常，退出码 5）: ${error.message}`);
+    return 5;
+  }
+  // 主 skill：当前上游即 ppt-master 单 skill；多 skill 时锚定 ppt-master，
+  // 缺失则回退字节序第一个（marketplace/版本判定均取主 skill 的 metadata.version）。
+  const primarySkill = stagedSkills.includes('ppt-master') ? 'ppt-master' : stagedSkills[0];
+  const upstreamVersion = readStagedVersion(stagingRoot, primarySkill);
+  const marketplace = checkMarketplaceVersion(cacheDir, upstreamVersion ?? '');
+  // 豁免/不一致 note 并入 🟡 汇总（T11 契约注：调用点与并入动作均在编排内）。
+  const marketplaceNote =
+    marketplace.ok === true && !marketplace.note.includes('豁免') ? null : marketplace.note;
+
+  // ── 步骤 5（数据预计算）：结构分类（幂等判定与结构检测共用同一份结果）──
+  const changes = classifyChanges(vendorSkillsRoot, stagingRoot, cacheDir);
+
+  // ── 包装层待发布状态（幂等禁用两触发 + wrapperPending，探测一次共用）──
+  // 禁用①：工作区相对 HEAD 的包装层 diff——含**未提交的新文件**（spec §4.1 步骤 8
+  // 防吞场景：未提交包装层变更不得被幂等短路吞掉）。经 `git status --porcelain`
+  // 探测：gitignored 路径（.upstream/ .skills-staging/ sync-report.txt）天然排除。
+  const status = await git(['status', '--porcelain', '--untracked-files=all']);
+  const workspaceWrapperDiff =
+    status.code === 0 &&
+    status.stdout.split('\n').some((line) => {
+      if (line === '') return false;
+      // porcelain v1：XY<space><path>（rename 行为 `R  old -> new`——两侧任一为包装层即算）。
+      return line.slice(3).split(' -> ').some(isWrapperPath);
+    });
+
+  const upstreamProbe = await git(['rev-parse', '--abbrev-ref', '@{u}']);
+  let wrapperPending = false;
+  if (upstreamProbe.code === 0) {
+    // @{u} 存在：@{u}..HEAD 范围内有涉及包装层文件的提交 → wrapperPending=true。
+    const pending = await git(['log', '--name-only', '--pretty=format:', '@{u}..HEAD']);
+    wrapperPending = pending.code === 0 && pending.stdout.split('\n').some(isWrapperPath);
+  } else {
+    // 回退分支（无 upstream/空仓库：@{u} 探测 exit 128 fatal——绝不裸跑
+    // `git log @{u}..HEAD`）：以拉取前快照的 last-sync sha 为锚——是 HEAD 祖先
+    // 且 HEAD≠锚 → 存在未推送提交；HEAD=锚 → false；锚缺失/非法 → false。
+    const anchorSha = previousSync?.sha ?? null;
+    if (anchorSha !== null && FULL_SHA_PATTERN.test(anchorSha)) {
+      const head = await git(['rev-parse', 'HEAD']);
+      if (head.code === 0) {
+        const headValue = head.stdout.trim();
+        if (headValue !== anchorSha) {
+          const ancestor = await git(['merge-base', '--is-ancestor', anchorSha, 'HEAD']);
+          wrapperPending = ancestor.code === 0;
+        }
+      }
+    }
+  }
+
+  // ── 步骤 8（前置执行）：幂等短路 ────────────────────────────────
+  // 范围 = vendor 树 + 包装层待发布：ref sha 同 + 树无 diff + 无待发布才短路。
+  // 两个禁用触发任一命中（工作区包装层 diff / 未推送包装层提交）即继续走 bump
+  // 流程——「工作区未提交变更不参与 wrapperPending 取值」的限定语不适用于此处。
+  const sameRefSha =
+    previousSync !== null && previousSync.ref === normalizedRef && previousSync.sha === (refSha ?? '');
+  if (sameRefSha && !changes.vendorDiff && !wrapperPending && !workspaceWrapperDiff) {
+    logInfo('already up to date（ref 与上次同步一致、vendor 树无 diff、无包装层待发布）——不跑 guard/verify/结构检测。');
+    cleanupStaging();
+    return 0;
+  }
+
+  // 版本判定（dry-run 计划与自动路径共用；🟡 汇总行）。
+  const yellowLines = changes.yellow.map((change) => change.detail);
+  if (marketplaceNote !== null) yellowLines.push(marketplaceNote);
+  const versionPlan =
+    upstreamVersion === null
+      ? { note: '无法判定（staging metadata.version 缺失——🔴 待人工）' }
+      : (() => {
+          const decision = decideVersion({
+            current: currentVersion,
+            upstreamVersion,
+            vendorDiff: changes.vendorDiff,
+            wrapperPending,
+          });
+          return { decision, note: `${currentVersion} → ${decision.version}（规则${decision.rule}）` };
+        })();
+
+  // ── --dry-run：完成幂等检查 + 结构检测后输出将发生的变化，无任何落盘动作 ──
+  if (opts.dryRun === true) {
+    const plan = [
+      '--dry-run：以下为将发生的变化（未执行替换/commit/tag/push）。',
+      `上游: ${repo} @ ${normalizedRef}（${refSha ?? 'sha 未知'}）`,
+      changes.red.length > 0
+        ? `🔴 结构变化 ${changes.red.length} 项（需 --confirm-structural 人工确认后才走自动路径）:\n${changes.red.map((change) => `  - ${change.detail}`).join('\n')}`
+        : '🔴 结构变化 0 项——将走自动路径。',
+      ...(yellowLines.length > 0 ? [`🟡 提示 ${yellowLines.length} 项:\n${yellowLines.map((line) => `  - ${line}`).join('\n')}`] : []),
+      `版本判定: ${versionPlan.note}`,
+      `将替换 skill 面: ${stagedSkills.join(', ')}`,
+      `将创建 tag v${versionPlan.decision?.version ?? '<待定>'} 并推送（未传 --no-push 时）。`,
+    ];
+    logInfo(plan.join('\n'));
+    return 0;
+  }
+
+  // ── 步骤 4：完整性门（guard 逐 skill；--skip-guard 跳过执行）────
+  if (opts.skipGuard !== true) {
+    for (const skill of stagedSkills) {
+      const guardScript = join('.skills-staging', skill, 'scripts', 'attribution_guard.py');
+      let guardResult;
+      try {
+        guardResult = await deps.runPython([guardScript], { cwd: root });
+      } catch (error) {
+        logFail(`guard 无法运行（解释器级失败：python3 缺失或不可执行，工具链缺失，退出码 7）:\n${error.message}`);
+        return 7;
+      }
+      if (guardResult.code !== 0) {
+        if (INTERPRETER_ERROR_PATTERN.test(guardResult.stderr)) {
+          logFail(`guard 解释器级失败（语法错误类，退出码 7）: python3 ${guardScript}\n${guardResult.stderr.trim()}`);
+          return 7;
+        }
+        logFail(
+          `guard 判定失败（guard 完整运行后返回 ${guardResult.code}，完整性门失败，退出码 3）: python3 ${guardScript}\n${guardResult.stderr.trim()}`,
+        );
+        return 3;
+      }
+    }
+  }
+
+  // ── 步骤 7：结构变化路径（🔴 且未确认 → 报告 + sync-report.txt + 退出码 2）──
+  if (changes.red.length > 0 && opts.confirmStructural !== true) {
+    const report = [
+      '检测到结构变化（🔴）——需人工评估插件可见面（spec §4.1 步骤 7）。',
+      `🔴 结构变化 ${changes.red.length} 项:`,
+      ...changes.red.map((change) => `  - ${change.detail}`),
+      ...(yellowLines.length > 0
+        ? [`🟡 提示 ${yellowLines.length} 项（同批次检出，随确认后的自动路径输出指引）:`, ...yellowLines.map((line) => `  - ${line}`)]
+        : []),
+      '影响评估: 结构变化影响 provider 可见面——§3.4 泛化扫描使多数结构变化无需改码即可自动纳入；frontmatter 相关 🔴（name 变更/metadata.version 缺失）需人工修复，替换前 verify 会二次拦截。',
+      `后续指引: ① 按需人工更新包装层代码并本地 commit；② 以 --confirm-structural 重跑同步走自动路径（重跑固定本次 ref ${normalizedRef}，除非显式改 --ref）。`,
+      '退出码 2（流程停止，待人工）。',
+    ].join('\n');
+    logFail(report);
+    writeReport(report);
+    return 2;
+  }
+
+  // ── 步骤 6：自动路径（🟢 或已 --confirm-structural）──────────────
+
+  // verify 前置（校验先于替换）：**必须显式传 upstream**——T8 缺省语义第⑥项对
+  // 未传 upstream 恒报 problems（verify-plugin 自身退出码 1 → 编排映射退出码 4）。
+  const verifyResult = await deps.runVerify(stagingRoot, {
+    skipGuard: opts.skipGuard === true,
+    upstream: cacheDir,
+  });
+  if (verifyResult.problems.length > 0) {
+    logFail(
+      [
+        `verify-plugin 校验失败（${verifyResult.problems.length} 项，vendor 树未触碰，退出码 4）:`,
+        ...verifyResult.problems.map((problem) => `  ✗ ${problem}`),
+      ].join('\n'),
+    );
+    for (const warning of verifyResult.warnings) logInfo(`⚠ ${warning}`);
+    return 4;
+  }
+  for (const warning of verifyResult.warnings) logInfo(`⚠ ${warning}`);
+
+  // decideVersion 前第二道防线（钉子 #4）：显式断言 upstreamVersion 非 null。
+  // §4.2 行 3 🔴（metadata.version 缺失）已在结构检测先行拦截；此防线兜住
+  // 「🔴 存在 + --confirm-structural 强制自动」组合下版本 bump 无法执行的缺陷假绿。
+  if (upstreamVersion === null) {
+    const report = [
+      `staging 主 skill（${primarySkill}）SKILL.md frontmatter metadata.version 缺失或不可解析——版本 bump 无法执行（结构检测 🔴 的第二道防线）。`,
+      '后续指引: 人工修复上游 skill 的 metadata.version 后重跑同步。退出码 2。',
+    ].join('\n');
+    logFail(report);
+    writeReport(report);
+    return 2;
+  }
+  // versionPlan 在 upstreamVersion 非 null 时必带 decision（与 dry-run 计划同一份
+  // 判定输入，两处调用点之间这些输入不变）。
+  const decision = versionPlan.decision;
+
+  // no-change（上游版本未变 + 无 diff + 无包装层待发布）：不产生空提交。
+  if (decision.rule === 'no-change') {
+    logInfo('already up to date（上游版本未变、vendor 树无 diff、无包装层待发布）——不产生空提交。');
+    if (workspaceWrapperDiff) {
+      logInfo('注意：工作区存在未提交的包装层变更——不参与自动 bump（规则③由人工执行），请自行 commit 后再同步。');
+    }
+    cleanupStaging();
+    return 0;
+  }
+
+  // 替换 skill 面（单向 上游→vendor：vendor 多出的 skill 目录属包装层人工变更，保留）。
+  for (const skill of stagedSkills) {
+    const target = join(vendorSkillsRoot, skill);
+    rmSync(target, { recursive: true, force: true });
+    cpSync(join(stagingRoot, skill), target, { recursive: true });
+  }
+
+  // bump：package.json version + last-sync 的 version 字段（bump 后更新）。
+  writePackageVersion(root, decision.version);
+  writeLastSync({ ref: normalizedRef, sha: refSha ?? '', version: decision.version }, root);
+  if (decision.notes.length > 0) for (const note of decision.notes) logInfo(`ℹ ${note}`);
+
+  // 🟡 汇总（三类指引：依赖变更→重跑 setup_deps；description/辅助目录→知悉；
+  // 另并入 marketplace 豁免/不一致 note）。🟡 不改变退出码 0。
+  if (yellowLines.length > 0) {
+    logInfo([`🟡 提示汇总 ${yellowLines.length} 项（不阻塞自动路径）:`, ...yellowLines.map((line) => `  - ${line}`)].join('\n'));
+  }
+
+  // commit（只提交同步面：skills + package.json；包装层人工变更由人工自行提交）。
+  const commitMessage = `chore(sync): 同步上游 ${normalizedRef} → v${decision.version}`;
+  const addResult = await git(['add', 'skills', 'package.json']);
+  if (addResult.code !== 0) {
+    logFail(`git add 失败（环境失败，退出码 5）:\n${addResult.stderr.trim()}`);
+    return 5;
+  }
+  const commitResult = await git(['commit', '-m', commitMessage]);
+  if (commitResult.code !== 0) {
+    logFail(`git commit 失败（环境失败，退出码 5）:\n${commitResult.stderr.trim()}`);
+    return 5;
+  }
+
+  // tag 先行检测（绝不覆盖 tag、绝不 force push）：
+  //  ① 本地 `git rev-parse -q --verify refs/tags/v<version>`（依赖仓库已有 commit）；
+  //  ② 远端从 origin 的 ls-remote 结果预判（upstream 仓库与本仓库 tag 空间不同，
+  //     预判对象是推送目标 origin——同步 v6.8.0 时 upstream 必然已有同名 tag）。
+  const tagName = `v${decision.version}`;
+  const localTag = await git(['rev-parse', '-q', '--verify', `refs/tags/${tagName}`]);
+  if (localTag.code === 0) {
+    logFail(
+      `tag ${tagName} 已存在（本地 rev-parse 先行检测命中）——绝不覆盖已有 tag。`,
+      '指引（人工处理）: 拒绝本次回滚同步，或人工评估后改版本号。--no-push 不适用于 tag 冲突（其仍会创建本地 tag）。本地 commit 已保留。退出码 6。',
+    );
+    return 6;
+  }
+  const originUrlResult = await git(['remote', 'get-url', 'origin']);
+  const originUrl = originUrlResult.code === 0 ? originUrlResult.stdout.trim() : null;
+  if (originUrl !== null) {
+    const remoteTags = await git(['ls-remote', '--tags', originUrl]);
+    if (remoteTags.code === 0) {
+      const remoteTagNames = new Set(parseLsRemote(remoteTags.stdout).map((entry) => entry.tagName));
+      if (remoteTagNames.has(tagName) || remoteTagNames.has(decision.version)) {
+        logFail(
+          `tag ${tagName} 已存在于远端（origin ls-remote 预判命中）——绝不覆盖已有 tag。`,
+          '指引（人工处理）: 拒绝本次回滚同步，或人工评估后改版本号。本地 commit 已保留。退出码 6。',
+        );
+        return 6;
+      }
+    } // 预判通道不可达（网络等）不阻断——tag 冲突最终由 push 侧拒绝兜底
+  }
+
+  // tag 创建（--no-push 仍创建本地 tag，只是不推送）。
+  const tagResult = await git(['tag', tagName]);
+  if (tagResult.code !== 0) {
+    logFail(`git tag ${tagName} 失败（退出码 6）:\n${tagResult.stderr.trim()}`);
+    return 6;
+  }
+
+  // sync-report.txt：仓库根、每次覆盖（成功/结构两路径都写；先于 push）。
+  const report = [
+    'ppt-master 上游同步报告',
+    `时间: ${deps.now().toISOString()}`,
+    `上游: ${repo} @ ${normalizedRef}（${refSha ?? 'sha 未知'}）`,
+    `结论: 同步完成（规则${decision.rule}，版本 ${currentVersion} → ${decision.version}）`,
+    `替换 skill 面: ${stagedSkills.join(', ')}`,
+    `commit: ${commitMessage}`,
+    `tag: ${tagName}`,
+    ...(yellowLines.length > 0 ? ['🟡 提示:', ...yellowLines.map((line) => `  - ${line}`)] : []),
+  ].join('\n');
+  writeReport(report);
+  logInfo(report);
+
+  // push（--no-push：本地 commit+tag 已就绪，直接成功返回）。
+  if (opts.noPush === true) {
+    logInfo('--no-push：本地 commit 与 tag 已创建，未推送。');
+    cleanupStaging();
+    return 0;
+  }
+  if (originUrl === null) {
+    logFail(
+      `推送前置依赖不可用：未配置 origin 远端（git remote get-url origin 失败）。`,
+      '指引: git remote add origin <url> 后重试。本地 commit 与 tag 已保留。退出码 6。',
+    );
+    return 6;
+  }
+
+  // PAT 解析顺序（spec §5）：env → git credential fill → 失败并指引（退出码 6）。
+  const envPat = nonEmpty(process.env[PAT_ENV]);
+  let pushMode = null; // 'env' | 'credential'
+  let oneShotUrl = null;
+  if (envPat !== null) {
+    pushMode = 'env';
+    oneShotUrl = buildOneShotUrl(originUrl, envPat);
+    if (oneShotUrl === null) {
+      logFail(
+        `推送不可用：origin 为非 https 形态（${originUrl}），${PAT_ENV} 一次性 URL 无法构造。`,
+        '指引: 改用 https origin 或配置 credential helper。本地 commit 与 tag 已保留。退出码 6。',
+      );
+      return 6;
+    }
+  } else {
+    const fill = await git(['credential', 'fill'], { stdin: `url=${originUrl}\n` });
+    // credential 路径：PAT 完全不经由本脚本参数/环境——push 走 origin，凭据在 git 进程内流转。
+    if (fill.code === 0 && parseCredentialPassword(fill.stdout) !== null) pushMode = 'credential';
+  }
+  if (pushMode === null) {
+    logFail(
+      `推送凭据不可用：${PAT_ENV} 未设置且 git credential fill 未取得 PAT（推送环节前置依赖不可用归推送失败）。`,
+      `指引: 配置 ${PAT_ENV} 环境变量，或配置 git credential helper（git credential fill 可解析）。本地 commit 与 tag 已保留。退出码 6。`,
+    );
+    return 6;
+  }
+
+  const pushTarget = pushMode === 'env' ? oneShotUrl : 'origin';
+  const pushRefspecs = ['main', `refs/tags/${tagName}`];
+  for (const refspec of pushRefspecs) {
+    const push = await git(['push', pushTarget, refspec]);
+    if (push.code !== 0) {
+      // 一次性 URL 可能回显于 git 输出——推送失败信息先行脱敏（PAT 绝不出现在日志）。
+      const sanitized = envPat !== null
+        ? `${push.stdout}\n${push.stderr}`.split(envPat).join('***')
+        : `${push.stdout}\n${push.stderr}`;
+      logFail(
+        `推送失败（exit ${push.code}，本地 commit 与 tag 已保留，退出码 6）:\n${sanitized.trim()}`,
+        '指引: 远端推送被拒（non-fast-forward）时先 git pull --rebase origin main 解决后重试；「可 --no-push 重试或手动推送」仅适用此类远端推送场景（tag 冲突不适用）。',
+      );
+      return 6;
+    }
+    logInfo(`已推送: ${refspec}`);
+  }
+
+  cleanupStaging();
+  logInfo(`同步完成：v${decision.version}（规则${decision.rule}）——skill 面已替换、已 commit/tag/push。`);
+  return 0;
+}
+
+/** 用法块（spec §4；usage 错误退出码 1 时输出）。 */
+const USAGE_TEXT = `用法: node scripts/sync-upstream.mjs [选项]
+  --ref <tag|branch|commit>   指定上游 ref（默认：最新语义版本 release tag）
+  --repo <url>                上游仓库 URL（默认 ${DEFAULT_REPO}；同步源与 ls-remote/codeload 均取此值）
+  --refresh                   强制忽略 .upstream/ 缓存重新下载
+  --confirm-structural        结构变化已人工确认，强制走自动路径
+  --skip-guard                跳过步骤 4 attribution_guard 的执行（必须与 --no-push 或 --dry-run 联用）
+  --no-push                   只本地 commit，不推送
+  --dry-run                   只输出将发生的变化`;
+
+// ─── CLI 入口（直接以 `node scripts/sync-upstream.mjs` 运行时）────
+
+const invokedDirectly = (() => {
+  if (typeof process.argv[1] !== 'string') return false;
+  try {
+    return import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
+  main(parseArgs(process.argv.slice(2)))
+    .then((code) => {
+      process.exit(code);
+    })
+    .catch((error) => {
+      // 未分类的环境级异常（spawn 失败、意外 IO 等）——不静默吞掉。
+      console.error(`sync-upstream: 未预期的失败（退出码 5）: ${error?.stack ?? error}`);
+      process.exit(5);
+    });
 }

@@ -1,0 +1,912 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { main, parseArgs, writeLastSync } from '../scripts/sync-upstream.mjs';
+
+/**
+ * Task 13 契约：sync 流程编排（main(options, deps) → 退出码 0-7）。
+ *
+ * 测试策略——全部 stub deps、零网络：
+ *  - `fetchTarball` stub：把 fixture 真实 tarball 复制到 dest，返回
+ *    `{ bytesPath, contentLength }`（下载/解压分离契约：解压由编排经系统 tar 执行，
+ *    二次磁盘预检因此可在解压前经 stub 的 contentLength 驱动）。
+ *  - `runGit`：默认**不注入**（编排缺省实现跑真实 git）——fixture 用 tmp 目录构造
+ *    真实仓库（init + 初始 commit + 本地 bare origin + upstream bare 标签），
+ *    `file://` URL 驱动真实 `git ls-remote --tags`。仅 PAT/push 类用例注入 canned
+ *    stub（避免真实网络推送）。
+ *  - `runPython` / `runVerify` / `freeSpace`：全 stub。
+ *
+ * 覆盖退出码全集 0/1/2/3/4/5/6/7 与 brief「Step 1 测试全集」逐条对应（含「声明未测
+ * 合集」五条补测中的四条 T13 侧用例）。
+ */
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+/** 上游解压树形态 fixture（仓库根：skills/ + .claude-plugin/marketplace.json）。 */
+const UPSTREAM_TREE = join(FIXTURES, 'upstream-tree');
+/** vendor 形态 fixture（旧版本 6.7.0，与 upstream-tree 有受控差异）。 */
+const VENDOR_SKILLS = join(FIXTURES, 'vendor-tree', 'skills');
+/** 与上游同内容 vendor 面（幂等/no-change 场景）。 */
+const UPSTREAM_SKILLS = join(UPSTREAM_TREE, 'skills');
+
+/** 充足磁盘（10GB）——freeSpace stub 默认值。 */
+const HUGE_BYTES = 10 * 1024 * 1024 * 1024;
+
+/** canned git 用例的假 sha（40 位 hex）。 */
+const CANNED_SHA = '1111111111111111111111111111111111111111';
+const CANNED_HEAD_SHA = '2222222222222222222222222222222222222222';
+const CANNED_ORIGIN_URL = 'https://gitlab.example.com/zyx/dsh-wrapper-test.git';
+
+// ─── 助手 ────────────────────────────────────────────────────────
+
+/** 在 cwd 下执行 git（非零退出码直接抛错——fixture 只跑预期成功的命令）。 */
+function gitIn(cwd, args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+/** 打一个真实 tarball（顶层目录 = sourceDir 的 basename，供 --strip-components=1）。 */
+function buildTarball(sourceDir, tarPath) {
+  execFileSync('tar', ['-czf', tarPath, '-C', dirname(sourceDir), basename(sourceDir)]);
+  return tarPath;
+}
+
+/** 复制 fixture 并施加变更后打 tarball（marketplace 豁免等定制上游用）。 */
+function customTarball(mutate) {
+  const dir = mkdtempSync(join(tmpdir(), 'sync-orch-tar-'));
+  const copy = join(dir, 'upstream-tree');
+  cpSync(UPSTREAM_TREE, copy, { recursive: true });
+  mutate(copy);
+  const tarPath = join(dir, 'upstream.tgz');
+  buildTarball(copy, tarPath);
+  return { tarPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** bare 仓库中某 tag 的 commit sha（经 ls-remote 主行解析）。 */
+function tagShaOf(bare, tag) {
+  const out = execFileSync('git', ['ls-remote', '--tags', bare], { encoding: 'utf8' });
+  for (const line of out.split('\n')) {
+    const [sha, ref] = line.trim().split('\t');
+    if (ref === `refs/tags/${tag}`) return sha;
+  }
+  throw new Error(`fixture tag 缺失: ${tag}`);
+}
+
+/**
+ * 构造一个完整编排场景：
+ *  - 真实 git 工作仓库（初始 commit + .gitignore + package.json + 可选 vendor 面）；
+ *  - 可选本地 bare origin（main 已 push -u，无 tag——远端 tag 预判的干净基线）；
+ *  - 独立 upstream bare（带指定 release tag，作 `--repo` 的 ls-remote 来源）；
+ *  - upstream-tree fixture 的真实 tarball（fetchTarball stub 的下载源）。
+ */
+function makeScenario({ vendorFrom = null, version = '6.7.0', origin = true, upstreamTags = ['v6.8.0'] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'sync-orch-repo-'));
+  gitIn(root, ['init', '-q', '-b', 'main']);
+  gitIn(root, ['config', 'user.email', 'test@example.com']);
+  gitIn(root, ['config', 'user.name', 'Test']);
+  writeFileSync(join(root, '.gitignore'), '.upstream/\n.skills-staging/\nsync-report.txt\n');
+  writeFileSync(
+    join(root, 'package.json'),
+    `${JSON.stringify({ name: 'wrapper-test', version, type: 'module' }, null, 2)}\n`,
+  );
+  if (vendorFrom !== null) cpSync(vendorFrom, join(root, 'skills'), { recursive: true });
+  gitIn(root, ['add', '-A']);
+  gitIn(root, ['commit', '-q', '-m', 'init']);
+
+  let originPath = null;
+  if (origin) {
+    originPath = `${root}.origin.git`;
+    gitIn(root, ['init', '-q', '--bare', '-b', 'main', originPath]);
+    gitIn(root, ['remote', 'add', 'origin', originPath]);
+    gitIn(root, ['push', '-q', '-u', 'origin', 'main']);
+  }
+
+  const upstreamDir = mkdtempSync(join(tmpdir(), 'sync-orch-up-'));
+  const upstreamBare = join(upstreamDir, 'upstream.git');
+  gitIn(upstreamDir, ['init', '-q', '--bare', '-b', 'main', upstreamBare]);
+  const seed = join(upstreamDir, 'seed');
+  gitIn(upstreamDir, ['init', '-q', '-b', 'main', seed]);
+  gitIn(seed, ['config', 'user.email', 'test@example.com']);
+  gitIn(seed, ['config', 'user.name', 'Test']);
+  writeFileSync(join(seed, 'README.md'), 'upstream seed\n');
+  gitIn(seed, ['add', '-A']);
+  gitIn(seed, ['commit', '-q', '-m', 'seed']);
+  gitIn(seed, ['remote', 'add', 'origin', upstreamBare]);
+  gitIn(seed, ['push', '-q', 'origin', 'main']);
+  const tagShas = {};
+  for (const tag of upstreamTags) {
+    gitIn(seed, ['tag', tag]);
+    gitIn(seed, ['push', '-q', 'origin', `refs/tags/${tag}`]);
+    tagShas[tag] = tagShaOf(upstreamBare, tag);
+  }
+
+  const tarballPath = join(upstreamDir, 'upstream.tgz');
+  buildTarball(UPSTREAM_TREE, tarballPath);
+
+  return {
+    root,
+    originPath,
+    upstreamBare,
+    repoUrl: `file://${upstreamBare}`,
+    tarballPath,
+    tagShas,
+    /** 解压树路径（`.upstream/<cacheKey>/`）——runVerify upstream 参数的期望值。 */
+    extractDirOf(tag = 'v6.8.0') {
+      return join(root, '.upstream', `refs/tags/${tag}@${tagShas[tag]}`);
+    },
+    cleanup() {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(upstreamDir, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * stub deps 集合。缺省实现：fetch 复制 scenario tarball、guard 退出 0、verify 全绿
+ * （skipGuard 时回显 T8 的「guard 未运行」警告语义）、磁盘充足；log/logError 为
+ * 收集器（编排不直写 stdout——隔离式 node --test 子进程内直写会与 runner 报告流
+ * 串流；输出断言从 calls.logs 取）。
+ */
+function stubDeps(overrides = {}) {
+  const calls = { fetch: [], python: [], verify: [], git: [], logs: [] };
+  const deps = {
+    fetchTarball:
+      overrides.fetchTarball ??
+      (async (url, dest) => {
+        calls.fetch.push({ url, dest });
+        mkdirSync(dirname(dest), { recursive: true });
+        cpSync(overrides.tarballPath, dest);
+        return { bytesPath: dest, contentLength: statSync(overrides.tarballPath).size };
+      }),
+    runPython:
+      overrides.runPython ??
+      (async (args, opts) => {
+        calls.python.push({ args, opts });
+        return { code: 0, stdout: '', stderr: '' };
+      }),
+    runVerify:
+      overrides.runVerify ??
+      (async (root, opts) => {
+        calls.verify.push({ root, opts });
+        return {
+          problems: [],
+          warnings:
+            opts?.skipGuard === true ? ['guard 未运行（--skip-guard：python attribution_guard.py 未执行）'] : [],
+        };
+      }),
+    freeSpace: overrides.freeSpace ?? (async () => HUGE_BYTES),
+    now: overrides.now ?? (() => new Date('2026-10-14T12:00:00Z')),
+    log: overrides.log ?? ((text) => calls.logs.push(text)),
+    logError: overrides.logError ?? ((text) => calls.logs.push(text)),
+  };
+  calls.output = () => calls.logs.join('\n');
+  if (overrides.runGit !== undefined) {
+    deps.runGit = async (args, opts) => {
+      const result = await overrides.runGit(args, opts);
+      calls.git.push({ args, opts, result });
+      return result;
+    };
+  }
+  return { deps, calls };
+}
+
+/**
+ * canned git stub：matchers 命中即返回；缺省——tag 存在探测 1（不存在）、@{u} 探测
+ * 128 fatal（走回退分支）、rev-parse HEAD 假 sha、ls-remote 空清单、其余成功。
+ */
+function cannedGit(matchers = []) {
+  return async (args) => {
+    for (const matcher of matchers) {
+      if (matcher.match(args)) {
+        return typeof matcher.resp === 'function' ? matcher.resp(args) : matcher.resp;
+      }
+    }
+    if (args[0] === 'rev-parse' && args.includes('--verify')) return { code: 1, stdout: '', stderr: '' };
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+      return { code: 128, stdout: '', stderr: 'fatal: no upstream configured for branch main' };
+    }
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+      return { code: 0, stdout: CANNED_HEAD_SHA, stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+}
+
+/** 读取 last-sync.json 原始 JSON（at 不可注入——断言放宽为可解析，其余字段精确）。 */
+function readLastSyncRaw(root) {
+  const file = join(root, '.upstream', 'last-sync.json');
+  assert.equal(existsSync(file), true, `last-sync.json 应存在: ${file}`);
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
+const commitCount = (root) => Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim());
+const tagList = (root) => execFileSync('git', ['tag', '-l'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
+const headSha = (root) => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const originMainSha = (originPath) =>
+  execFileSync('git', ['--git-dir', originPath, 'rev-parse', 'refs/heads/main'], { encoding: 'utf8' }).trim();
+
+/** 递归收集目录下全部文件绝对路径（PAT 残留扫描用）。 */
+function walkAllFiles(dir) {
+  const files = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) files.push(...walkAllFiles(path));
+    else files.push(path);
+  }
+  return files;
+}
+
+/** 临时设置/删除环境变量，结束后恢复。 */
+function withEnv(name, value, fn) {
+  const saved = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  return fn().finally(() => {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  });
+}
+
+// ─── 退出码 1：用法错误 ───────────────────────────────────────────
+
+test('usage：--skip-guard 默认推送 → 退出码 1（Review Focus #5）', async () => {
+  const { deps, calls } = stubDeps({ tarballPath: 'unused' });
+  const code = await main(parseArgs(['--skip-guard']), deps);
+  assert.equal(code, 1);
+});
+
+test('usage：非法 --ref（短 sha）→ normalizeRef usageError → 退出码 1', async () => {
+  const { deps, calls } = stubDeps({ tarballPath: 'unused' });
+  const code = await main({ ref: 'abc123' }, deps);
+  assert.equal(code, 1);
+});
+
+// ─── 退出码 5：环境失败（来源/网络/磁盘） ──────────────────────────
+
+test('无匹配 release tag → 退出码 5 且错误指引用 --ref', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, upstreamTags: [] });
+  try {
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+      assert.equal(code, 5);
+      assert.match(calls.output(), /--ref/);
+      assert.equal(calls.fetch.length, 0, '无 tag 时不应下载');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('仅存在非 semver tag（rc 形态不匹配 ^v?\\d+\\.\\d+\\.\\d+$）→ 同样退出码 5', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, upstreamTags: ['v6.8.0-rc1'] });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+    assert.equal(calls.fetch.length, 0, 'rc tag 不算 release tag，不应下载');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('网络失败：fetchTarball 抛错 → 退出码 5', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      fetchTarball: async () => {
+        throw new Error('getaddrinfo ENOTFOUND codeload.github.com');
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('启动磁盘预检不足 → 退出码 5（下载前拦截）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      freeSpace: async () => 100 * 1024 * 1024,
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+    assert.equal(calls.fetch.length, 0, '启动预检不足时不应下载');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('二次磁盘预检不足（拉取后、解压前）→ 退出码 5 且不解压', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      // 300MB：过启动阈值 260MB；二次预算 = 300MB(tarball 谎报) + 114 + 78 > 300MB → 拦截。
+      freeSpace: async () => 300 * 1024 * 1024,
+      fetchTarball: async (url, dest) => {
+        mkdirSync(dirname(dest), { recursive: true });
+        cpSync(s.tarballPath, dest);
+        return { bytesPath: dest, contentLength: 300 * 1024 * 1024 };
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+    assert.equal(existsSync(s.extractDirOf('v6.8.0')), false, '二次预检不足时不得解压');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('ls-remote 本身失败（git exit 128）→ 退出码 5', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: cannedGit([
+        {
+          match: (args) => args[0] === 'ls-remote',
+          resp: { code: 128, stdout: '', stderr: 'fatal: unable to access' },
+        },
+      ]),
+    });
+    const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', noPush: true }, deps);
+    assert.equal(code, 5);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 退出码 3 / 7：完整性门 ───────────────────────────────────────
+
+test('guard 业务判定失败（退出码 78）→ 退出码 3；guard 逐 skill 调用形态正确', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runPython: async (args, opts) => {
+        calls.python.push({ args, opts });
+        return { code: 78, stdout: '', stderr: 'license digest mismatch' };
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 3);
+    assert.equal(calls.python.length, 1, '当前 fixture 仅 ppt-master 一个 skill');
+    assert.equal(calls.python[0].args[0], join('.skills-staging', 'ppt-master', 'scripts', 'attribution_guard.py'));
+    assert.equal(calls.python[0].opts?.cwd, s.root);
+    // last-sync 写入时机：拉取成功即写 ref/sha（guard 失败发生在其后）。
+    const raw = readLastSyncRaw(s.root);
+    assert.equal(raw.ref, 'refs/tags/v6.8.0');
+    assert.equal(raw.sha, s.tagShas['v6.8.0']);
+    assert.equal(Number.isNaN(Date.parse(raw.at)), false, 'at 应可解析');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('python 解释器级失败（spawn ENOENT）→ 退出码 7（不 --skip-guard）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runPython: async () => {
+        const error = new Error('spawn python3 ENOENT');
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 7);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 退出码 4：verify 前置失败 ────────────────────────────────────
+
+test('verify problems 非空 → 退出码 4 且 vendor 树未变（替换未发生）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const vendorSkillFile = join(s.root, 'skills', 'ppt-master', 'SKILL.md');
+    const before = readFileSync(vendorSkillFile, 'utf8');
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runVerify: async () => ({ problems: ['[ppt-master] 与 upstream 逐字节不一致: SKILL.md'], warnings: [] }),
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 4);
+    assert.equal(readFileSync(vendorSkillFile, 'utf8'), before, 'verify 失败不得触碰 vendor 树');
+    assert.equal(existsSync(join(s.root, 'skills', 'second-skill')), false, '替换不得发生');
+    // last-sync 拉取时机：verify 失败发生在其后，ref/sha 已落盘。
+    const raw = readLastSyncRaw(s.root);
+    assert.equal(raw.ref, 'refs/tags/v6.8.0');
+    assert.equal(raw.sha, s.tagShas['v6.8.0']);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── verify 接线：upstream 显式传参 + skipGuard 标记 ───────────────
+
+test('runVerify 以 { skipGuard, upstream: <解压树路径> } 被调用（upstream 必须显式传）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.verify.length, 1);
+    assert.equal(calls.verify[0].root, join(s.root, '.skills-staging'));
+    assert.equal(calls.verify[0].opts?.upstream, s.extractDirOf('v6.8.0'), '漏传 upstream 会恒 exit 4');
+    assert.notEqual(calls.verify[0].opts?.skipGuard, true);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('--skip-guard --no-push：verify 收到 skipGuard 标记，guard 不执行，警告回显', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main(
+        { ...parseArgs(['--skip-guard', '--no-push', '--repo', s.repoUrl]), root: s.root },
+        deps,
+      );
+      assert.equal(code, 0);
+      assert.equal(calls.python.length, 0, '--skip-guard 跳过 guard 执行');
+      assert.equal(calls.verify.length, 1);
+      assert.equal(calls.verify[0].opts?.skipGuard, true);
+      assert.equal(calls.verify[0].opts?.upstream, s.extractDirOf('v6.8.0'));
+      assert.match(calls.output(), /guard 未运行/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 退出码 2：结构变化路径 ───────────────────────────────────────
+
+test('结构变化（上游多 skill fixture）→ 退出码 2 + sync-report.txt 写入 + last-sync 先写 ref/sha', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 2);
+    const report = join(s.root, 'sync-report.txt');
+    assert.equal(existsSync(report), true, '结构路径也写 sync-report.txt');
+    assert.match(readFileSync(report, 'utf8'), /second-skill/, '报告应含 🔴 结构变化明细');
+    // exit 2 路径也先写 ref/sha（--confirm-structural 重跑固定 ref 有值可取）。
+    const raw = readLastSyncRaw(s.root);
+    assert.equal(raw.ref, 'refs/tags/v6.8.0');
+    assert.equal(raw.sha, s.tagShas['v6.8.0']);
+    assert.equal(commitCount(s.root), 1, '结构路径不 commit');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── --confirm-structural 强制自动路径 → 0 ───────────────────────
+
+test('--confirm-structural：🔴 存在时强制走自动路径 → 替换/bump/commit/tag → 退出码 0', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    // 替换：新 skill 目录落地，vendor 面与上游一致。
+    assert.equal(existsSync(join(s.root, 'skills', 'second-skill', 'SKILL.md')), true);
+    // bump：package.json version 由 6.7.0 → 6.8.0（规则①）。
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+    // last-sync：version 字段于 bump 后更新；ref/sha 精确。
+    const raw = readLastSyncRaw(s.root);
+    assert.equal(raw.ref, 'refs/tags/v6.8.0');
+    assert.equal(raw.sha, s.tagShas['v6.8.0']);
+    assert.equal(raw.version, '6.8.0');
+    // commit + tag（--no-push 仍创建本地 tag）。
+    assert.equal(commitCount(s.root), 2, '自动路径产生一个同步 commit');
+    assert.deepEqual(tagList(s.root), ['v6.8.0']);
+    // sync-report 成功路径写入 + staging 清理（spec §4.1 步骤 6 末尾动作）。
+    assert.equal(existsSync(join(s.root, 'sync-report.txt')), true);
+    assert.equal(existsSync(join(s.root, '.skills-staging')), false, '成功路径末尾清理 staging');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── ref 缺省回退：--confirm-structural 固定上次 ref ───────────────
+
+test('ref 回退：--confirm-structural 且未传 --ref → fetchTarball 收到 last-sync 记录 ref；对照：不带则取最新 tag', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: '7'.repeat(40), version: '6.7.0' }, s.root);
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.fetch.length, 1);
+    assert.ok(calls.fetch[0].url.endsWith('/tar.gz/refs/tags/v6.7.0'), `回退应取记录 ref: ${calls.fetch[0].url}`);
+
+    // 对照用例：不带 --confirm-structural 重跑不传 --ref → 正常解析最新 tag。
+    const code2 = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code2, 0);
+    assert.equal(calls.fetch.length, 2);
+    assert.ok(calls.fetch[1].url.endsWith('/tar.gz/refs/tags/v6.8.0'), `对照应取最新 tag: ${calls.fetch[1].url}`);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 幂等（退出码 0 短路 + 两禁用触发 + 回退分支） ─────────────────
+
+test('幂等命中：ref sha 相同 + 树无 diff + 无包装层待发布 → 0 且未跑 guard/verify', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    writeLastSync({ ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0' }, s.root);
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+      assert.equal(code, 0);
+      assert.equal(calls.python.length, 0, '幂等短路不跑 guard');
+      assert.equal(calls.verify.length, 0, '幂等短路不跑 verify');
+      assert.match(calls.output(), /already up to date/);
+      assert.equal(commitCount(s.root), 1, '无空提交');
+      assert.deepEqual(tagList(s.root), []);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('幂等禁用②：存在未推送的包装层提交 → 不短路，规则③ bump -r+1', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    writeLastSync({ ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0' }, s.root);
+    // 未推送的包装层提交（@{u}..HEAD 触及 lib/ 包装层文件）。
+    mkdirSync(join(s.root, 'lib'), { recursive: true });
+    writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
+    gitIn(s.root, ['add', '-A']);
+    gitIn(s.root, ['commit', '-q', '-m', 'wrapper change']);
+
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.verify.length, 1, '未短路：verify 照常执行');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', '规则③ -r+1');
+    assert.equal(commitCount(s.root), 3, 'init + 包装层 commit + 同步 commit');
+    assert.deepEqual(tagList(s.root), ['v6.8.0-r1']);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('幂等禁用①：工作区相对 HEAD 有包装层 diff（未提交）→ 不短路', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    writeLastSync({ ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0' }, s.root);
+    // 未提交的包装层工作区变更——不得被幂等短路吞掉（spec §4.1 步骤 8 明文）。
+    mkdirSync(join(s.root, 'lib'), { recursive: true });
+    writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
+
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+      assert.equal(code, 0);
+      assert.equal(calls.verify.length, 1, '未短路：verify 照常执行');
+      assert.equal(calls.python.length, 2, '未短路：guard 逐 skill 执行（fixture = ppt-master + second-skill）');
+      // wrapperPending 只认未推送提交——工作区未提交变更不触发自动 bump（规则③人工执行）。
+      assert.equal(commitCount(s.root), 1, 'no-change：不产生空提交');
+      assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+      assert.match(calls.output(), /包装层/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('幂等回退分支：无 remote 仓库（@{u} exit 128 fatal）不崩；last-sync.sha=HEAD → wrapperPending=false', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: headSha(s.root), version: '6.8.0' }, s.root);
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.verify.length, 1, 'ref 已变（v6.7.0 记录 vs v6.8.0 实际）：正常走流程');
+    assert.equal(commitCount(s.root), 1, 'wrapperPending=false → no-change，无 commit');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('幂等回退分支取值：last-sync.sha 为 HEAD 祖先且其后另有提交 → wrapperPending=true（规则③）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    const anchorSha = headSha(s.root);
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: anchorSha, version: '6.8.0' }, s.root);
+    mkdirSync(join(s.root, 'lib'), { recursive: true });
+    writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
+    gitIn(s.root, ['add', '-A']);
+    gitIn(s.root, ['commit', '-q', '-m', 'after anchor']);
+
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', '锚点后另有提交 → ③');
+    assert.equal(commitCount(s.root), 3);
+    assert.deepEqual(tagList(s.root), ['v6.8.0-r1']);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('幂等补充③：vendorDiff=false 且 wrapperPending=false（no-change）→ 无 commit/无 tag、退出 0 并报告 already up to date', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    // ref sha 与记录不同（v6.7.0/v6.8.0）→ 不短路；但树无 diff + 无待发布 → no-change。
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: '7'.repeat(40), version: '6.7.0' }, s.root);
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+      assert.equal(code, 0);
+      assert.equal(commitCount(s.root), 1, 'no-change：无 commit');
+      assert.deepEqual(tagList(s.root), [], 'no-change：无 tag');
+      assert.match(calls.output(), /already up to date/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 退出码 6：tag 冲突（本地先行检测 + 远端预判） ─────────────────
+
+test('tag 冲突（本地 rev-parse 已存在）→ 退出码 6 且未 push（本地 commit 保留）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    gitIn(s.root, ['tag', 'v6.8.0']); // 本地已有同名 tag（rev-parse 检测依赖仓库已有 commit——fixture 前提满足）
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+      assert.equal(code, 6);
+      assert.match(calls.output(), /绝不覆盖/);
+      const originBefore = originMainSha(s.originPath);
+      assert.equal(originMainSha(s.originPath), originBefore, '不得 push');
+      assert.deepEqual(tagList(s.root), ['v6.8.0'], '既有 tag 原样保留（仍指向初始 commit）');
+      assert.ok(commitCount(s.root) >= 2, 'tag 冲突前本地 commit 已产生（保留）');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('tag 冲突远端预判：origin ls-remote 结果含同名 tag → 不依赖本地 rev-parse 也拦截 → 退出码 6', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    // 只在远端 bare 上创建 tag——工作仓库本地没有（隔离远端预判通道）。
+    execFileSync('git', ['--git-dir', s.originPath, 'tag', 'v6.8.0', originMainSha(s.originPath)]);
+    assert.deepEqual(tagList(s.root), [], '前置：本地无同名 tag');
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 6);
+    assert.deepEqual(tagList(s.root), [], '未创建本地 tag');
+    const originBefore = originMainSha(s.originPath);
+    assert.equal(originMainSha(s.originPath), originBefore, '不得 push');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 推送：PAT 解析顺序 / 一次性 URL / --no-push（canned git） ─────
+
+/** canned 推送场景公用 stub：upstream ls-remote 有 v6.8.0、origin 查询齐全。 */
+function pushScenarioMatchers(extra = []) {
+  return [
+    {
+      match: (args) => args[0] === 'ls-remote' && args[2] === 'https://github.com/fake/up.git',
+      resp: { code: 0, stdout: `${CANNED_SHA}\trefs/tags/v6.8.0\n`, stderr: '' },
+    },
+    {
+      match: (args) => args[0] === 'remote' && args[1] === 'get-url',
+      resp: { code: 0, stdout: `${CANNED_ORIGIN_URL}\n`, stderr: '' },
+    },
+    ...extra,
+  ];
+}
+
+test('PAT：env 提供 → push URL 含 oauth2: 且 PAT 不落任何文件', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    const pat = 'glpat-test-123';
+    await withEnv('DSH_PPT_GITLAB_PAT', pat, async () => {
+      const { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: cannedGit(pushScenarioMatchers()),
+      });
+      const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', confirmStructural: true }, deps);
+      assert.equal(code, 0);
+      const pushes = calls.git.filter((call) => call.args[0] === 'push');
+      assert.equal(pushes.length, 2, 'push main + tag 两次');
+      const oneShot = `https://oauth2:${pat}@gitlab.example.com/zyx/dsh-wrapper-test.git`;
+      assert.equal(pushes[0].args[1], oneShot, '一次性 URL 含 oauth2:<PAT>');
+      assert.equal(pushes[1].args[1], oneShot);
+      assert.ok(pushes[1].args.includes('refs/tags/v6.8.0'));
+      assert.equal(existsSync(join(s.root, 'sync-report.txt')), true, '成功路径写 sync-report.txt');
+      // PAT 不落任何文件（含 last-sync.json / sync-report.txt / .git）。
+      for (const file of walkAllFiles(s.root)) {
+        assert.equal(readFileSync(file, 'utf8').includes(pat), false, `PAT 不得落盘: ${file}`);
+      }
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('PAT：env 缺失且 credential fill 失败 → 退出码 6 且指引配置 PAT', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    await withEnv('DSH_PPT_GITLAB_PAT', undefined, async () => {
+        const { deps, calls } = stubDeps({
+          tarballPath: s.tarballPath,
+          runGit: cannedGit(
+            pushScenarioMatchers([
+              {
+                match: (args) => args[0] === 'credential' && args[1] === 'fill',
+                resp: { code: 1, stdout: '', stderr: '' },
+              },
+            ]),
+          ),
+        });
+        const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', confirmStructural: true }, deps);
+        assert.equal(code, 6);
+        assert.match(calls.output(), /DSH_PPT_GITLAB_PAT/, '指引配置 PAT');
+        assert.equal(calls.git.some((call) => call.args[0] === 'push'), false, 'PAT 解析失败不得 push');
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('PAT credential helper 成功路径：env 缺失但 credential stub 返回 PAT → 推送成功且不经 oauth2 URL', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    await withEnv('DSH_PPT_GITLAB_PAT', undefined, async () => {
+      const { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: cannedGit(
+          pushScenarioMatchers([
+            {
+              match: (args) => args[0] === 'credential' && args[1] === 'fill',
+              resp: {
+                code: 0,
+                stdout: 'protocol=https\nhost=gitlab.example.com\nusername=oauth2\npassword=credpat-secret\n',
+                stderr: '',
+              },
+            },
+          ]),
+        ),
+      });
+      const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', confirmStructural: true }, deps);
+      assert.equal(code, 0);
+      const pushes = calls.git.filter((call) => call.args[0] === 'push');
+      assert.equal(pushes.length, 2);
+      assert.equal(pushes[0].args[1], 'origin', 'credential 路径推 origin——PAT 只在 git 进程内流转');
+      assert.ok(pushes.every((call) => !call.args.join(' ').includes('oauth2:')), 'argv 不得含 oauth2: URL');
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('push 失败 → 退出码 6（指引 pull --rebase 重试）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    await withEnv('DSH_PPT_GITLAB_PAT', 'glpat-push-fail', async () => {
+        const { deps, calls } = stubDeps({
+          tarballPath: s.tarballPath,
+          runGit: cannedGit(
+            pushScenarioMatchers([
+              {
+                match: (args) => args[0] === 'push',
+                resp: { code: 1, stdout: '', stderr: '! [rejected] main -> main (non-fast-forward)' },
+              },
+            ]),
+          ),
+        });
+        const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', confirmStructural: true }, deps);
+        assert.equal(code, 6);
+        assert.match(calls.output(), /git pull --rebase/);
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('--no-push → 本地 commit+tag、无 push 调用', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, origin: false });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: cannedGit(pushScenarioMatchers()),
+    });
+    const code = await main({ root: s.root, repo: 'https://github.com/fake/up.git', confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.ok(calls.git.some((call) => call.args[0] === 'commit'), '本地 commit');
+    assert.ok(calls.git.some((call) => call.args[0] === 'tag'), '本地 tag（--no-push 仍创建）');
+    assert.equal(calls.git.some((call) => call.args[0] === 'push'), false, '无 push 调用');
+    assert.equal(existsSync(join(s.root, 'sync-report.txt')), true);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── --dry-run ───────────────────────────────────────────────────
+
+test('--dry-run → 只报告将发生的变化，无替换/commit/tag/push', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+      const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, dryRun: true }, deps);
+      assert.equal(code, 0);
+      assert.match(calls.output(), /second-skill/, 'dry-run 报告将发生的结构变化');
+      // 无替换：vendor 面保持旧版本、无新 skill。
+      assert.match(readFileSync(join(s.root, 'skills', 'ppt-master', 'SKILL.md'), 'utf8'), /6\.7\.0/);
+      assert.equal(existsSync(join(s.root, 'skills', 'second-skill')), false);
+      // 无 commit/tag/push。
+      assert.equal(commitCount(s.root), 1);
+      assert.deepEqual(tagList(s.root), []);
+      assert.equal(calls.verify.length, 0, 'dry-run 不进入自动路径（verify 不跑）');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 缓存：--refresh 绕过 + 缓存命中复用 ──────────────────────────
+
+test('--refresh 绕过缓存：缓存目录存在仍调用 fetchTarball', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    // 预置缓存目录（解压树形态）。
+    cpSync(UPSTREAM_TREE, s.extractDirOf('v6.8.0'), { recursive: true });
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, refresh: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.fetch.length, 1, '--refresh 必须重新下载');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('缓存命中：缓存目录存在且未 --refresh → 不下载，直接复用', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    cpSync(UPSTREAM_TREE, s.extractDirOf('v6.8.0'), { recursive: true });
+    writeLastSync({ ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0' }, s.root);
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(calls.fetch.length, 0, '缓存命中不下载');
+    assert.equal(calls.verify.length, 0, '幂等短路同样生效');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── marketplace 豁免 note 并入 🟡 汇总 ────────────────────────────
+
+test('marketplace 校验豁免（上游无 .claude-plugin/marketplace.json）→ 🟡 汇总含豁免 note', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  const custom = customTarball((copy) => rmSync(join(copy, '.claude-plugin'), { recursive: true, force: true }));
+  try {
+      const { deps, calls } = stubDeps({ tarballPath: custom.tarPath });
+      const code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+      assert.equal(code, 0);
+      assert.match(calls.output(), /豁免/, 'T11 豁免 note 由编排并入 🟡 汇总输出');
+      assert.match(readFileSync(join(s.root, 'sync-report.txt'), 'utf8'), /豁免/, '同步报告同样并入');
+  } finally {
+    s.cleanup();
+    custom.cleanup();
+  }
+});
