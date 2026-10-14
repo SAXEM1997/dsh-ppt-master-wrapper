@@ -264,7 +264,10 @@ test('resolveDshModules: env 无 DSH_HOME 但 explicit 命中 → 正常返回�
 test('挂载入口 = 本插件根 index.js（路径含 /index.js、非 lib/index.js、真实存在）', () => {
   assert.ok(PLUGIN_ENTRY.endsWith('/index.js'), `入口以 /index.js 结尾: ${PLUGIN_ENTRY}`);
   assert.ok(!PLUGIN_ENTRY.includes('lib/index.js'), '不得挂载参考实现的 lib/index.js');
-  assert.ok(PLUGIN_ENTRY.endsWith('/workspace/ppt-master/index.js') || PLUGIN_ENTRY.startsWith(dirname(scriptPath)), '入口位于本插件包根');
+  // 期望入口自 scriptPath 推导（脚本目录的父目录 = 仓库根），零硬编码——任意
+  // checkout 路径下同判（文件头的机器无关性声明）。
+  const expectedEntry = join(dirname(dirname(scriptPath)), 'index.js');
+  assert.equal(PLUGIN_ENTRY, expectedEntry, `入口必须位于本插件包根: ${PLUGIN_ENTRY} ≠ ${expectedEntry}`);
 });
 
 // ─── stub SDK 构造器 ─────────────────────────────────────────────
