@@ -263,15 +263,25 @@ function withEnv(name, value, fn) {
 // ─── 退出码 1：用法错误 ───────────────────────────────────────────
 
 test('usage：--skip-guard 默认推送 → 退出码 1（Review Focus #5）', async () => {
-  const { deps, calls } = stubDeps({ tarballPath: 'unused' });
-  const code = await main(parseArgs(['--skip-guard']), deps);
-  assert.equal(code, 1);
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'sync-orch-usage-'));
+  try {
+    const { deps } = stubDeps({ tarballPath: 'unused' });
+    const code = await main({ ...parseArgs(['--skip-guard']), root: tmpRoot }, deps);
+    assert.equal(code, 1);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 });
 
 test('usage：非法 --ref（短 sha）→ normalizeRef usageError → 退出码 1', async () => {
-  const { deps, calls } = stubDeps({ tarballPath: 'unused' });
-  const code = await main({ ref: 'abc123' }, deps);
-  assert.equal(code, 1);
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'sync-orch-usage-'));
+  try {
+    const { deps } = stubDeps({ tarballPath: 'unused' });
+    const code = await main({ ref: 'abc123', root: tmpRoot }, deps);
+    assert.equal(code, 1);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 });
 
 // ─── 退出码 5：环境失败（来源/网络/磁盘） ──────────────────────────
@@ -488,10 +498,12 @@ test('结构变化（上游多 skill fixture）→ 退出码 2 + sync-report.txt
     const report = join(s.root, 'sync-report.txt');
     assert.equal(existsSync(report), true, '结构路径也写 sync-report.txt');
     assert.match(readFileSync(report, 'utf8'), /second-skill/, '报告应含 🔴 结构变化明细');
-    // exit 2 路径也先写 ref/sha（--confirm-structural 重跑固定 ref 有值可取）。
+    // exit 2 路径也先写 ref/sha（--confirm-structural 重跑固定 ref 有值可取）；
+    // 无 wrapper commit → head 不写（保持无基线语义）。
     const raw = readLastSyncRaw(s.root);
     assert.equal(raw.ref, 'refs/tags/v6.8.0');
     assert.equal(raw.sha, s.tagShas['v6.8.0']);
+    assert.equal(raw.head, '', 'exit 2 无 wrapper commit，不写 head 基线');
     assert.equal(commitCount(s.root), 1, '结构路径不 commit');
   } finally {
     s.cleanup();
@@ -510,11 +522,12 @@ test('--confirm-structural：🔴 存在时强制走自动路径 → 替换/bump
     assert.equal(existsSync(join(s.root, 'skills', 'second-skill', 'SKILL.md')), true);
     // bump：package.json version 由 6.7.0 → 6.8.0（规则①）。
     assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
-    // last-sync：version 字段于 bump 后更新；ref/sha 精确。
+    // last-sync：version+head 于 wrapper commit 完成点更新；ref/sha 精确。
     const raw = readLastSyncRaw(s.root);
     assert.equal(raw.ref, 'refs/tags/v6.8.0');
     assert.equal(raw.sha, s.tagShas['v6.8.0']);
     assert.equal(raw.version, '6.8.0');
+    assert.equal(raw.head, headSha(s.root), 'head = wrapper commit 后的 HEAD（包装层基线）');
     // commit + tag（--no-push 仍创建本地 tag）。
     assert.equal(commitCount(s.root), 2, '自动路径产生一个同步 commit');
     assert.deepEqual(tagList(s.root), ['v6.8.0']);
@@ -611,14 +624,19 @@ test('幂等禁用①：工作区相对 HEAD 有包装层 diff（未提交）→
   }
 });
 
-test('幂等回退分支：无 remote 仓库（@{u} exit 128 fatal）不崩；last-sync.sha=HEAD → wrapperPending=false', async () => {
+// ─── 幂等回退分支（无 @{u} → last-sync.head 包装层基线锚，三态） ──
+// sha 空间分离：last-sync.sha 是**上游** commit sha（缓存键语义），永不作包装层
+// merge-base 锚；锚 = head 字段（wrapper commit 后写入——生产可达状态）。
+
+test('回退分支三态①：head 缺失（首灌前/旧记录）→ wrapperPending=false', async () => {
   const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
   try {
-    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: headSha(s.root), version: '6.8.0' }, s.root);
+    // head 不写（旧形态记录：仅 ref/sha/version）——首灌前确无已发布基线。
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: 'b'.repeat(40), version: '6.8.0' }, s.root);
     const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
     const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
     assert.equal(code, 0);
-    assert.equal(calls.verify.length, 1, 'ref 已变（v6.7.0 记录 vs v6.8.0 实际）：正常走流程');
+    assert.equal(calls.verify.length, 1, '@{u} exit 128 → 走回退分支不崩；ref 已变（记录 v6.7.0 vs 实际 v6.8.0）不短路');
     assert.equal(commitCount(s.root), 1, 'wrapperPending=false → no-change，无 commit');
     assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
   } finally {
@@ -626,22 +644,77 @@ test('幂等回退分支：无 remote 仓库（@{u} exit 128 fatal）不崩；la
   }
 });
 
-test('幂等回退分支取值：last-sync.sha 为 HEAD 祖先且其后另有提交 → wrapperPending=true（规则③）', async () => {
+test('回退分支三态②：head=HEAD（无新提交）→ wrapperPending=false', async () => {
   const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
   try {
-    const anchorSha = headSha(s.root);
-    writeLastSync({ ref: 'refs/tags/v6.7.0', sha: anchorSha, version: '6.8.0' }, s.root);
+    writeLastSync(
+      { ref: 'refs/tags/v6.7.0', sha: 'b'.repeat(40), version: '6.8.0', head: headSha(s.root) },
+      s.root,
+    );
+    const { deps } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(commitCount(s.root), 1, 'head==HEAD → 无待发布包装层提交，no-change 无 commit');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('回退分支三态③：head 为 HEAD 祖先且其后另有包装层提交 → wrapperPending=true（规则③）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    const baseline = headSha(s.root);
+    writeLastSync(
+      { ref: 'refs/tags/v6.7.0', sha: 'b'.repeat(40), version: '6.8.0', head: baseline },
+      s.root,
+    );
+    // 基线之后新增未推送包装层提交。
     mkdirSync(join(s.root, 'lib'), { recursive: true });
     writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
     gitIn(s.root, ['add', '-A']);
-    gitIn(s.root, ['commit', '-q', '-m', 'after anchor']);
+    gitIn(s.root, ['commit', '-q', '-m', 'after baseline']);
 
-    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const { deps } = stubDeps({ tarballPath: s.tarballPath });
     const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
     assert.equal(code, 0);
-    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', '锚点后另有提交 → ③');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', 'head 祖先且 HEAD≠head → ③');
     assert.equal(commitCount(s.root), 3);
     assert.deepEqual(tagList(s.root), ['v6.8.0-r1']);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('回退分支真实链路：自动路径写入 head → 重跑经 head==HEAD 幂等短路 → 包装层提交后 ③ bump', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, version: '6.7.0', origin: false });
+  try {
+    // 第 1 跑：confirm 自动路径（无 @{u} 仓库）→ wrapper commit 后写入 head 基线。
+    const depsA = stubDeps({ tarballPath: s.tarballPath });
+    const codeA = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, depsA.deps);
+    assert.equal(codeA, 0);
+    const afterFirst = readLastSyncRaw(s.root);
+    assert.equal(afterFirst.version, '6.8.0');
+    assert.equal(afterFirst.head, headSha(s.root), 'head = wrapper commit 后的 HEAD（生产可达状态）');
+
+    // 第 2 跑：同一状态重跑——head==HEAD、ref/sha 同、树无 diff → 幂等短路。
+    const depsB = stubDeps({ tarballPath: s.tarballPath });
+    const codeB = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, depsB.deps);
+    assert.equal(codeB, 0);
+    assert.equal(depsB.calls.verify.length, 0, '经 head 锚判 wrapperPending=false → 幂等短路');
+    assert.equal(depsB.calls.python.length, 0);
+    assert.match(depsB.calls.output(), /already up to date/);
+
+    // 第 3 跑：基线后新增包装层提交 → head 为祖先 → wrapperPending=true → 规则③。
+    mkdirSync(join(s.root, 'lib'), { recursive: true });
+    writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
+    gitIn(s.root, ['add', '-A']);
+    gitIn(s.root, ['commit', '-q', '-m', 'wrapper change']);
+    const depsC = stubDeps({ tarballPath: s.tarballPath });
+    const codeC = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, depsC.deps);
+    assert.equal(codeC, 0);
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', '未推送包装层提交不被幂等短路吞掉 → ③');
+    assert.deepEqual(tagList(s.root), ['v6.8.0', 'v6.8.0-r1']);
   } finally {
     s.cleanup();
   }

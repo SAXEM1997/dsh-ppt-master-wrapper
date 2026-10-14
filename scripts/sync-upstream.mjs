@@ -481,8 +481,13 @@ function lastSyncPath(root) {
  * at:string}` → null（**不 throw**：状态文件是可留存缓存的便利设施，其缺失等价
  * 「首次同步」，不应让调用方崩溃）。
  *
+ * `head` 为**可选**字段（包装层 HEAD 基线——无 @{u} 回退分支的 wrapperPending
+ * 锚，T13 fix）：旧记录/首灌前无该字段或为空 → null。`sha` 字段保持**上游**
+ * commit sha 语义（缓存键/幂等 ref 比对）——两字段 sha 空间分离，互不作锚。
+ *
  * @param {string} [root] 仓库根；缺省 = 本模块所属仓库根（与 cwd 无关）。
- * @returns {{ ref: string, sha: string, version: string, at: string } | null}
+ * @returns {{ ref: string, sha: string, version: string, at: string,
+ *   head: string | null } | null}
  */
 export function readLastSync(root) {
   const file = lastSyncPath(root);
@@ -499,7 +504,13 @@ export function readLastSync(root) {
   for (const key of ['ref', 'sha', 'version', 'at']) {
     if (typeof parsed[key] !== 'string' || parsed[key] === '') return null;
   }
-  return { ref: parsed.ref, sha: parsed.sha, version: parsed.version, at: parsed.at };
+  return {
+    ref: parsed.ref,
+    sha: parsed.sha,
+    version: parsed.version,
+    at: parsed.at,
+    head: typeof parsed.head === 'string' && parsed.head !== '' ? parsed.head : null,
+  };
 }
 
 /**
@@ -509,9 +520,15 @@ export function readLastSync(root) {
  * 读作缓存锚点，半截 JSON 会静默降级为 null 从而丢失幂等比对基准）。
  * `at` 由本函数写入（ISO 8601，UTC），data 中的 `at` 被忽略。
  *
- * @param {{ ref: string, sha: string, version: string, at?: string }} data 状态内容。
+ * `head`（可选）：包装层 HEAD 基线——非空字符串才写实质值，缺省写 `''`（读取侧
+ * 视为无基线）。写入时机由 T13 编排控制：wrapper commit 之后（exit 2 路径无
+ * wrapper commit，不写）；`sha` 仍是上游 commit sha（缓存键语义）。
+ *
+ * @param {{ ref: string, sha: string, version: string, head?: string,
+ *   at?: string }} data 状态内容。
  * @param {string} [root] 仓库根；缺省 = 本模块所属仓库根（与 cwd 无关）。
- * @returns {{ ref: string, sha: string, version: string, at: string }} 落盘内容。
+ * @returns {{ ref: string, sha: string, version: string, head: string,
+ *   at: string }} 落盘内容。
  */
 export function writeLastSync(data, root) {
   const file = lastSyncPath(root);
@@ -519,6 +536,7 @@ export function writeLastSync(data, root) {
     ref: String(data?.ref ?? ''),
     sha: String(data?.sha ?? ''),
     version: String(data?.version ?? ''),
+    head: typeof data?.head === 'string' && data.head !== '' ? data.head : '',
     at: new Date().toISOString(),
   };
 
@@ -1581,9 +1599,14 @@ export async function main(options, deps_) {
 
   // 拉取成功（下载+解压完成）即写 ref/sha——「git checkout 前」落盘：后续任何
   // 失败（guard/verify/结构退出码 2）都不丢锚点，--confirm-structural 重跑固定
-  // ref 有值可取。version 保持当前值，bump 后另行更新。
+  // ref 有值可取。version 保持当前值（bump 后于 wrapper commit 完成点更新）、
+  // head 保持既有包装层基线（仅 wrapper commit 后更新——exit 2 无 wrapper commit
+  // 不写，见自动路径）。
   const currentVersion = readPackageVersion(root) ?? previousSync?.version ?? '0.0.0';
-  writeLastSync({ ref: normalizedRef, sha: refSha ?? '', version: currentVersion }, root);
+  writeLastSync(
+    { ref: normalizedRef, sha: refSha ?? '', version: currentVersion, head: previousSync?.head ?? undefined },
+    root,
+  );
 
   // ── 步骤 3：staging + marketplace 一致性校验 ─────────────────────
   let stagedSkills;
@@ -1626,15 +1649,20 @@ export async function main(options, deps_) {
     wrapperPending = pending.code === 0 && pending.stdout.split('\n').some(isWrapperPath);
   } else {
     // 回退分支（无 upstream/空仓库：@{u} 探测 exit 128 fatal——绝不裸跑
-    // `git log @{u}..HEAD`）：以拉取前快照的 last-sync sha 为锚——是 HEAD 祖先
-    // 且 HEAD≠锚 → 存在未推送提交；HEAD=锚 → false；锚缺失/非法 → false。
-    const anchorSha = previousSync?.sha ?? null;
-    if (anchorSha !== null && FULL_SHA_PATTERN.test(anchorSha)) {
+    // `git log @{u}..HEAD`）。锚 = last-sync 的 **head** 字段（包装层 HEAD 基线），
+    // 绝不是 sha 字段——sha 是上游 commit sha（缓存键语义），tarball 同步从不
+    // 引入上游 commit，上游 sha 永不为包装层祖先，拿它作 merge-base 锚在生产
+    // 无 @{u} 场景恒 false（禁用②不可达 → 未推送包装层提交被幂等短路吞掉）。
+    //   head 缺失（首灌前/旧记录）→ false——确无已发布基线，首灌前的工作区
+    //   变更由禁用①（工作区包装层 diff）兜住；
+    //   head == HEAD → false；head 为 HEAD 祖先且 HEAD≠head → true。
+    const anchorHead = previousSync?.head ?? null;
+    if (anchorHead !== null && FULL_SHA_PATTERN.test(anchorHead)) {
       const head = await git(['rev-parse', 'HEAD']);
       if (head.code === 0) {
         const headValue = head.stdout.trim();
-        if (headValue !== anchorSha) {
-          const ancestor = await git(['merge-base', '--is-ancestor', anchorSha, 'HEAD']);
+        if (headValue !== anchorHead) {
+          const ancestor = await git(['merge-base', '--is-ancestor', anchorHead, 'HEAD']);
           wrapperPending = ancestor.code === 0;
         }
       }
@@ -1781,9 +1809,9 @@ export async function main(options, deps_) {
     cpSync(join(stagingRoot, skill), target, { recursive: true });
   }
 
-  // bump：package.json version + last-sync 的 version 字段（bump 后更新）。
+  // bump：package.json version（last-sync 的 version+head 于下方 wrapper commit
+  // 完成点一并写入——head 必须 = commit 后的 HEAD，写在 commit 前会锚到旧提交）。
   writePackageVersion(root, decision.version);
-  writeLastSync({ ref: normalizedRef, sha: refSha ?? '', version: decision.version }, root);
   if (decision.notes.length > 0) for (const note of decision.notes) logInfo(`ℹ ${note}`);
 
   // 🟡 汇总（三类指引：依赖变更→重跑 setup_deps；description/辅助目录→知悉；
@@ -1804,6 +1832,21 @@ export async function main(options, deps_) {
     logFail(`git commit 失败（环境失败，退出码 5）:\n${commitResult.stderr.trim()}`);
     return 5;
   }
+
+  // wrapper commit 完成：更新 last-sync 的 version 与 head（包装层 HEAD 基线——
+  // 无 @{u} 回退分支的 wrapperPending 锚；--no-push 本地 commit 同样写入）。
+  // exit 2 路径无 wrapper commit，不写 head（fetch 时已保持既有值）。
+  const headAfter = await git(['rev-parse', 'HEAD']);
+  const newHead = headAfter.code === 0 ? headAfter.stdout.trim() : null;
+  writeLastSync(
+    {
+      ref: normalizedRef,
+      sha: refSha ?? '',
+      version: decision.version,
+      head: newHead ?? previousSync?.head ?? undefined,
+    },
+    root,
+  );
 
   // tag 先行检测（绝不覆盖 tag、绝不 force push）：
   //  ① 本地 `git rev-parse -q --verify refs/tags/v<version>`（依赖仓库已有 commit）；
