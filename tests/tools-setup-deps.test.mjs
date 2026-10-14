@@ -519,12 +519,23 @@ test('setup_deps: signal 透传给每条子进程（安装与探测的 options.s
   }
 });
 
-test('setup_deps: 无 exec.run 注入时退回内置 spawn 助手（真实 pip3 缺失也不 throw）', async () => {
-  const { root, remove } = makeSkillDir();
+test('setup_deps: 无 exec.run 注入时退回内置 spawn 助手（真实 pip3 缺失/失败也不 throw）', async () => {
+  // 密封性：本用例**故意**不注入 exec.run（测的就是内置 spawnRun 回退），因此必须
+  // 让真实 pip3 无物可装、且不触网——fixture 不写 requirements.txt：
+  //   · pip 在本地即失败（`Could not open requirements file`，exit 1），不发索引请求；
+  //   · 若改用空文件，pip 仍会 `Looking in indexes: …` 触网（实测），不够密封。
+  // 真实 spawn 依旧发生，用例目的（spawn 回退 + 失败不 throw）不变，且零污染零网络。
+  const { root, remove } = makeSkillDir({ requirements: null });
   try {
     const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root] });
     assert.deepEqual(Object.keys(payload), SETUP_FIELDS);
-    assert.equal(typeof payload.installExit, 'number', 'spawn 级失败以退出码表达（-1），不 throw');
+    // 退出码是数字：本机无 pip3 时为 -1（spawn 级失败），有 pip3 时为其真实退出码
+    // （缺失 requirements → 1）。两种都是「不 throw」，故断言不绑定到具体环境。
+    assert.equal(typeof payload.installExit, 'number');
+    assert.ok(
+      payload.installExit === -1 || payload.installExit > 0,
+      `内置 spawnRun 已执行/已尝试执行 pip3（实测 -1=无 pip3，1=本地路径缺失）：${payload.installExit}`,
+    );
     assert.deepEqual(Object.keys(payload.checkEnv), DIAGNOSTIC_FIELDS);
   } finally {
     remove();
