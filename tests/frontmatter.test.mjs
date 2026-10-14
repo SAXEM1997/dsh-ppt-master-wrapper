@@ -109,12 +109,29 @@ test('parseFrontmatter: `---` 不在首行 → null', () => {
   assert.equal(parseFrontmatter(raw), null);
 });
 
-test('parseFrontmatter: CRLF 行尾与体部偏移正确', () => {
-  const raw = ['---', 'name: crlf', '---', '# body', ''].join('\r\n');
+test('parseFrontmatter: CRLF 文档 —— data 与 LF 等价、body 保留 `\\r\\n` 字节', () => {
+  const raw = ['---', 'name: crlf', '---', '# body', 'second line', ''].join('\r\n');
   const parsed = parseFrontmatter(raw);
   assert.ok(parsed);
-  assert.deepEqual(parsed.data, { name: 'crlf' });
-  assert.ok(parsed.body.startsWith('# body'), `body 应为正文，实际: ${JSON.stringify(parsed.body)}`);
+  assert.deepEqual(parsed.data, { name: 'crlf' }, 'YAML 数据在 CRLF 下应与 LF 解析等价');
+  assert.equal(parsed.body, '# body\r\nsecond line\r\n', 'body 必须保留原始 CRLF 行尾');
+  assert.equal(parsed.body.includes('\r'), true, 'body 不得把 CRLF 归一为 LF');
+  // body 是原文切片：前缀 + body 必须重建整个文档
+  const closing = raw.indexOf('---\r\n', 4) + '---\r\n'.length;
+  assert.equal(parsed.body, raw.slice(closing), 'body 应为 raw 的原样切片');
+});
+
+test('parseFrontmatter: CRLF 下缺失结尾换行时 body 同样保真', () => {
+  const raw = '---\r\nname: crlf\r\n---\r\n# body';
+  const parsed = parseFrontmatter(raw);
+  assert.equal(parsed.body, '# body');
+});
+
+test('parseSimpleYaml: CRLF 输入与 LF 输入解析结果一致', () => {
+  const lf = parseSimpleYaml(['name: a', 'metadata:', '  version: "1.0"'].join('\n'));
+  const crlf = parseSimpleYaml(['name: a', 'metadata:', '  version: "1.0"'].join('\r\n'));
+  assert.deepEqual(crlf, lf);
+  assert.deepEqual(crlf, { name: 'a', metadata: { version: '1.0' } });
 });
 
 test('parseFrontmatter: 空 frontmatter 块 → data {} 且 body 为剩余正文', () => {
