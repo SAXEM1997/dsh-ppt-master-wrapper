@@ -10,7 +10,8 @@
  *  - **Task 11（本层，已实现）**：staging 复制（权威谓词过滤 + 含隐藏文件的逐字节
  *    复制）、结构分类（🔴🟡🟢 分类矩阵 + 行 1 单向比对 + `vendorDiff` 字节差异
  *    汇总 + aux-dir 状态记录读写）、上游仓库根 marketplace 版本一致性校验。
- *  - Task 12（追加）：版本判定规则（①④②③/no-change）。
+ *  - **Task 12（本层，已实现）**：版本判定规则（①④②③/no-change）——`parseRSuffix`
+ *    解析助手 + `decideVersion` 互斥判定纯函数（spec §4.3）。
  *  - Task 13（替换占位）：`main(options, deps)` 全流程编排与退出码闭环。
  *
  * 用法（完整选项见 spec §4；本层仅解析、不执行）：
@@ -1086,6 +1087,93 @@ export function checkMarketplaceVersion(upstreamRoot, skillVersion) {
   }
 
   return { ok: true, note: `marketplace.json version（${marketplaceVersion}）与 SKILL.md 一致` };
+}
+
+// ── parseRSuffix / decideVersion：版本判定规则（spec §4.3）───────
+
+/** 合法的 `-rN` 后缀形态（N 为十进制整数，含 0）——不匹配即不剥离。 */
+const R_SUFFIX_PATTERN = /-r(\d+)$/;
+
+/**
+ * 解析版本串的 `-rN` 内部修订后缀（spec §4.3「`-rN` 后缀仅供内部追踪」）。
+ *
+ * **fail-soft 钉子**：只有 `^-r\d+$` 形态的后缀才被剥离；`6.7.0-r`、`6.7.0-rx`、
+ * `6.7.0-r1x`、`6.7.0-R1` 等非法形态**不剥离**——整个串原样作 `base`、`n = 0`，
+ * **不 throw**（本助手是解析器，不是校验器）。版本格式的合法性校验属 T13 编排
+ * 入口（那里的非法版本应 fail-loud 退出），纯函数层的容错保证 `decideVersion`
+ * 对任何输入都自洽。
+ *
+ * 无后缀视为 `r0`（spec §4.3：无后缀视为 r0，新后缀 = 当前 N+1）。
+ *
+ * @param {string} version 版本串（如 `6.7.0`、`6.7.0-r3`）。
+ * @returns {{ base: string, n: number }} `base` = 剥后缀后的上游版本；`n` = 修订号。
+ */
+export function parseRSuffix(version) {
+  const value = typeof version === 'string' ? version : String(version ?? '');
+  const match = R_SUFFIX_PATTERN.exec(value);
+  if (match === null) return { base: value, n: 0 };
+  return { base: value.slice(0, -match[0].length), n: Number(match[1]) };
+}
+
+/**
+ * 版本 bump 判定（spec §4.3，优先级**互斥判定**、自上而下**命中即止**）。
+ *
+ * | rule | 触发条件 | 结论 |
+ * |---|---|---|
+ * | ① | 上游版本变化（`upstreamVersion` ≠ `parseRSuffix(current).base`） | `version = upstreamVersion`、`-r` 归零 |
+ * | ④ | 同①但 `vendorDiff === false`（新 tag 仅改未 vendor 的 docs） | **与①同版本结论**，仅 `rule` 标 `④`（镜像语义补充分支） |
+ * | ② | 上游版本未变 + `vendorDiff` | base 不变、`n + 1` |
+ * | ③ | 上游版本未变 + `vendorDiff === false` + `wrapperPending` | base 不变、`n + 1`（纯包装层变更） |
+ * | no-change | 上游版本未变 + 两者皆 false（docs-only） | `version = current`、`notes = []`——**不落③** |
+ *
+ * **① 的吸收语义**：上游版本变化时其余两条不再另行追加 `-r`——`vendorDiff` 只
+ * 决定 `rule` 标 ① 还是 ④（版本结论恒等），`wrapperPending` 完全不再参与判定。
+ * 「包装层此前有 N 次修订已被归零」提示仅在 `current` 带 `-rN`（`n > 0`）时出现。
+ *
+ * **「上游版本变化」的判据是字符串不等**（不做 semver 大小比较）：`--ref` 回滚到
+ * 旧版本同属版本变化，同样镜像上游版本并归零。
+ *
+ * **`upstreamVersion === null`**（理论上由 §4.2 行 3 🔴——`metadata.version` 缺失
+ * 或不可解析——在编排层前置拦截）在本纯函数内自洽处置为 `no-change`：没有可比
+ * 的上游版本，就不臆断版本变化、也不凭 `vendorDiff`/`wrapperPending` 误 bump。
+ *
+ * 本函数纯只读、无副作用（不修改入参、不读写文件、不打日志）；notes 每次新建。
+ *
+ * @param {{ current: string, upstreamVersion: string|null,
+ *   vendorDiff?: boolean, wrapperPending?: boolean }} input
+ *   `current` = 当前已发布版本；`upstreamVersion` = staging `SKILL.md` frontmatter
+ *   `metadata.version`（缺失 → null）；`vendorDiff` = T11 `classifyChanges` 产物，
+ *   命名一致零转换；`wrapperPending` = 存在未推送的包装层提交（T13 判定）。
+ * @returns {{ version: string, rule: '①'|'④'|'②'|'③'|'no-change', notes: string[] }}
+ */
+export function decideVersion(input) {
+  const value = input ?? {};
+  const current = typeof value.current === 'string' ? value.current : String(value.current ?? '');
+  const upstreamVersion = typeof value.upstreamVersion === 'string' ? value.upstreamVersion : null;
+  const vendorDiff = value.vendorDiff === true;
+  const wrapperPending = value.wrapperPending === true;
+
+  const { base, n } = parseRSuffix(current);
+
+  // 规则①/④：上游版本变化（字符串不等——回滚同样是版本变化）。
+  if (upstreamVersion !== null && upstreamVersion !== base) {
+    const notes = [];
+    if (n > 0) notes.push(`包装层此前有 ${n} 次修订已被归零`);
+    return { version: upstreamVersion, rule: vendorDiff ? '①' : '④', notes };
+  }
+
+  // upstreamVersion === null：无可比上游版本 → 自洽 no-change（不 throw）。
+  if (upstreamVersion === null) {
+    return { version: current, rule: 'no-change', notes: [] };
+  }
+
+  // 规则②/③：上游版本未变，同一 `-r` 递增覆盖两类变更（②③同命中按②）。
+  if (vendorDiff || wrapperPending) {
+    return { version: `${base}-r${n + 1}`, rule: vendorDiff ? '②' : '③', notes: [] };
+  }
+
+  // docs-only（上游版本未变、无 diff、无包装层变更）→ 不落③、保持镜像版本。
+  return { version: current, rule: 'no-change', notes: [] };
 }
 
 // ─── main：编排占位（Task 13 替换）────────────────────────────────
