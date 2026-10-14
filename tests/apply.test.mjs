@@ -186,9 +186,16 @@ test('apply: opts.skillRoots 同时透传给 tools（注册面 SKILL_DIR 与 pro
   }
 });
 
-test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills/（T14 前 fail-loud）', () => {
-  const { ctx } = makeCtx();
-  assert.throws(() => apply(ctx), /skill root does not exist|no skill directory found/);
+test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills/（T14 首灌后成功）', async () => {
+  const { ctx, calls } = makeCtx();
+  apply(ctx);
+  assert.equal(calls.providers.length, 1, 'provider 注册成功（包内 skills/ 已随首灌落地）');
+  const listed = await calls.providers[0]().list();
+  assert.deepEqual(
+    listed.map((candidate) => candidate.name),
+    ['ppt-master'],
+    '省略 opts 时扫描根确为包内 skills/（vendor 单 skill 面）',
+  );
 });
 
 // ─── lib/tools.js 契约（T5-7 逐个替换 stub 为真实实现） ──────────

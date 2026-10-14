@@ -12,7 +12,10 @@ const readPkg = () => JSON.parse(read('package.json'));
 test('package.json: 身份与入口字段', () => {
   const pkg = readPkg();
   assert.equal(pkg.name, 'dsh-ppt-master-wrapper');
-  assert.equal(pkg.version, '0.0.0');
+  // T14 首灌定版后 version 镜像上游（vendor SKILL.md metadata.version），不再占位。
+  const skillMd = read('skills/ppt-master/SKILL.md');
+  const upstreamVersion = skillMd.match(/^\s+version:\s*"?([^"\s]+)"?\s*$/m)?.[1];
+  assert.equal(pkg.version, upstreamVersion, 'version 镜像 vendor SKILL.md metadata.version');
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.main, 'index.js');
   assert.deepEqual(pkg.engines, { node: '>=20.0.0' });
@@ -85,8 +88,24 @@ test('LICENSE: 本插件自身 MIT 许可', () => {
   assert.match(text, /Permission is hereby granted, free of charge/);
 });
 
-test('README.md: 骨架标题 + TODO 指向设计文档', () => {
+test('README.md: 完整文档（安装/三工具/.env/同步用法/致谢双 LICENSE）', () => {
   const text = read('README.md');
   assert.match(text, /^# dsh-ppt-master-wrapper$/m);
-  assert.match(text, /docs\/superpowers\/specs\/2026-10-14-dsh-ppt-master-wrapper-design\.md/);
+  // 安装：本地 link 与 GitLab URL 两种方式。
+  assert.match(text, /dsh plugin --profile <name> add link:/);
+  assert.match(text, /https:\/\/gitlab\.ai\.isv\.iridesc\.cn:23000\/zyx\/dsh-ppt-master-wrapper\.git/);
+  // 三工具说明（spec §3.5）。
+  for (const tool of ['ppt_master_info', 'ppt_master_check_env', 'ppt_master_setup_deps']) {
+    assert.ok(text.includes(tool), `README 缺少工具说明: ${tool}`);
+  }
+  // .env 首次使用指引：从 vendor .env.example 复制。
+  assert.match(text, /skills\/ppt-master\/\.env\.example/);
+  // 同步脚本用法：脚本名与全部 flag。
+  assert.ok(text.includes('sync-upstream.mjs'), 'README 缺少同步脚本用法');
+  for (const flag of ['--ref', '--repo', '--refresh', '--confirm-structural', '--skip-guard', '--no-push', '--dry-run']) {
+    assert.ok(text.includes(flag), `README 缺少同步 flag 说明: ${flag}`);
+  }
+  // 致谢上游与双 LICENSE 归属。
+  assert.match(text, /github\.com\/hugohe3\/ppt-master/);
+  assert.match(text, /skills\/ppt-master\/LICENSE/);
 });

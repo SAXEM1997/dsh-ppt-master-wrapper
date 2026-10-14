@@ -772,7 +772,8 @@ test('check_env: 无 exec.run 注入时退回内置 spawn 助手（本机有 pyt
   const payload = await toolNamed('ppt_master_check_env').execute({}, {});
   assert.equal(typeof payload.python.found, 'boolean');
   if (payload.python.found) {
-    assert.deepEqual(payload.guard, { skipped: true }, '包内无 skills/ → SKILL_DIR 缺失，guard 跳过');
+    // T14 首灌后包内 skills/ 存在：SKILL_DIR 可解析，guard 经真实 spawn 助手运行且通过。
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 0 }, '包内 vendor 树 → guard 实跑且通过');
   } else {
     assert.deepEqual(payload.guard, { skipped: true });
     assert.deepEqual(payload.python.version, null);

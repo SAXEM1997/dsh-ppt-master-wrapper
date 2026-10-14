@@ -275,9 +275,14 @@ test('info: execute 尊重 exec.signal（已中止 → 不返回结果）', asyn
   }
 });
 
-test('info: exec 省略 → 回落包内 skills/ 根，根缺失时 fail-loud（T14 前）', async () => {
-  await assert.rejects(
-    () => createTools()[INFO_INDEX].execute({}),
-    /skill root does not exist|no skill directory found/,
+test('info: exec 省略 → 回落包内 skills/ 根，定位到 ppt-master（T14 首灌后成功）', async () => {
+  const info = await createTools()[INFO_INDEX].execute({});
+  assert.equal(info.primarySkillName, 'ppt-master', 'name 锚定命中本体 skill');
+  assert.equal(info.primaryIsFallback, false, '本体 skill 直接命中，非回退');
+  assert.equal(info.skillDirs.length, 1, '包内 skills/ 为单 skill 面');
+  assert.ok(
+    info.primarySkillDir.endsWith(join('skills', 'ppt-master')),
+    `SKILL_DIR 指向包内 vendor 目录: ${info.primarySkillDir}`,
   );
+  assert.match(info.upstreamVersion ?? '', /^\d+\.\d+\.\d+$/, 'upstreamVersion 取自 vendor SKILL.md metadata');
 });
