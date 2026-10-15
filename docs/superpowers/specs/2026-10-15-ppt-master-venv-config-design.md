@@ -43,7 +43,7 @@ index.js  ── export const Config = z.object({ venv: {enabled,path,oldPathPol
 
 组件职责：`lib/venv.js` 承载全部 venv 决策与副作用原语（只提供解释器/pip 路径解析原语，不组装命令——installCmd 的组装、含 venv pip 路径替换，归 `tools.js` 编排层）；`tools.js` 只做探测编排与 payload 组装（`setup_deps` 是唯一调用 ensureVenv/cleanupOldVenv 的地方）；`skill-provider.js` 新增合成入口 skill（四态渲染取 `lib/venv.js` 判定原语，与 tools 共用）；`index.js` 声明 Config 并下传。schemastery 引入通道=宿主 node_modules 定位 + 受控解析（createRequire 等价通道），**禁 ESM 裸导入**（插件以符号链接装载，裸导入在该路径下必然 ERR_MODULE_NOT_FOUND）；零 npm 依赖声明保持。
 
-apply 第二参为**统一注入包**：loader 传入经校验的 config（含 venv 三字段，volatile 叶子为引用对象——apply 入口先按 §5.1 引用语义去引用快照为普通值），测试/嵌入方传 `{skillRoots}`，两键可共存于同一对象，venv 字段缺省=默认值。与现有 10 处 `apply(ctx, {skillRoots})` 调用兼容（tests 三文件合计该形态；scripts 侧另有以变量形态传入 `toolOptions` 的调用）：skillRoots 键照旧生效，venv 缺省走默认（注入通道异常的降级见 §6.1③）。apply 期降级（配置无效→venv 视为关闭）是**行为层视图**：注入包/Config 保留原始值——入口 skill 渲染读原始配置 + invalidReason 判第四态，工具行为读降级值。
+apply 第二参为**统一注入包**：loader 传入经校验的 config（含 venv 三字段，volatile 叶子为引用对象——apply 入口先按 §5.1 引用语义去引用快照为普通值），测试/嵌入方传 `{skillRoots}`，两键可共存于同一对象，venv 字段缺省=默认值。与现有 **12 处可执行 `apply` 调用**兼容（= tests 10：字面 `{skillRoots}` 8 + 裸 opts 2，集中在 `tests/apply.test.mjs`、`tests/verify-plugin.test.mjs` **两文件**，`tests/compat.test.mjs` 的命中为 fixture 字符串非调用；+ scripts 2：`scripts/check-dsh-compat.mjs` 以变量形态传入 `toolOptions`、`scripts/verify-plugin.mjs`）：skillRoots 键照旧生效，venv 缺省走默认（注入通道异常的降级见 §6.1③）。apply 期降级（配置无效→venv 视为关闭）是**行为层视图**：注入包/Config 保留原始值——入口 skill 渲染读原始配置 + invalidReason 判第四态，工具行为读降级值。
 
 ## 4. 数据流
 
@@ -94,13 +94,13 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 | 状态 | venv.enabled | venv.path | venv.exists | venv.pythonPath | check_env venv.python | deps 探测解释器 | guard 载荷 |
 |---|---|---|---|---|---|---|---|
-| venv.off | false | 按配置原样（无效→null） | N/A（不实测） | null | `{skipped}` | 系统 python3 | `{ran,exitCode}`（系统 python3） |
-| venv.invalid | true（配置值，行为按关闭） | null | false | null | `{skipped}` | 系统 python3（降级续行） | `{ran,exitCode}`（系统 python3） |
+| venv.off | false | 按配置原样（不解析） | false（定值：不探测） | null | `{skipped}` | 系统 python3 | `{ran,exitCode}`（系统 python3） |
+| venv.invalid | true（配置值，行为按关闭） | null（定值） | false（定值：不探测） | null | `{skipped}` | 系统 python3（降级续行） | `{ran,exitCode}`（系统 python3） |
 | venv.on-missing | true | 解析后绝对 | false | null | `{found:false, …}` | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
 | venv.on-ready | true | 解析后绝对 | true | `<path>/bin/python3` | `{found, version, meets}` | venv python | `{ran,exitCode}`（venv python） |
 | venv.on-ready 子态 exists-but-broken | true | 解析后绝对 | true | `<path>/bin/python3` | `{found:false, …}` | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
 
-**组合与求值细则**：invalid×disabled 组合——行为按 off、诊断面 path 如实（无效→null）、入口 skill 落态 3（disabled 优先）；venv.off 行 path 按配置原样、exists 不实测（N/A）——全部单元格可求值。exists-but-broken 定义：venv.exists=true 且 venv.python.found=false（on-ready 取值空间的显式子态）。
+**组合与求值细则**：invalid×disabled 组合——行为按 off、诊断面 path 如实（无效→null）、入口 skill 落态 3（disabled 优先）；**off/invalid 行取定值，N/A 语义废除**（off：exists=false 不探测、path 按配置原样不解析；invalid：exists=false、path=null）。exists-but-broken 定义：venv.exists=true 且 venv.python.found=false（on-ready 取值空间的显式子态）。**矩阵注记（info 面可观测性）**：exists-but-broken **不另增字段**，按推断式可观测——`venv.exists=true ∧ venv.pythonPath=null ⇒ exists-but-broken`（该子态 on-ready 正常态给 `<path>/bin/python3`，broken 时给 null）。
 
 ### 5.4 lib/venv.js（纯函数 + 注入 run；风格同现有 spawnRun。入参 `config` 为 §5.1 去引用快照后的普通对象）
 
