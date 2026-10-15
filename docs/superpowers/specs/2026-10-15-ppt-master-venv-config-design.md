@@ -65,7 +65,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 - **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。
 - **引入通道**：Config schema 依赖的 schemastery 经"宿主 node_modules 定位 + 受控解析（createRequire 等价通道）"获取，禁 ESM 裸导入（符号链接插件路径下必然 ERR_MODULE_NOT_FOUND）；插件零 npm 依赖声明保持（解析失败的 fail-loud 语义见 §6.1⓪）。
-- **`~` 展开基准**：按 DSH 宿主进程 HOME 展开（Node `os.homedir()`：HOME 为空串时回退 passwd 目录，解析结果仍非空合法）；"与上游 config.py 的 `Path.home()/.ppt-master` 同一基准"仅 HOME 非空时成立（空串边界 Node/Python 行为分叉：Python `Path.home()`→`'/'`）；降级分支仅当解析结果仍非法（空/相对）时触发（走 §6 配置无效降级）；本机容器 HOME=/root → 默认路径解析为 `/root/.ppt-master/venv`。
+- **`~` 展开基准**：按 DSH 宿主进程 HOME 展开（Node `os.homedir()` 实测语义：**HOME 为空串时返回空串、不回退**——该输入下 `~` 展开判无效走 §6 配置无效降级；仅 HOME **未设置**才回退 passwd 目录/getpwuid）；"与上游 config.py 的 `Path.home()/.ppt-master` 同一基准"仅 HOME 非空时成立（空串边界 Node/Python 行为分叉：Python `Path.home()`→`'/'`）；降级分支在解析结果非法（空/相对/空串 HOME）时触发（走 §6 配置无效降级）；本机容器 HOME=/root → 默认路径解析为 `/root/.ppt-master/venv`。
 - **默认路径理由**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6 exists-but-broken 行）。
 - **发现通道**：不调用 `ctx.settings.configure()`，沿用宿主 auto 出页默认策略——被发现的配置项按默认策略处置。
 - **编辑期校验闭环**：路径形状约束（绝对或 `~` 前缀）不在 schema 层声明（schemastery 无法表达路径谓词），接受"可保存非法值"；可见反馈通道=入口 skill"配置无效"态 + check_env 的 `venv.path=null` 提示（不依赖宿主控制台 warn），warn 仅作日志补充。
@@ -127,7 +127,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 | venv 存在但损坏（exists-but-broken） | ensureVenv 体检不通过→不自动删（保守）；setup_deps fail-loud：`venv.error` 提示"手动删除该 venv 目录后重跑"（恢复指引）；check_env 按 §5.3 on-ready 子态口径（venv.python `{found:false,…}`、deps 全 UNKNOWN、guard=`{skipped}`） |
 | venv 内 pip 安装失败 | 现行语义：非零记录不抛，复跑诊断 |
 | cleanup 删除失败 | `cleanup.action='failed'` + error 字符串，不抛 |
-| 配置 path 相对/无效（含 `~` 展开后仍非法；HOME 空串解析语义见 §5.1——Node 回退 passwd，通常仍合法） | apply 期 console.warn（日志补充；可见反馈通道见 §5.1 编辑期校验闭环），venv 视为关闭，入口 skill 写明修正方式 |
+| 配置 path 相对/无效（含 `~` 展开后仍非法；HOME 空串时 `~` 展开判无效——实测语义见 §5.1，不落根级路径） | apply 期 console.warn（日志补充；可见反馈通道见 §5.1 编辑期校验闭环），venv 视为关闭，入口 skill 写明修正方式 |
 | check_env venv 探测 | 全程诊断性（缺 venv = 状态值非错误） |
 | 解释器软路由失效（模型未读入口） | 入口 description 强引导 + 工具描述兜底提示（§5.3 工具描述增量）为缓解；不承诺硬保证（方案A 约束） |
 | 设置页不可投影/写入被拒（volatile 未声明或宿主版本不支持） | 插件功能不受影响（配置仍可用 profile patch 手工编辑），README 注明诊断方式 |
