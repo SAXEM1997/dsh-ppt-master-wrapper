@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createTools, mapDistToImport, parseRequirements } from '../lib/tools.js';
@@ -308,9 +308,73 @@ test('mapDistToImport: 映射表命中（大小写不敏感）', () => {
   assert.equal(mapDistToImport('edge-tts'), 'edge_tts');
 });
 
+test('mapDistToImport: vendor requirements 缺失的 10 项补齐（dist 名=import 名，逐项核实）', () => {
+  // 依据：vendor 树自身脚本的 import 语句（最强证据，非猜测）——
+  //   import uharfbuzz / import mammoth / from markdownify … / from ebooklib …
+  //   from nbconvert … / import openpyxl / import numpy / import requests
+  //   from curl_cffi … / from flask …
+  // 十项的发行版名与 import 根名逐一核实一致（PyPI 惯例同判：如 EbookLib 的
+  // 规范化 dist 名即 ebooklib，curl-cffi 的 import 根即 curl_cffi）。
+  const directMappings = {
+    uharfbuzz: 'uharfbuzz',
+    mammoth: 'mammoth',
+    markdownify: 'markdownify',
+    ebooklib: 'ebooklib',
+    nbconvert: 'nbconvert',
+    openpyxl: 'openpyxl',
+    numpy: 'numpy',
+    requests: 'requests',
+    curl_cffi: 'curl_cffi',
+    flask: 'flask',
+  };
+  for (const [dist, importName] of Object.entries(directMappings)) {
+    assert.equal(mapDistToImport(dist), importName, `${dist} → ${importName}`);
+    assert.equal(
+      mapDistToImport(dist.toUpperCase()),
+      importName,
+      `${dist.toUpperCase()}（大小写归一后）→ ${importName}`,
+    );
+  }
+});
+
+/** vendor 真实 requirements.txt 的 19 项清单（fixture 化，勿依赖 vendor 树本体）。 */
+const VENDOR_REQUIREMENTS_TEXT = [
+  'PyYAML>=6.0',
+  'python-pptx>=0.6.21',
+  'XlsxWriter>=3.0.0',
+  'skia-pathops>=0.9.2',
+  'uharfbuzz>=0.50.0',
+  'edge-tts>=7.2.8',
+  'PyMuPDF>=1.23.0',
+  'mammoth>=1.6.0',
+  'markdownify>=0.11.6',
+  'ebooklib>=0.18',
+  'nbconvert>=7.0.0',
+  'openpyxl>=3.1.0',
+  'Pillow>=9.0.0',
+  'numpy>=1.20.0',
+  'requests>=2.31.0',
+  'beautifulsoup4>=4.12.0',
+  'curl_cffi>=0.7.0',
+  'google-genai>=1.0.0',
+  'flask>=3.0.0',
+].join('\n');
+
+test('mapDistToImport: 覆盖度回归——vendor 真实 requirements.txt 19 项逐项非 UNKNOWN（19/19）', () => {
+  const dists = parseRequirements(VENDOR_REQUIREMENTS_TEXT);
+  assert.equal(dists.length, 19, 'fixture 化清单恰为 vendor 的 19 项');
+  for (const dist of dists) {
+    assert.notEqual(
+      mapDistToImport(dist),
+      'UNKNOWN',
+      `${dist} 必须有映射：vendor requirements 不得再产出 UNKNOWN`,
+    );
+  }
+});
+
 test('mapDistToImport: 未收录发行版 → 逐字 UNKNOWN', () => {
   assert.equal(mapDistToImport('not-a-real-dist'), 'UNKNOWN');
-  assert.equal(mapDistToImport('flask'), 'UNKNOWN', 'flask 不在映射表内');
+  assert.equal(mapDistToImport('pandas'), 'UNKNOWN', 'pandas 不在映射表内（表外仍 UNKNOWN）');
   assert.equal(mapDistToImport(''), 'UNKNOWN');
   assert.equal(mapDistToImport(undefined), 'UNKNOWN');
 });
@@ -450,7 +514,7 @@ test('check_env: python 元数据 hit → installed:true、source:metadata、imp
       assert.deepEqual(payload.deps, [
         { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
         { dist: 'python-pptx', importName: 'pptx', installed: true, source: 'metadata' },
-        { dist: 'flask', importName: 'UNKNOWN', installed: true, source: 'metadata' },
+        { dist: 'flask', importName: 'flask', installed: true, source: 'metadata' },
       ]);
       assert.equal(payload.envFileExists, true, '存在性检查：<SKILL_DIR>/.env');
       assert.equal(skill, join(root, 'ppt-master'));
@@ -463,6 +527,7 @@ test('check_env: python 元数据 hit → installed:true、source:metadata、imp
 });
 
 test('check_env: 缺 requirementsPath → 回落 SKILL_DIR/requirements.txt（<3.10 仅 informational）', async () => {
+  const restoreHome = isolateHome().restore;
   const { root, skill, remove } = makeSkillRoot();
   try {
     writeFileSync(join(skill, 'requirements.txt'), 'PyYAML\nflask\n');
@@ -486,6 +551,7 @@ test('check_env: 缺 requirementsPath → 回落 SKILL_DIR/requirements.txt（<3
     assert.equal(payload.deps[0].installed, true, '低于下限不阻断依赖探测');
     assert.equal(payload.envFileExists, false, '无 .env → false（不读其内容）');
   } finally {
+    restoreHome();
     remove();
   }
 });
@@ -547,7 +613,7 @@ test('check_env: python 退出码 1 + stderr PackageNotFoundError → installed:
       });
       assert.deepEqual(payload.deps[1], {
         dist: 'flask',
-        importName: 'UNKNOWN',
+        importName: 'flask',
         installed: true,
         source: 'metadata',
       });
@@ -746,19 +812,19 @@ test('check_env: import 辅助探测其他结局（exit 2 / exit 1 无 MNFE）�
   }
 });
 
-test('check_env: 元数据失败但映射缺失（flask）→ UNKNOWN 且不追加 import 探测（仅一次调用）', async () => {
+test('check_env: 元数据失败但映射缺失（pandas）→ UNKNOWN 且不追加 import 探测（仅一次调用）', async () => {
   const { root, remove } = makeSkillRoot();
   try {
-    const { file, remove: removeReq } = makeRequirementsFile(['flask']);
+    const { file, remove: removeReq } = makeRequirementsFile(['pandas']);
     try {
       const calls = [];
       const payload = await toolNamed('ppt_master_check_env').execute(
         { requirementsPath: file },
         { skillRoots: [root], ...metadataBrokenExec({ calls }) },
       );
-      assert.deepEqual(calls, ['metadata:flask'], '映射缺失绝不猜测 import 名（spec §3.5）');
+      assert.deepEqual(calls, ['metadata:pandas'], '映射缺失绝不猜测 import 名（spec §3.5）');
       assert.deepEqual(payload.deps[0], {
-        dist: 'flask',
+        dist: 'pandas',
         importName: 'UNKNOWN',
         installed: 'UNKNOWN',
         source: 'unknown',
@@ -841,6 +907,7 @@ test('check_env: PNFE（元数据已定论）→ installed:false、source:metada
 // ─── 诊断对象：spawn 级失败（无 python3 / 无 guard） ──────────────
 
 test('check_env: 无 python3（spawn ENOENT）→ found=false、guard.skipped、deps 全 UNKNOWN，整体不 throw', async () => {
+  const restoreHome = isolateHome().restore;
   const { root, remove } = makeSkillRoot({ withGuard: true });
   try {
     const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'python-pptx']);
@@ -871,6 +938,7 @@ test('check_env: 无 python3（spawn ENOENT）→ found=false、guard.skipped、
       removeReq();
     }
   } finally {
+    restoreHome();
     remove();
   }
 });
@@ -934,7 +1002,7 @@ test('check_env: deps 顺序 = requirements 顺序、大小写变体去重', asy
         payload.deps.map((dep) => dep.dist),
         ['pyyaml', 'flask', 'python-pptx'],
       );
-      assert.deepEqual(payload.deps.map((dep) => dep.importName), ['yaml', 'UNKNOWN', 'pptx']);
+      assert.deepEqual(payload.deps.map((dep) => dep.importName), ['yaml', 'flask', 'pptx']);
     } finally {
       removeReq();
     }
@@ -1005,6 +1073,7 @@ test('check_env: envFileExists 只做存在性检查——.env 不可读也不 t
 });
 
 test('check_env: 无 skill 目录 → deps 仍可探测、guard.skipped（不 throw）', async () => {
+  const restoreHome = isolateHome().restore;
   const empty = mkdtempSync(join(tmpdir(), 'check-env-empty-'));
   try {
     const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
@@ -1021,27 +1090,67 @@ test('check_env: 无 skill 目录 → deps 仍可探测、guard.skipped（不 th
       removeReq();
     }
   } finally {
+    restoreHome();
     rmSync(empty, { recursive: true, force: true });
   }
 });
 
-// ─── env 文件：三处探测（cwd / SKILL_DIR / 仓库根）与 README 一致 ──
+// ─── env 文件：四处探测（cwd / SKILL_DIR / 包根 / ~/.ppt-master） ──
 //
 // README 指引把 `.env.example` 复制到**工作区根目录**，上游 config.py 的查找序为
-// cwd → skill-dir → repo-root → ~/.ppt-master/.env；此前的实现只看 SKILL_DIR，与
-// README 指引矛盾（按 README 配置的用户会被报 absent）。三处任一存在即 true；
-// **始终只 existsSync，绝不读内容**。
+// cwd → PROJECT_ROOT → REPO_ROOT → USER_ENV_FILE（~/.ppt-master/.env）；包装层按
+// 同一顺序探四处（第 3 项为包装层包根，仅包内布局下等价于上游 REPO_ROOT）。
+// 四处任一存在即 true；**始终只 existsSync，绝不读内容**。
+
+/**
+ * 把 `$HOME`（连同 win32 形态 `$USERPROFILE`）指到空的隔离 tmp 目录，返回
+ * `{ home, restore }`。第 4 探测点 `~/.ppt-master/.env` 经 `os.homedir()` 解析，
+ * POSIX 下读 `$HOME`——不隔离时，断言 false 的用例会被真实家目录里恰好存在的
+ * `~/.ppt-master/.env` 翻车（本方式零生产侵入：真实代码路径原样跑）。
+ */
+function isolateHome() {
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const homeRoot = mkdtempSync(join(tmpdir(), 'check-env-home-'));
+  process.env.HOME = homeRoot;
+  process.env.USERPROFILE = homeRoot;
+  return {
+    home: homeRoot,
+    restore: () => {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(homeRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+/** `os.homedir()` 是否跟随 `$HOME`（POSIX 语义）——不跟随的平台上无法经 env 隔离第 4 探测点。 */
+function homedirFollowsHomeEnv() {
+  const { home, restore } = isolateHome();
+  try {
+    return homedir() === home;
+  } finally {
+    restore();
+  }
+}
 
 /**
  * 在隔离的 cwd 下跑一次 check_env（cwd 是探测点之一，用 chdir 驱动）。
- * `cwdEnv` 为 true 时在隔离 cwd 写一个 `.env`。
+ * `cwdEnv` 为 true 时在隔离 cwd 写一个 `.env`；`withSkillEnv` 透传给 skill 树；
+ * `homeEnv` 为 true 时在隔离 HOME 下写 `~/.ppt-master/.env`（第 4 探测点）。
  */
-async function checkEnvFromCwd({ cwdEnv = false, withSkillEnv = false } = {}) {
+async function checkEnvFromCwd({ cwdEnv = false, withSkillEnv = false, homeEnv = false } = {}) {
   const savedCwd = process.cwd();
   const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const isolatedHome = isolateHome();
   const { root, skill, remove } = makeSkillRoot({ withEnvFile: withSkillEnv });
   try {
     if (cwdEnv) writeFileSync(join(cwdRoot, '.env'), 'SECRET=do-not-read\n');
+    if (homeEnv) {
+      mkdirSync(join(isolatedHome.home, '.ppt-master'), { recursive: true });
+      writeFileSync(join(isolatedHome.home, '.ppt-master', '.env'), 'SECRET=do-not-read\n');
+    }
     process.chdir(cwdRoot);
     const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
     try {
@@ -1055,6 +1164,7 @@ async function checkEnvFromCwd({ cwdEnv = false, withSkillEnv = false } = {}) {
     }
   } finally {
     process.chdir(savedCwd);
+    isolatedHome.restore();
     remove();
     rmSync(cwdRoot, { recursive: true, force: true });
   }
@@ -1070,14 +1180,28 @@ test('check_env: envFileExists — 仅 SKILL_DIR 有 .env → true', async () =>
   assert.equal(payload.envFileExists, true, 'SKILL_DIR/.env 仍须被探测到');
 });
 
-test('check_env: envFileExists — cwd 与 SKILL_DIR 都无 → false', async () => {
+test('check_env: envFileExists — 仅 ~/.ppt-master/.env（隔离 HOME）→ true（第 4 探测点）', async (t) => {
+  if (!homedirFollowsHomeEnv()) {
+    t.skip('os.homedir() 不随 $HOME（非 POSIX 语义），第 4 探测点无法经 env 隔离');
+    return;
+  }
+  const { payload } = await checkEnvFromCwd({ homeEnv: true });
+  assert.equal(
+    payload.envFileExists,
+    true,
+    '~/.ppt-master/.env 必须被探测到（上游 config.py 的 USER_ENV_FILE）',
+  );
+});
+
+test('check_env: envFileExists — cwd/SKILL_DIR/包根/HOME 四处皆无 → false', async () => {
   const { payload } = await checkEnvFromCwd();
   assert.equal(payload.envFileExists, false);
 });
 
-test('check_env: envFileExists — 三处都无且 SKILL_DIR 有 .env.example → false（example 不算）', async () => {
+test('check_env: envFileExists — 四处都无且 SKILL_DIR 有 .env.example → false（example 不算）', async () => {
   const savedCwd = process.cwd();
   const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const restoreHome = isolateHome().restore;
   const { root, skill, remove } = makeSkillRoot();
   try {
     // `.env.example` 是模板而非配置：既非 `.env` 名，也不得被当作存在证据。
@@ -1095,12 +1219,13 @@ test('check_env: envFileExists — 三处都无且 SKILL_DIR 有 .env.example �
     }
   } finally {
     process.chdir(savedCwd);
+    restoreHome();
     remove();
     rmSync(cwdRoot, { recursive: true, force: true });
   }
 });
 
-test('check_env: envFileExists — 三处探测仍只做存在性检查（目录占名不 throw）', async () => {
+test('check_env: envFileExists — 四处探测仍只做存在性检查（目录占名不 throw）', async () => {
   const savedCwd = process.cwd();
   const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
   const { root, remove } = makeSkillRoot();
@@ -1144,14 +1269,19 @@ test('check_env: execute 尊重 exec.signal（已中止 → 不返回结果）',
 });
 
 test('check_env: 无 exec.run 注入时退回内置 spawn 助手（本机有 python3 则 found=true，无则 false，均不 throw）', async () => {
-  const payload = await toolNamed('ppt_master_check_env').execute({}, {});
-  assert.equal(typeof payload.python.found, 'boolean');
-  if (payload.python.found) {
-    // T14 首灌后包内 skills/ 存在：SKILL_DIR 可解析，guard 经真实 spawn 助手运行且通过。
-    assert.deepEqual(payload.guard, { ran: true, exitCode: 0 }, '包内 vendor 树 → guard 实跑且通过');
-  } else {
-    assert.deepEqual(payload.guard, { skipped: true });
-    assert.deepEqual(payload.python.version, null);
+  const restoreHome = isolateHome().restore;
+  try {
+    const payload = await toolNamed('ppt_master_check_env').execute({}, {});
+    assert.equal(typeof payload.python.found, 'boolean');
+    if (payload.python.found) {
+      // T14 首灌后包内 skills/ 存在：SKILL_DIR 可解析，guard 经真实 spawn 助手运行且通过。
+      assert.deepEqual(payload.guard, { ran: true, exitCode: 0 }, '包内 vendor 树 → guard 实跑且通过');
+    } else {
+      assert.deepEqual(payload.guard, { skipped: true });
+      assert.deepEqual(payload.python.version, null);
+    }
+    assert.equal(payload.envFileExists, false);
+  } finally {
+    restoreHome();
   }
-  assert.equal(payload.envFileExists, false);
 });
