@@ -925,3 +925,43 @@ test('ensureVenv: 创建行 marker 写入失败 → 仍 created:true（warn 含 
   }
 });
 
+test('ensureVenv: 创建中 abort → 拒绝传播（不折成 {error} 环境故障；非 abort 的 null 码仍值返回）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'aborted-venv');
+
+    // 形态一：创建进行中被取消——spawn 的 'error' 事件以 abort 原因 reject（name=AbortError）。
+    const live = new AbortController();
+    const abortingRun = async () => {
+      live.abort();
+      throw live.signal.reason;
+    };
+    await assert.rejects(
+      () => venv.ensureVenv(abortingRun, target, { signal: live.signal }),
+      (error) => error === live.signal.reason,
+      'run 以 AbortError reject 时必须原样传播，不得折成 {created:false, error}'
+    );
+
+    // 形态二：子进程被 kill 后 close（spawnRun 解析出 exitCode:null）且 signal 已 abort。
+    const killed = new AbortController();
+    killed.abort();
+    const { run: killedRun, calls } = makeRunStub({ exitCode: null });
+    await assert.rejects(
+      () => venv.ensureVenv(killedRun, target, { signal: killed.signal }),
+      (error) => error === killed.signal.reason,
+      'exitCode:null + 已 abort 的 signal 必须传播 abort，不得报「创建失败」'
+    );
+    assert.equal(calls.length, 1, '创建确已发起（abort 发生于其后）');
+    assert.ok(!existsSync(target), 'abort 行不得留下 venv 目录或标记');
+
+    // 反证：同一 null 退出码在未 abort 时仍是普通创建失败行（非 abort 的值返回契约不变）。
+    const { run: plainRun } = makeRunStub({ exitCode: null });
+    const folded = await venv.ensureVenv(plainRun, target, {});
+    assert.deepEqual(Object.keys(folded).sort(), ['adopted', 'created', 'error']);
+    assert.equal(folded.created, false);
+    assert.match(folded.error, /退出码 null/, '非 abort 的 null 码仍如实成 {error} 值');
+  } finally {
+    restore();
+  }
+});
+
