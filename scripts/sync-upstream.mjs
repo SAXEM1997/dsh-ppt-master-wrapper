@@ -1811,7 +1811,7 @@ export async function main(options, deps_) {
   if (decision.rule === 'no-change') {
     logInfo('already up to date（上游版本未变、vendor 树无 diff、无包装层待发布）——不产生空提交。');
     if (workspaceWrapperDiff) {
-      logInfo('注意：工作区存在未提交的包装层变更——不参与自动 bump（规则③由人工执行），请自行 commit 后再同步。');
+      logInfo('注意：工作区存在未提交的包装层变更——不参与自动 bump（规则③以已提交的未推送包装层提交为判据），请自行 commit 后再同步。');
     }
     cleanupStaging();
     return 0;

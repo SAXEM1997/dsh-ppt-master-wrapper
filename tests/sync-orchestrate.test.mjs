@@ -682,7 +682,7 @@ test('幂等禁用①：工作区相对 HEAD 有包装层 diff（未提交）→
       assert.equal(code, 0);
       assert.equal(calls.verify.length, 1, '未短路：verify 照常执行');
       assert.equal(calls.python.length, 2, '未短路：guard 逐 skill 执行（fixture = ppt-master + second-skill）');
-      // wrapperPending 只认未推送提交——工作区未提交变更不触发自动 bump（规则③人工执行）。
+      // wrapperPending 只认未推送提交——工作区未提交变更不触发自动 bump（规则③由脚本自动执行，判据为已提交的未推送包装层提交）。
       assert.equal(commitCount(s.root), 1, 'no-change：不产生空提交');
       assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
       assert.match(calls.output(), /包装层/);
