@@ -1655,6 +1655,47 @@ test('check_env venv.on-ready：venv 注入直达 payload 与探测路由（runC
   }
 });
 
+test('check_env render: venv 小节行——invalid → path=-/python=skipped；on-ready → 解析路径 + exists + 版本（F2）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const venvDir = makeVenvDir();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    // invalid 行：README/spec 承诺的可见反馈通道＝模型可见的渲染行里出现 `path=-`，
+    // 而不是只藏在 payload/schema 中（模型只见 output.render 的文本）。
+    const invalidTool = toolNamedWith(
+      { venv: { enabled: true, path: 'relative/venv', oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    );
+    const invalidPayload = await invalidTool.execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...venvExec().exec },
+    );
+    const invalidText = invalidTool.output.render({}, invalidPayload)[0].text;
+    assert.ok(
+      invalidText.includes('venv: enabled=true path=- exists=false python=skipped'),
+      `invalid 行渲染 venv 小节行（path=-、skipped 形态）：${invalidText}`,
+    );
+
+    // on-ready 行：解析后绝对路径逐字 + exists=true + 生效解释器版本（不重新探测，取 payload）。
+    const readyTool = toolNamedWith(
+      { venv: { enabled: true, path: venvDir, oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    );
+    const readyPayload = await readyTool.execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...venvExec().exec },
+    );
+    const readyText = readyTool.output.render({}, readyPayload)[0].text;
+    assert.ok(
+      readyText.includes(`venv: enabled=true path=${venvDir} exists=true python=3.12.1`),
+      `on-ready 行渲染解析路径 + exists + 版本：${readyText}`,
+    );
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
 test('check_env venv：系统模式回归——off 态与未配置态诊断四字段逐字等价、子进程零 venv 增量', async () => {
   const { root, remove } = makeSkillRoot();
   const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'flask']);

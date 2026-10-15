@@ -329,6 +329,44 @@ test('readWrapperState: 读失败（EISDIR / 内容不可解析）→ readError 
   }
 });
 
+test("wrapperState 三原语: HOME='' → 拒绝相对路径回退（路径抛错 / 读降级 readError / 写抛错）（F3）", () => {
+  const { restore } = useTmpHome();
+  try {
+    process.env.HOME = '';
+    // 前置观测：Node 的 os.homedir() 在 HOME 为空串时返回空串、不回退（同 resolveVenvPath 边界用例）。
+    assert.equal(homedir(), '', '前置：HOME 空串时 os.homedir() 应返回空串');
+    const cwdStateDir = join(process.cwd(), '.ppt-master');
+
+    // ① 路径解析：抛错，绝不产出 './.ppt-master/wrapper-state.json' 这类相对路径
+    //    （相对路径会让 writeWrapperState 写进宿主 cwd，破坏单一登记位置契约）。
+    let caught = null;
+    try {
+      venv.wrapperStatePath();
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught, 'HOME 空串时 wrapperStatePath 应抛错（拒绝相对路径回退）');
+    assert.match(String(caught.message), /homedir|HOME/, '错误信息应指明不可解析的原因');
+
+    // ② 读：never-throw 契约不变——降级为 readError，且与「缺席」（无 readError 键）保持分离。
+    const state = venv.readWrapperState();
+    assert.equal(state.lastVenvPath, null, 'HOME 不可解析 ⇒ 旧路径未知');
+    assert.equal(typeof state.readError, 'string', '读失败应附 readError 字符串');
+    assert.ok(state.readError.length > 0, 'readError 应非空');
+    assert.equal('readError' in state, true, 'HOME 不可解析 ⇒ 走「读失败」通道（与「缺席」分离）');
+
+    // ③ 写：抛错传播（调用方转成「登记失败（非删除失败）」注记，不静默写入 cwd）。
+    assert.throws(
+      () => venv.writeWrapperState('/tmp/venv-anywhere'),
+      /homedir|HOME/,
+      'HOME 空串时 writeWrapperState 应抛错',
+    );
+    assert.equal(existsSync(cwdStateDir), false, 'HOME 空串不得在 cwd 落状态目录');
+  } finally {
+    restore();
+  }
+});
+
 // ─── 写失败：路径形态失配的自然失败（不改写任何模块函数） ────────
 
 test('writeMarker: marker 名位被目录占用 → 抛 EISDIR（可捕获）', () => {
@@ -848,6 +886,34 @@ test('ensureVenv: 创建 run 非零退出码 → {created:false, error 含退出
     assert.match(result.error, /boom/, 'error 应附 stderr 摘要');
     assert.equal(calls.length, 1, '创建失败不得重试');
     assert.equal(existsSync(join(target, venv.MARKER_FILENAME)), false, '创建失败不得写标记');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 创建失败 stderr 冗长（多行 / 单行超长）→ venv.error 只嵌有界摘要（F4）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'verbose-fail-venv');
+    // 形态一：多行 stderr（如整段 traceback）——只取首行，后续行不得整段回灌进 model 可见载荷。
+    const firstLine = 'Error: [Errno 28] No space left on device';
+    const { run } = makeRunStub({
+      exitCode: 1,
+      stderr: `${firstLine}\n${'  File "<stdin>", line 1\n'.repeat(2000)}`,
+    });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.match(result.error, /退出码 1/, '退出码仍如实');
+    assert.ok(result.error.includes(firstLine), `首行原因应保留：${result.error}`);
+    assert.equal(result.error.includes('File "<stdin>"'), false, '多行 stderr 不得整段回灌');
+    assert.ok(result.error.length < 600, `多行形态 error 应有界（实长 ${result.error.length}）`);
+
+    // 形态二：单行超长（无换行可切）——硬截断并以省略号标示。
+    const { run: run2 } = makeRunStub({ exitCode: 2, stderr: 'X'.repeat(50_000) });
+    const second = await venv.ensureVenv(run2, target);
+    assert.ok(second.error.length < 600, `单行超长同样应有界（实长 ${second.error.length}）`);
+    assert.ok(second.error.includes('…'), '截断应以省略号标示（不静默吞掉信息量）');
   } finally {
     restore();
   }

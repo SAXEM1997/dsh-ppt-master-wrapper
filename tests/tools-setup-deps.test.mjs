@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildPipArgs, createTools } from '../lib/tools.js';
@@ -1098,18 +1098,54 @@ test('setup_deps venv: action=none 亦可携前置拒绝原因（第三类注记
   const { root, remove } = makeSkillDir();
   try {
     const absPath = join(home, 'venvs', 'current');
-    // 登记路径＝当前路径：cleanupOldVenv 条件①拒绝 → action:'none' + 原因
-    const seams = seamRecorder({ readWrapperState: () => ({ lastVenvPath: absPath }) });
+    // 嵌套配置（旧路径在当前路径**之下**）：cleanupOldVenv 条件②双向前缀拒绝 → none + 原因。
+    // 注：条件①（登记路径＝当前路径）自 F1 起在 settleOldVenv 被短路为稳态无注记行，
+    // 故第三类注记的载体改用条件②——注记通道本身不变，只是不再由同路径触发。
+    const nestedOld = join(absPath, 'nested');
+    const seams = seamRecorder({ readWrapperState: () => ({ lastVenvPath: nestedOld }) });
     const tool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath), seams: seams.seams });
     const { exec } = venvExec();
 
     const payload = await tool.execute({}, { skillRoots: [root], ...exec });
 
     assert.equal(payload.cleanup.action, 'none', '前置拒绝 → none（不冒充删除失败）');
-    assert.equal(payload.cleanup.oldPath, absPath, 'oldPath 如实');
-    assert.match(payload.cleanup.error, /相同/, 'none 行携前置拒绝原因');
+    assert.equal(payload.cleanup.oldPath, nestedOld, 'oldPath 如实');
+    assert.match(payload.cleanup.error, /嵌套配置/, 'none 行携前置拒绝原因');
     assert.equal(seams.countOf('remove'), 0);
-    assert.ok(tool.output.render({}, payload)[0].text.includes(absPath), 'none+error 行 render 覆盖');
+    assert.ok(tool.output.render({}, payload)[0].text.includes(nestedOld), 'none+error 行 render 覆盖');
+  } finally {
+    remove();
+    restore();
+  }
+});
+
+test('setup_deps venv 稳态重跑：登记路径＝当前路径 → 无注记 + 「无需清理」渲染行（F1）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'current');
+    // 不注入任何桩：走真实 readWrapperState/writeWrapperState（第一路登记确实落盘）。
+    const tool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath) });
+    const { exec } = venvExec();
+
+    const first = await tool.execute({}, { skillRoots: [root], ...exec });
+    const second = await tool.execute({}, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(first.cleanup, { oldPath: null, action: 'none' }, '首跑：无登记旧路径');
+    // 稳态：登记路径＝当前路径。这是最常见的调用路径（第二次及以后每次成功运行），
+    // 注记通道只留给真实异常，故既不出现 'error' 键、也不渲染拒绝文案。
+    assert.deepEqual(
+      second.cleanup,
+      { oldPath: absPath, action: 'none' },
+      '同路径 → none 且**无** error 键（不得携条件①拒绝文案）',
+    );
+    assert.equal(second.cleanup.error, undefined, 'cleanup.error 须缺席');
+    assert.equal('error' in second.cleanup, false, 'cleanup 对象不得带 error 键');
+
+    const text = tool.output.render({}, second)[0].text;
+    assert.ok(text.includes('cleanup: 无需清理'), `稳态行渲染闲置形态：${text}`);
+    assert.equal(text.includes('未清理'), false, '稳态行不得出现「未清理」拒绝形态');
+    assert.equal(text.includes('拒绝删除'), false, '稳态行不得出现拒绝文案');
   } finally {
     remove();
     restore();
@@ -1243,6 +1279,36 @@ test('setup_deps venv: 读失败 + 登记失败同次并现 → 两类注记拼�
   }
 });
 
+test("setup_deps venv: HOME 空串（容器推荐配置：绝对 venv.path）→ 状态路径不落 cwd，读失败/登记失败如实入注记（F3）", async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'current');
+    // 不注入 seams：走**真实** readWrapperState/writeWrapperState——HOME 空串正是这两条路径的输入。
+    const tool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath) });
+    const { exec } = venvExec();
+
+    process.env.HOME = '';
+    assert.equal(homedir(), '', '前置：HOME 空串时 os.homedir() 应返回空串');
+    const payload = await tool.execute({}, { skillRoots: [root], ...exec });
+
+    assert.equal(payload.installExit, 0, 'venv 路径为绝对 ⇒ HOME 不影响 venv 本身');
+    assert.equal(payload.cleanup.action, 'none', '读失败不改写 action（非删除失败）');
+    assert.equal(payload.cleanup.oldPath, null, '旧路径未知');
+    assert.match(payload.cleanup.error, /wrapper-state 读取失败/, '读失败注记（第一类）');
+    assert.match(payload.cleanup.error, /登记失败（非删除失败）/, '登记失败注记（第三类）拼接');
+    assert.equal(
+      existsSync(join(process.cwd(), '.ppt-master')),
+      false,
+      'HOME 空串不得把 wrapper-state 写进宿主 cwd（单一登记位置契约）',
+    );
+    assert.equal(existsSync(join(absPath, VENV_MARKER)), true, 'venv 侧所有权标记照常写入');
+  } finally {
+    remove();
+    restore();
+  }
+});
+
 // ── 系统模式定值（off / invalid）与零副作用断言 ──────────────────
 
 test('setup_deps: venv off（路径合法）→ 系统模式 + 两键定值 + 四桩零调用（含删除原语）', async () => {
@@ -1356,9 +1422,11 @@ test('setup_deps venv 并发①：受控时序复用——创建 argv 至多一�
       assert.equal(payload.checkEnv.venv.exists, true, `${label}复跑见既有 venv`);
       assert.ok(payload.checkEnv.deps.every((dep) => dep.installed === true), `${label}依赖已装`);
     }
-    // 第二路读到第一路登记的路径：同路径 → 条件①拒绝（none + 原因，非删除失败）
+    // 第二路读到第一路登记的路径：同路径＝稳态（settleOldVenv 短路条件①）——
+    // 无需清理、无注记，而不是「条件①拒绝」的异常行（F1）。
     assert.equal(second.cleanup.oldPath, absPath, '第一路的登记确实落盘并被第二路读回');
     assert.equal(second.cleanup.action, 'none');
+    assert.equal('error' in second.cleanup, false, '稳态行不得携拒绝注记');
   } finally {
     remove();
     restore();
