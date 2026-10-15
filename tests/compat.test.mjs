@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -29,7 +30,19 @@ import { SKILL_RANK } from '../lib/skill-provider.js';
  * - stub 的 registerProvider/register 断言方法形态调用（cordis traceable 层脱挂
  *   调用 this=undefined——真实 SDK 实测契约，防 index.js 提取式调用回归）。
  * - CLI：--dsh-modules/--skill-roots（逗号多根）、定位失败 exit 1、漂移 exit 1。
+ *
+ * Task 5 追加面（本文件为**回归面**，一律按测试名定位）：
+ * - 插件入口装载期需宿主 `@deepseek-ai/schemastery`（index.js 受控解析）——stub 树
+ *   内新增 schemastery 替身包（`SCHEMASTERY_STUB`，包形 `main→.cjs`，替身 4 层保真），
+ *   三个 stub CLI 例向其子进程注入 `DSH_NODE_MODULES=<stub 树>/node_modules`
+ *   （`resolveDshModules` 定位链第②级已支持）；两例保真例**保持 `{env:{}}` 不注入**
+ *   （`CLI: 无 --dsh-modules 且 env 无定位线索 → exit 1 报无法定位` 断言取
+ *   `error.stdout`；`CLI: 未知参数 → exit 1 usage 提示` 的装载期语义见 Task 5 报告）。
+ * - 新增「可解析/不可解析」两态子进程观测量（Env 清空 + 仍传 `--dsh-modules` →
+ *   装载期 fail-loud 命中 `@deepseek-ai/schemastery` 且非零退出）——fail-loud 语义的
+ *   唯一可观测面（spec §6.1⓪）。
  */
+
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const skillsFixtureRoot = join(fixturesDir, 'skills-fixture');
@@ -273,10 +286,101 @@ test('挂载入口 = 本插件根 index.js（路径含 /index.js、非 lib/index
 // ─── stub SDK 构造器 ─────────────────────────────────────────────
 
 /**
+ * `@deepseek-ai/schemastery` 替身源码（Task 5；替身 4 层保真，plan Task 5 Consumes）。
+ *
+ * 真实包本机实测形态：`type:'module'` + `main:'lib/index.cjs'`（故替身一律 `main→.cjs`；
+ * 现有 stub 多为包根 `main:'index.mjs'`、superpowers-dsh stub 为 `lib/index.js`，
+ * 两形态均非替身所需）；CJS 命名空间**可调用**（`module.exports = Schema`）且含
+ * `object/string/boolean/union/const`，无 `z`/`default` 键；`.default()/.description()/
+ * .volatile()` 链式；`.volatile()` 二次标注抛 `TypeError("volatile schema is already
+ * wrapped")`；按 schema 校验（`schema({})`）产出的 volatile 叶为带 `.get()` 的引用对象；
+ * `toJSON()` 返回 `{uid, refs}` 引用图（顶层无 dict，叶在 `refs` 内）。
+ *
+ * 只复刻本仓库消费面（index.js 的 Config 声明 + volatile 叶计数），不做完整校验语义。
+ */
+const SCHEMASTERY_STUB = [
+  "'use strict';",
+  '// stub: @deepseek-ai/schemastery 最小替身（仅本仓库消费面；层①-④ 见 tests/compat.test.mjs）。',
+  'let nextUid = 0;',
+  '',
+  '/** 引用图收集：父节点 dict/list 内嵌子节点 → 子节点只留 uid（真实 toJSON 同形）。 */',
+  'function collectRefs(schema, refs) {',
+  '  if (refs[schema.uid] !== undefined) return schema.uid;',
+  '  const node = { type: schema.type, meta: { ...schema.meta } };',
+  '  refs[schema.uid] = node;',
+  '  if (schema.dict !== undefined) {',
+  '    node.dict = {};',
+  '    for (const [key, child] of Object.entries(schema.dict)) node.dict[key] = collectRefs(child, refs);',
+  '  }',
+  '  if (schema.list !== undefined) node.list = schema.list.map((child) => collectRefs(child, refs));',
+  '  if (schema.value !== undefined) node.value = schema.value;',
+  '  return schema.uid;',
+  '}',
+  '',
+  '/** 校验＋填默认＋volatile 包装（顺序同真实包：先解析值，再 createVolatile）。 */',
+  'function parse(schema, data) {',
+  '  let value = data;',
+  "  if (value === undefined && 'default' in schema.meta) value = schema.meta.default;",
+  "  if (schema.type === 'object') {",
+  '    const source = value === undefined ? {} : value;',
+  "    if (typeof source !== 'object' || source === null || Array.isArray(source)) {",
+  "      throw new TypeError('stub schemastery: object expected');",
+  '    }',
+  '    const result = {};',
+  '    for (const [key, child] of Object.entries(schema.dict)) {',
+  '      const resolved = parse(child, source[key]);',
+  '      if (resolved !== undefined) result[key] = resolved;',
+  '    }',
+  '    value = result;',
+  "  } else if (schema.type === 'union') {",
+  "    if (!schema.list.some((child) => child.type === 'const' && child.value === value)) {",
+  "      throw new TypeError('stub schemastery: union 不接受 ' + JSON.stringify(value));",
+  '    }',
+  "  } else if (schema.type === 'boolean') {",
+  "    if (typeof value !== 'boolean') throw new TypeError('stub schemastery: boolean expected');",
+  "  } else if (schema.type === 'string') {",
+  "    if (typeof value !== 'string') throw new TypeError('stub schemastery: string expected');",
+  '  }',
+  '  return schema.meta.volatile === true ? { get: () => value } : value;',
+  '}',
+  '',
+  'function Schema(type, options = {}) {',
+  '  const schema = function (data) { return parse(schema, data === undefined ? {} : data); };',
+  '  schema.type = type;',
+  '  schema.meta = {};',
+  '  if (options.dict !== undefined) schema.dict = options.dict;',
+  '  if (options.list !== undefined) schema.list = options.list;',
+  '  if (options.value !== undefined) schema.value = options.value;',
+  "  Object.defineProperty(schema, 'uid', { value: nextUid++ });",
+  '  schema.default = (value) => { schema.meta.default = value; return schema; };',
+  '  schema.description = (text) => { schema.meta.description = text; return schema; };',
+  '  schema.volatile = () => {',
+  "    if (schema.meta.volatile === true) throw new TypeError('volatile schema is already wrapped');",
+  '    schema.meta.volatile = true;',
+  '    return schema;',
+  '  };',
+  '  schema.toJSON = () => { const refs = {}; const uid = collectRefs(schema, refs); return { uid, refs }; };',
+  '  return schema;',
+  '}',
+  '',
+  '// 命名空间＝可调用函数本体（真实包 module.exports = Schema；无 z/default 键）。',
+  'Object.assign(Schema, {',
+  "  object: (dict) => Schema('object', { dict }),",
+  "  string: () => Schema('string'),",
+  "  boolean: () => Schema('boolean'),",
+  "  union: (list) => Schema('union', { list }),",
+  "  const: (value) => Schema('const', { value }),",
+  '});',
+  '',
+  'module.exports = Schema;',
+  '',
+].join('\n');
+
+/**
  * 造一套注入用 stub SDK（tmp node_modules：cordis/dsh-system-prompt/dsh-skill/
- * dsh-tools + 可选 superpowers-dsh）。各 stub 忠实复刻真实契约中 compat 依赖的
- * 形态：服务自挂 ctx、方法形态 this 绑定（cordis traceable 层脱挂调用 this=undefined
- * ——真实 SDK 实测）、SystemPrompt 需 config、ToolRuntime.register 校验
+ * dsh-tools + schemastery 替身 + 可选 superpowers-dsh）。各 stub 忠实复刻真实契约中
+ * compat 依赖的形态：服务自挂 ctx、方法形态 this 绑定（cordis traceable 层脱挂调用
+ * this=undefined——真实 SDK 实测）、SystemPrompt 需 config、ToolRuntime.register 校验
  * output { schema, render }、可选模拟「拒绝手写定义」以驱动 §3.5 回退分支。
  *
  * @returns {Promise<{base: string, modules: string, cleanup: () => Promise<void>}>}
@@ -417,12 +521,101 @@ async function makeStubSdk({
     );
   }
 
+  // schemastery 替身（Task 5）：index.js 装载期受控解析的对象。包形 main→.cjs 与真实
+  // 包一致（`pkg` 恒写 type:'module'，.cjs 扩展名即 CJS）；替身随 `omit` 可整体缺席。
+  await pkg('@deepseek-ai/schemastery', 'lib/index.cjs', {
+    'lib/index.cjs': SCHEMASTERY_STUB,
+  });
+
   return { base: tree.base, modules, cleanup: tree.cleanup };
+}
+
+/**
+ * CLI 子进程「装载期可解析」env：`DSH_NODE_MODULES` 指向 stub 树的 node_modules
+ * （`resolveDshModules` 第②级；插件侧受控解析的 env 四级亦以本级为首）。
+ *
+ * 只服务 **index.js 装载期**的 schemastery 受控解析（该期插件无 explicit 参数可用），
+ * 故三个已传 `--dsh-modules` 的 stub CLI 例仍须注入；`--dsh-modules` 只服务 CLI 期的
+ * SDK 定位——两消费点各自独立，注入 env 不改变 stub 语义。前置断言替身确在树内，
+ * 防「本机侥幸绿」（不得改写为指向真实 node_modules 或按 realpath 推导）。
+ */
+function stubLoadEnv(sdk) {
+  const manifest = join(sdk.modules, '@deepseek-ai', 'schemastery', 'package.json');
+  assert.ok(existsSync(manifest), `stub 树须含 schemastery 替身（装载期受控解析面）: ${manifest}`);
+  return { DSH_NODE_MODULES: sdk.modules };
 }
 
 /** 读回 stub 模块的模块级日志（与脚本动态 import 同一 URL → 同一模块实例）。 */
 const stubModule = (modules, name, main = 'index.mjs') =>
   import(pathToFileURL(join(modules, ...name.split('/'), main)).href);
+
+// ─── schemastery 替身保真（Task 5：替身自身的契约测试）────────────
+//
+// 替身是 Task 10①「Config volatile 声明存在」的**判定实现**：若替身不保真（例如把
+// 所有叶都标 volatile、或 toJSON 不产引用图），该断言会自我印证。故在此按真实包本机
+// 实测形态锁定替身 ②③④ 三层（层① 包形由 `pkg(main→.cjs)` 构造面保证）。
+
+test('stub schemastery 替身: 可调用 CJS 命名空间 + toJSON 引用图（volatile 恰 3 + 含非 volatile 叶）+ 二次 volatile 抛错 + 校验产 `.get()` 引用', async () => {
+  const sdk = await makeStubSdk();
+  try {
+    const ns = await stubModule(sdk.modules, '@deepseek-ai/schemastery', 'lib/index.cjs');
+    const z = ns.default;
+    assert.equal(typeof z, 'function', '真实包 module.exports = Schema（可调用命名空间）');
+    assert.equal('z' in z, false, '真实命名空间无 z 键（实测）');
+    for (const key of ['object', 'string', 'boolean', 'union', 'const']) {
+      assert.equal(typeof z[key], 'function', `命名空间须含 ${key}`);
+    }
+
+    // 与 index.js Config 同形：三叶子 volatile（含 union+const 枚举），另含非 volatile 叶。
+    const schema = z.object({
+      venv: z.object({
+        enabled: z.boolean().default(false).description('enabled').volatile(),
+        path: z.string().default('~/.ppt-master/venv').description('path').volatile(),
+        oldPathPolicy: z
+          .union([z.const('keep'), z.const('delete')])
+          .default('keep')
+          .description('policy')
+          .volatile(),
+      }).description('venv'),
+    }).description('root');
+
+    // 层④：按 schema 校验（schema({})）产出的 volatile 叶为带 .get() 的引用对象
+    const parsed = schema({});
+    assert.equal(typeof parsed.venv.enabled, 'object', 'volatile 叶为引用对象');
+    assert.equal(parsed.venv.enabled.get(), false);
+    assert.equal(parsed.venv.path.get(), '~/.ppt-master/venv');
+    assert.equal(parsed.venv.oldPathPolicy.get(), 'keep', 'union+const 枚举经默认值校验');
+
+    // 层③：toJSON() 返回 {uid, refs} 引用图；顶层无 dict；volatile 叶恰 3 且各带 meta.volatile
+    const json = schema.toJSON();
+    assert.deepEqual(Object.keys(json).sort(), ['refs', 'uid'], '顶层只有 {uid, refs}');
+    assert.equal(json.refs[json.uid].dict !== undefined, true, '叶在 refs 内（顶层无属性对象）');
+    const refs = Object.values(json.refs);
+    const volatileRefs = refs.filter((node) => node.meta?.volatile === true);
+    assert.equal(volatileRefs.length, 3, 'volatile 叶恰 3（三字段；多于 3 = 替身失真）');
+    assert.ok(
+      refs.some((node) => node.meta?.volatile !== true),
+      '须另含 ≥1 非 volatile 叶（否则 volatile 检查自我印证）',
+    );
+    assert.deepEqual(
+      volatileRefs.map((node) => node.meta.description).sort(),
+      ['enabled', 'path', 'policy'],
+      'volatile 叶即三字段本身',
+    );
+
+    // 层②/④：二次 .volatile() 抛 TypeError（真实实测文案）
+    assert.throws(
+      () => z.boolean().default(false).volatile().volatile(),
+      (error) => {
+        assert.equal(error.constructor, TypeError);
+        assert.match(error.message, /volatile schema is already wrapped/);
+        return true;
+      },
+    );
+  } finally {
+    await sdk.cleanup();
+  }
+});
 
 // ─── runCompatCheck：stub SDK 驱动主流程全分支 ───────────────────
 
@@ -666,7 +859,7 @@ test('CLI: --dsh-modules stub --skill-roots fixture → exit 0 且输出 OK', as
     const { stdout } = await execFileAsync(
       process.execPath,
       [scriptPath, '--dsh-modules', sdk.modules, '--skill-roots', fixture.root],
-      { env: {} },
+      { env: stubLoadEnv(sdk) },
     );
     assert.match(stdout, /OK/);
     assert.match(stdout, /alpha/);
@@ -685,7 +878,7 @@ test('CLI: 漂移（stub superpowers-dsh 常量 600，期望默认 550）→ exi
       execFileAsync(
         process.execPath,
         [scriptPath, '--dsh-modules', sdk.modules, '--skill-roots', fixture.root],
-        { env: {} },
+        { env: stubLoadEnv(sdk) },
       ),
       (error) => {
         assert.equal(error.code, 1, '漂移 → 非零退出');
@@ -731,7 +924,7 @@ test('CLI: --skill-roots 逗号多根 → 两根的 skill 均读回', async () =
         '--dsh-modules', sdk.modules,
         '--skill-roots', `${fixture.root},${secondRoot}`,
       ],
-      { env: {} },
+      { env: stubLoadEnv(sdk) },
     );
     assert.match(stdout, /OK/);
     assert.match(stdout, /alpha/);
@@ -750,4 +943,32 @@ test('CLI: 未知参数 → exit 1 usage 提示', async () => {
       return true;
     },
   );
+});
+
+test('T5⑧: schemastery 两态——可解析（注入 stub env）→ 装载成功；不可解析（env 清空 + --dsh-modules）→ fail-loud 命中包名且非零退出', async () => {
+  const [sdk, fixture] = await Promise.all([makeStubSdk(), makePositiveFixture()]);
+  try {
+    const argv = [scriptPath, '--dsh-modules', sdk.modules, '--skill-roots', fixture.root];
+
+    // 可解析态：DSH_NODE_MODULES=<stub 树>/node_modules（含 schemastery 替身）→ 装载成功
+    const { stdout } = await execFileAsync(process.execPath, argv, { env: stubLoadEnv(sdk) });
+    assert.match(stdout, /OK/, '可解析态：插件入口装载成功且契约全绿');
+
+    // 不可解析态：清空 DSH_*（env:{}）＋仍传 --dsh-modules（越过 CLI 定位级，否则先以
+    // 「无法定位」退出）→ 装载期 fail-loud。唯一正向标记＝错误消息含包名。
+    await assert.rejects(
+      execFileAsync(process.execPath, argv, { env: {} }),
+      (error) => {
+        assert.notEqual(error.code, 0, '装载期 fail-loud → 非零退出');
+        assert.match(
+          `${error.stdout ?? ''}${error.stderr ?? ''}`,
+          /@deepseek-ai\/schemastery/,
+          'fail-loud 必须点名不可解析的宿主包（唯一正向标记）',
+        );
+        return true;
+      },
+    );
+  } finally {
+    await Promise.all([sdk.cleanup(), fixture.cleanup()]);
+  }
 });

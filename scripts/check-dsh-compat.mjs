@@ -27,7 +27,9 @@
  *  4. SkillRegistry 挂载：apply(ctx, { skillRoots }) 驱动**本插件根 index.js**
  *     （PLUGIN_ENTRY，显式断言非参考实现的 lib/index.js），经同一注入通道
  *     （T14 前包内 skills/ 不存在，须注入 fixture 正例子集）读回候选：
- *     ctx.skills.list() 非空 + 逐名 get() 读回 content/resourceBase。
+ *     ctx.skills.list() 非空 + 逐名 get() 读回 content/resourceBase。**入口装载形态**：
+ *     定位成功后动态 `import(PLUGIN_ENTRY)`（顶层静态 import 会让插件装载期的
+ *     schemastery fail-loud 抢在 CLI 解析之前，见下方 import 区注释与 Task 5 报告）。
  *  5. rank 相对关系：SKILL_RANK（可注入期望值，缺省取 lib/skill-provider.js 真值）
  *     < SDK BUNDLED_SKILL_RANK（从定位到的 SDK 读回常量比较；600 遮蔽 550）。
  *  6. 漂移观测：读回同环境 superpowers-dsh 的 PACKAGED_SKILL_RANK（该常量在
@@ -56,7 +58,12 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { apply } from '../index.js';
+// 插件入口**不做顶层静态 import**（Task 5 装载形态修复）：Config 落地后插件装载期
+// 需要宿主 `@deepseek-ai/schemastery`，静态 import 会把该 fail-loud 提到 CLI 参数解析
+// 与 SDK 定位之前，使 `CLI: 未知参数 → exit 1 usage 提示` 与 `CLI: 无 --dsh-modules 且
+// env 无定位线索 → exit 1 报无法定位` 两例的断言语义失效。入口改由 runCompatCheck 在
+// **定位成功后**动态 `import(PLUGIN_ENTRY)`（见第 4 步）。
+// `lib/skill-provider.js` / `lib/tools.js` 零 npm 依赖、不触 schemastery，保持静态导入。
 import { SKILL_RANK } from '../lib/skill-provider.js';
 import { createTools } from '../lib/tools.js';
 
@@ -361,10 +368,24 @@ export async function runCompatCheck(options = {}) {
   }
 
   // ── 4. SkillRegistry 挂载：apply(ctx, { skillRoots }) 驱动插件根 index.js ──
+  //
+  // 装载形态（Task 5 修复）：插件入口在**定位成功后**动态装载——顶层静态 import 会让
+  // 插件装载期的 schemastery fail-loud 抢在 CLI 参数解析与 SDK 定位之前（cp. 文件头）。
+  // 动态命名空间**仅**用于取 `ns.apply`；`createTools` 沿用顶层静态导入（两处引用点
+  // 不变），**禁止**为适配动态命名空间而在 index.js 增导出具名符号（该错误修复不会
+  // 转红——tests/skeleton.test.mjs 只锁 package.json exports，故以文本硬约束）。
+  // 入口用的是**真实**动态 import（不走可注入的 `importModule`——那条缝只服务 SDK stub
+  // 模块替换；插件入口在每条用例里都必须是本包真实文件，否则挂载面失真）。
+  // 装载失败（宿主包不可解析）如实转 problems，不静默：fail-loud 语义的唯一可观测面。
   let ctx = null;
   try {
-    ctx = mount();
-    apply(ctx, toolOptions);
+    const ns = await import(pathToFileURL(PLUGIN_ENTRY).href);
+    if (typeof ns.apply !== 'function') {
+      problems.push(`插件入口 ${PLUGIN_ENTRY} 未导出 apply——无法驱动 SkillRegistry 挂载`);
+    } else {
+      ctx = mount();
+      ns.apply(ctx, toolOptions);
+    }
   } catch (error) {
     problems.push(`apply(ctx, { skillRoots }) 驱动 ${PLUGIN_ENTRY} 失败: ${firstLine(error)}`);
     ctx = null;

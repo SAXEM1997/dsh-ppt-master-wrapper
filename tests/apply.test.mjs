@@ -8,6 +8,10 @@ import { dirname, join } from 'node:path';
 
 import { name, inject, apply } from '../index.js';
 import { createTools } from '../lib/tools.js';
+// 追加导出一律经**命名空间**访问（同 tests/venv.test.mjs 约定）：Task 5 的
+// `snapshotVenvConfig`/`assembleInjectionBag` 未落地时，本文件既有用例保持绿、
+// 追加用例逐个先红（而非整文件 import 期链接失败）。
+import * as venv from '../lib/venv.js';
 
 /**
  * Task 4 契约：插件入口装配与能力探测降级。
@@ -248,5 +252,132 @@ test('tools: 三工具 description 均为非空双语短句，execute 均为异�
     assert.match(tool.description, /[\u4e00-\u9fff]/, `${tool.name} description 含中文段`);
     assert.equal(typeof tool.execute, 'function', `${tool.name} execute`);
     assert.equal(tool.execute.constructor.name, 'AsyncFunction', `${tool.name} execute 为异步`);
+  }
+});
+
+// ─── Task 5：Config 边界纯函数（统一注入包 + 去引用快照）────────
+//
+// 观测面选择（plan Task 5 Step 1 直测载体理由）：`snapshotVenvConfig` 与
+// `assembleInjectionBag` 皆无宿主依赖的纯边界函数，是「引用对象 → 普通值」形态差与
+// 注入袋键集的**唯一可直接观测面**（探针 provider 捕获方案作废——多一层装配耦合）。
+//
+// 两形态事实（spec §5.1）：loader 传入的 config 经 cordis 校验，三叶子必为 `.volatile()`
+// 引用对象（`{ get() }`，cosmokit `createVolatile`）；测试/嵌入形态（`{ skillRoots }`
+// 或省略 opts）才缺 `venv` 键，缺省补默认由 `assembleInjectionBag` 自填。
+
+/** 宿主 `.volatile()` 的解析值形态：带 `.get()` 的引用对象。 */
+const volatileRef = (value) => ({ get: () => value });
+
+test('T5①: snapshotVenvConfig——引用对象袋 → 三普通值（typeof 级去引用）', () => {
+  const raw = {
+    enabled: volatileRef(true),
+    path: volatileRef('/tmp/venv-snapshot'),
+    oldPathPolicy: volatileRef('delete'),
+  };
+  assert.equal(typeof raw.enabled, 'object', '前置：入参叶子确为引用对象（非普通值）');
+
+  const snapshot = venv.snapshotVenvConfig(raw);
+
+  assert.deepEqual(snapshot, {
+    enabled: true,
+    path: '/tmp/venv-snapshot',
+    oldPathPolicy: 'delete',
+  });
+  assert.equal(typeof snapshot.enabled, 'boolean', 'enabled 已是普通值');
+  assert.equal(typeof snapshot.path, 'string', 'path 已是普通值');
+  assert.equal(typeof snapshot.oldPathPolicy, 'string', 'oldPathPolicy 已是普通值');
+  assert.deepEqual(
+    Object.keys(snapshot).sort(),
+    ['enabled', 'oldPathPolicy', 'path'],
+    '恰好三字段（不夹带引用包装器）',
+  );
+
+  // 普通值输入同样原样通过（下游接口一律按普通值，不感知引用）
+  assert.deepEqual(
+    venv.snapshotVenvConfig({ enabled: false, path: '~/.ppt-master/venv', oldPathPolicy: 'keep' }),
+    { enabled: false, path: '~/.ppt-master/venv', oldPathPolicy: 'keep' },
+  );
+});
+
+test('T5②: assembleInjectionBag——测试/嵌入形态（缺 venv 键）→ venv 三字段为自填默认值（逐字）', () => {
+  const fromEmpty = venv.assembleInjectionBag({});
+  const defaults = { enabled: false, path: '~/.ppt-master/venv', oldPathPolicy: 'keep' };
+
+  assert.deepEqual(fromEmpty.venv, defaults, '缺 venv 键 → 三默认值逐字自填');
+  assert.deepEqual(Object.keys(fromEmpty).sort(), ['skillRoots', 'venv'], '注入袋恰两键');
+  assert.equal(fromEmpty.skillRoots, undefined, '无 skillRoots 时原样（undefined）透传');
+
+  assert.deepEqual(venv.assembleInjectionBag(undefined).venv, defaults, '省略 opts 同判');
+  assert.deepEqual(venv.assembleInjectionBag({ skillRoots: [] }).venv, defaults, '只有 skillRoots 同判');
+});
+
+test('T5③: assembleInjectionBag——{skillRoots, venv:<引用袋>} 两键共存互不干扰', () => {
+  const roots = ['/tmp/skills-a', '/tmp/skills-b'];
+  const bag = venv.assembleInjectionBag({
+    skillRoots: roots,
+    venv: {
+      enabled: volatileRef(true),
+      path: volatileRef('/tmp/venv-ref'),
+      oldPathPolicy: volatileRef('keep'),
+    },
+  });
+
+  assert.equal(bag.skillRoots, roots, 'skillRoots 原样透传（同一引用，不复制不改写）');
+  assert.deepEqual(bag.venv, { enabled: true, path: '/tmp/venv-ref', oldPathPolicy: 'keep' });
+  assert.equal(typeof bag.venv.path, 'string');
+  // 两键共存只在测试路径成立：loader 路径永不带 skillRoots（缺省为 undefined）
+  assert.deepEqual(Object.keys(bag).sort(), ['skillRoots', 'venv']);
+});
+
+test('T5④: 相对路径 venv → 注入包保留原值 + warn 触发（invalid 与 disabled×invalid 两行同判）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    // (a) 纯函数面：apply 不改写 venv 值——无效路径原样保留在注入袋内（行为层降级另计）
+    const raw = { enabled: true, path: 'relative/venv', oldPathPolicy: 'keep' };
+    assert.deepEqual(
+      venv.assembleInjectionBag({ venv: raw }).venv,
+      raw,
+      '注入包保留原值（不改写为默认值、不置 null）',
+    );
+
+    // (b) enabled:true + 相对路径 → invalid → warn 恰一次（warn 判定点＝同一 effectiveInterpreter 求值）
+    const enabledCase = makeCtx();
+    const enabledWarnings = captureWarn(() =>
+      apply(enabledCase.ctx, { skillRoots: [root], venv: { enabled: true, path: 'relative/venv' } }),
+    );
+    assert.equal(enabledWarnings.length, 1, 'invalid 行必须 warn 恰一次（能力齐全时无其它降级日志）');
+    assert.match(enabledWarnings[0], /relative-path/, 'warn 携带 invalidReason');
+    assert.match(enabledWarnings[0], /relative\/venv/, 'warn 携带原值以便定位修正');
+    assert.equal(enabledCase.calls.providers.length, 1, '降级视图不改写注册面');
+
+    // (c) disabled×invalid（enabled:false + 相对路径）→ invalidReason 沿用 resolveVenvPath 原因 → warn 照常
+    const disabledCase = makeCtx();
+    const disabledWarnings = captureWarn(() =>
+      apply(disabledCase.ctx, { skillRoots: [root], venv: { enabled: false, path: 'relative/venv' } }),
+    );
+    assert.equal(disabledWarnings.length, 1, 'disabled×invalid 组合下 warn 照常触发（不因 disabled 静默）');
+    assert.match(disabledWarnings[0], /relative-path/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('T5⑤: 既有注入通道不回归——{skillRoots} 缺省 venv 走默认、零降级日志、fixture 根不追加', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    const warnings = captureWarn(() => apply(ctx, { skillRoots: [root] }));
+
+    assert.deepEqual(warnings, [], 'venv 缺省＝默认（path 合法 + enabled:false）→ 不得有任何降级日志');
+    assert.equal(calls.providers.length, 1);
+    assert.equal(calls.tools.length, 3);
+    const listed = await calls.providers[0]().list();
+    assert.deepEqual(
+      listed.map((candidate) => candidate.name),
+      ['alpha', 'hidden-skill'],
+      'fixture 根场景不追加入口技能（决策A：仅生产包内根追加）',
+    );
+  } finally {
+    await cleanup();
   }
 });
