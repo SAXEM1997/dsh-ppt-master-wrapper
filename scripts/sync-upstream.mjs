@@ -66,7 +66,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { parseFrontmatter } from '../lib/skill-provider.js';
 
-/** 仓库根——以**模块位置**定位（src/scripts/ 的上一级），与 cwd 无关。 */
+/** 仓库根——以**模块位置**定位（scripts/ 的上一级），与 cwd 无关。 */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** 默认上游仓库（spec §4 用法块；ls-remote 与 codeload 同源取值）。 */
@@ -1113,7 +1113,13 @@ export function checkMarketplaceVersion(upstreamRoot, skillVersion) {
     };
   }
 
-  const marketplaceVersion = parsed !== null && typeof parsed === 'object' ? parsed.version : undefined;
+  // 版本取值层级：metadata.version 优先（真实上游 v6.7.0 起 marketplace.json 的
+  // version 位于 metadata 层级），顶层 version 向后兼容（旧 fixture 形态）。
+  // 只读顶层会把真实树恒判「无 version 字段（豁免）」，该子校验从未生效。
+  const marketplaceVersion =
+    parsed !== null && typeof parsed === 'object'
+      ? parsed?.metadata?.version ?? parsed?.version
+      : undefined;
   if (typeof marketplaceVersion !== 'string' || marketplaceVersion.trim() === '') {
     return {
       ok: true,
@@ -1229,6 +1235,13 @@ const PAT_ENV = 'DSH_PPT_GITLAB_PAT';
  * 其余非零退出（guard 完整运行后的业务判定，实测 78 一类）→ 3。
  */
 const INTERPRETER_ERROR_PATTERN = /SyntaxError|IndentationError|TabError/;
+
+/**
+ * git spawn 级失败码族（ENOENT/EACCES/EPERM/ENOTDIR/EISDIR）——与 lib/tools.js
+ * 的 SPAWN_FAILURE_CODES 同源同族：这些码意味着子进程**从未启动**（工具链缺
+ * 失，退出码 7），而非命令运行业务失败。
+ */
+const GIT_SPAWN_FAILURE_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'EISDIR']);
 
 /**
  * 编排日志助手工厂：stdout=流程信息、stderr=失败报告（退出码路径的说明走 stderr）。
@@ -1441,14 +1454,14 @@ function buildOneShotUrl(originUrl, pat) {
 /**
  * 同步主编排（spec §4.1 步骤 1-8 + 退出码单表）。
  *
- * 序列：usage 检查（→1）→ 启动磁盘预检（→5）→ 解析来源[ls-remote 固定
- * `--tags`；`--confirm-structural` 且未显式传 `--ref` 时固定 last-sync 记录 ref]
- * → 拉取[缓存键/两段预检；拉取成功即写 last-sync ref/sha]→ staging[marketplace
- * 校验]→ 幂等判定[短路禁用两触发：工作区包装层 diff / 未推送包装层提交]→
- * guard[逐 skill；解释器级=7、业务=3]→ 结构检测[🔴 且未确认 →2]→ 自动路径
- * [verify 前置（显式传 upstream）→ 替换 → bump → 🟡 汇总 → commit → tag 先行
- * 检测（→6）→ sync-report → push（PAT env→credential fill→指引；→6）→ 清理
- * staging]。每个退出码路径单一 return。
+ * 序列：usage 检查（→1）→ 启动磁盘预检（→5）→ git 工具链预检（spawn 级失败
+ * →7）→ 解析来源[ls-remote 固定 `--tags`；`--confirm-structural` 且未显式传
+ * `--ref` 时固定 last-sync 记录 ref]→ 拉取[缓存键/两段预检；拉取成功即写
+ * last-sync ref/sha]→ staging[marketplace 校验]→ 幂等判定[短路禁用两触发：工作区
+ * 包装层 diff / 未推送包装层提交]→ guard[逐 skill；解释器级=7、业务=3]→ 结构检测
+ * [🔴 且未确认 →2]→ 自动路径[verify 前置（显式传 upstream）→ 替换 → bump → 🟡
+ * 汇总 → commit → tag 先行检测（→6）→ sync-report → push（PAT env→credential
+ * fill→指引；→6）→ 清理 staging]。每个退出码路径单一 return。
  *
  * @param {object} options parseArgs 产物或等价显式对象（测试可另传 `root` 覆盖
  *   仓库根，缺省 = 本模块所属仓库根）。
@@ -1499,6 +1512,23 @@ export async function main(options, deps_) {
   if (startupFree < diskBudget()) {
     logFail(`磁盘空间不足：启动预检需 ≥${mb(diskBudget())}，实际可用 ${mb(startupFree)}（环境失败，退出码 5）。`);
     return 5;
+  }
+
+  // ── git 工具链预检（UltraReview Fix #4）：spawn 级失败 → 退出码 7 ──
+  //
+  // 此前 git 二进制缺失（spawn ENOENT/EACCES）在首个真实 git 调用（ls-remote）
+  // 以未分类异常冒泡 → CLI 入口「未预期的失败（退出码 5）」+ 原始堆栈。工具链
+  // 缺失属解释器级失败族（与 python3 ENOENT → 7 同族，判定码族与 lib/tools.js
+  // SPAWN_FAILURE_CODES 同源）。git 在场但 `--version` 非零退出**不**视为工具链
+  // 缺失——继续原流程（由后续真实调用的业务分支处置）。
+  try {
+    await git(['--version']);
+  } catch (error) {
+    if (GIT_SPAWN_FAILURE_CODES.has(error?.code)) {
+      logFail('git 不可用（工具链缺失，退出码 7）。');
+      return 7;
+    }
+    throw error;
   }
 
   // ── 步骤 1：解析来源 ────────────────────────────────────────────
@@ -1562,6 +1592,19 @@ export async function main(options, deps_) {
     const found = tagEntries.find((entry) => entry.tagName === wanted);
     if (found !== undefined) refSha = commitShaOf(found);
     else if (previousSync !== null && previousSync.ref === normalizedRef) refSha = previousSync.sha; // 固定 ref 重跑：tag 已不在远端
+  } else if (normalizedRef.startsWith('refs/heads/')) {
+    // branch ref：增补 `git ls-remote <repo> refs/heads/<name>` 解析 head sha
+    // （UltraReview Fix #3——此前 refSha 恒 null，cacheKey 恒 `<branch>@no-sha`，
+    // 上游 branch 前进时缓存**永不失效**）。首行须与请求 ref 精确对应；解析不到
+    // （branch 已删/输出空）→ 维持 'no-sha' 现状并 log 警告（不阻断流程）。
+    const branchHead = await git(['ls-remote', repo, normalizedRef]);
+    const firstLine = (branchHead.stdout.split('\n')[0] ?? '').trim();
+    const [maybeSha, maybeRef] = firstLine.split(/\s+/);
+    if (branchHead.code === 0 && maybeRef === normalizedRef && FULL_SHA_PATTERN.test(maybeSha)) {
+      refSha = maybeSha;
+    } else {
+      logInfo('⚠ branch head sha 未能解析，缓存将以无 sha 键留存——branch 前进时无法自动失效，必要时用 --refresh 强制重拉。');
+    }
   }
 
   // ── 步骤 2：拉取（缓存键 + 两段预检 + 解压）─────────────────────
@@ -1658,10 +1701,44 @@ export async function main(options, deps_) {
 
   const upstreamProbe = await git(['rev-parse', '--abbrev-ref', '@{u}']);
   let wrapperPending = false;
+
+  /**
+   * @{u} 分支的未推送包装层提交判定（UltraReview Fix #1：排除 last-sync.head
+   * 及其祖先）。待发布 = `@{u}..HEAD` 中**晚于 last-sync.head** 的提交——上次
+   * `--no-push` 产出的同步 commit 即 last-sync.head 本身（`anchor..HEAD` 区间
+   * 自然排除），否则「同步 commit 触碰 package.json → 被算未推送包装层提交 →
+   * 正式跑规则③ double-bump」。锚缺失 / 非 HEAD 祖先（rebase 等）→ 维持现状
+   * （全部未推送计入）。isWrapperPath 过滤保留：区间语义只按提交排除，区间内
+   * 非包装层文件的提交仍不计。
+   */
+  const detectUnpushedWrapperCommits = async () => {
+    const revs = await git(['rev-list', '@{u}..HEAD']);
+    if (revs.code !== 0) return false;
+    let shas = revs.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    const anchorHead = previousSync?.head ?? null;
+    if (anchorHead !== null && FULL_SHA_PATTERN.test(anchorHead)) {
+      // merge-base --is-ancestor 把自身判真（A 是 A 的祖先），锚自身的排除必须
+      // 显式比较 sha——同步 commit == last-sync.head 时 `sha === anchorHead` 即落
+      // 在此分支被剔除。
+      const anchorIsAncestor = await git(['merge-base', '--is-ancestor', anchorHead, 'HEAD']);
+      if (anchorIsAncestor.code === 0) {
+        const kept = [];
+        for (const sha of shas) {
+          if (sha === anchorHead) continue;
+          const later = await git(['merge-base', '--is-ancestor', anchorHead, sha]);
+          if (later.code === 0) kept.push(sha);
+        }
+        shas = kept;
+      }
+    }
+    if (shas.length === 0) return false;
+    const files = await git(['log', '--name-only', '--pretty=format:', '--no-walk', ...shas]);
+    return files.code === 0 && files.stdout.split('\n').some(isWrapperPath);
+  };
+
   if (upstreamProbe.code === 0) {
-    // @{u} 存在：@{u}..HEAD 范围内有涉及包装层文件的提交 → wrapperPending=true。
-    const pending = await git(['log', '--name-only', '--pretty=format:', '@{u}..HEAD']);
-    wrapperPending = pending.code === 0 && pending.stdout.split('\n').some(isWrapperPath);
+    // @{u} 存在：区间内存在涉及包装层文件的未推送提交 → wrapperPending=true。
+    wrapperPending = await detectUnpushedWrapperCommits();
   } else {
     // 回退分支（无 upstream/空仓库：@{u} 探测 exit 128 fatal——绝不裸跑
     // `git log @{u}..HEAD`）。锚 = last-sync 的 **head** 字段（包装层 HEAD 基线），
@@ -1688,9 +1765,67 @@ export async function main(options, deps_) {
   // 范围 = vendor 树 + 包装层待发布：ref sha 同 + 树无 diff + 无待发布才短路。
   // 两个禁用触发任一命中（工作区包装层 diff / 未推送包装层提交）即继续走 bump
   // 流程——「工作区未提交变更不参与 wrapperPending 取值」的限定语不适用于此处。
+
+  /**
+   * PAT 解析（spec §5 顺序：env → git credential fill）：供补推复用。解析失败 →
+   * null（与主 push 路径同序同据，但失败不映射退出码——补推属尽力而为）。
+   */
+  const resolvePushTarget = async (originUrl) => {
+    const envPat = nonEmpty(process.env[PAT_ENV]);
+    if (envPat !== null) {
+      const oneShot = buildOneShotUrl(originUrl, envPat);
+      return oneShot === null ? null : { mode: 'env', target: oneShot, pat: envPat };
+    }
+    const fill = await git(['credential', 'fill'], { stdin: `url=${originUrl}\n` });
+    if (fill.code === 0 && parseCredentialPassword(fill.stdout) !== null) {
+      // credential 路径：PAT 只在 git 进程内流转，push 走 origin。
+      return { mode: 'credential', target: 'origin', pat: null };
+    }
+    return null;
+  };
+
+  /**
+   * UltraReview Fix #2：push 部分失败（main 已推、tag 被拒 exit 6）后重跑会被
+   * 幂等短路吞掉——本地已就绪的发布 tag 永不发布。短路 return 前补推：本地
+   * last-sync 版本对应 tag 存在（rev-parse -q --verify）且 origin ls-remote
+   * 结果无该 tag → 补推；本地无 / 远端已有 / 预判或凭据不可用 → 照常短路
+   * （补推不改变短路 exit 0——失败下次运行重试）。
+   */
+  const backPushMissingReleaseTag = async () => {
+    const tagName = `v${currentVersion}`;
+    const localTag = await git(['rev-parse', '-q', '--verify', `refs/tags/${tagName}`]);
+    if (localTag.code !== 0) return; // 本地 tag 不存在 → 照常短路
+    const originUrlResult = await git(['remote', 'get-url', 'origin']);
+    if (originUrlResult.code !== 0) return;
+    const originUrl = originUrlResult.stdout.trim();
+    const remoteTags = await git(['ls-remote', '--tags', originUrl]);
+    if (remoteTags.code !== 0) return; // 预判通道不可达（网络等）不阻断——照常短路
+    const remoteTagNames = new Set(parseLsRemote(remoteTags.stdout).map((entry) => entry.tagName));
+    if (remoteTagNames.has(tagName) || remoteTagNames.has(currentVersion)) return; // 远端已有 → 已发布
+    const pushPlan = await resolvePushTarget(originUrl);
+    if (pushPlan === null) {
+      logInfo(`⚠ 发布 tag ${tagName} 本地已就绪且远端缺失，但推送凭据不可用——本次未补推（下次运行重试）。`);
+      return;
+    }
+    const pushTag = await git(['push', pushPlan.target, `refs/tags/${tagName}`]);
+    if (pushTag.code === 0) {
+      logInfo(`补推缺失的发布 tag: ${tagName}（上次推送部分失败的遗留）。`);
+      return;
+    }
+    // 一次性 URL 可能回显于 git 输出——先行脱敏（PAT 绝不出现在日志）。
+    const sanitized = pushPlan.pat !== null
+      ? `${pushTag.stdout}\n${pushTag.stderr}`.split(pushPlan.pat).join('***')
+      : `${pushTag.stdout}\n${pushTag.stderr}`;
+    logInfo(`⚠ 补推 ${tagName} 失败（下次运行重试）:\n${sanitized.trim()}`);
+  };
+
   const sameRefSha =
     previousSync !== null && previousSync.ref === normalizedRef && previousSync.sha === (refSha ?? '');
   if (sameRefSha && !changes.vendorDiff && !wrapperPending && !workspaceWrapperDiff) {
+    // Fix #2：--no-push/--dry-run 明示不推送时不补推；其余短路场景先补推缺失 tag。
+    if (opts.noPush !== true && opts.dryRun !== true) {
+      await backPushMissingReleaseTag();
+    }
     logInfo('already up to date（ref 与上次同步一致、vendor 树无 diff、无包装层待发布）——不跑 guard/verify/结构检测。');
     cleanupStaging();
     return 0;
@@ -1983,7 +2118,7 @@ const USAGE_TEXT = `用法: node scripts/sync-upstream.mjs [选项]
   --repo <url>                上游仓库 URL（默认 ${DEFAULT_REPO}；同步源与 ls-remote/codeload 均取此值）
   --refresh                   强制忽略 .upstream/ 缓存重新下载
   --confirm-structural        结构变化已人工确认，强制走自动路径
-  --skip-guard                跳过步骤 4 attribution_guard 的执行（必须与 --no-push 或 --dry-run 联用）
+  --skip-guard                跳过步骤 4 attribution_guard 的执行（须至少与 --no-push 或 --dry-run 之一联用）
   --no-push                   只本地 commit，不推送
   --dry-run                   只输出将发生的变化`;
 

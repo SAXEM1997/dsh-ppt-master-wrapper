@@ -828,6 +828,64 @@ test('checkMarketplaceVersion: marketplace.json 无 version 字段 → 豁免（
   }
 });
 
+// ── metadata.version 层级（真实上游 v6.7.0 起的 marketplace.json 形态）──
+// UltraReview Fix #6：真实 marketplace.json 的 version 位于 metadata.version
+// 层级，此前只读顶层 parsed.version——真实树上恒判「无 version 字段（豁免）」，
+// 该子校验从未生效。修复后 metadata.version 优先，顶层 version 向后兼容。
+
+/** 构造指定形态的 marketplace.json fixture 并返回其根目录。 */
+function marketplaceRoot(payload) {
+  const root = mkdtempSync(join(tmpdir(), 'sync-marketplace-'));
+  mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+  writeFileSync(join(root, '.claude-plugin', 'marketplace.json'), `${JSON.stringify(payload, null, 2)}\n`);
+  return root;
+}
+
+test('checkMarketplaceVersion: metadata.version 层级与 skillVersion 不一致 → ok:false（不再豁免）', () => {
+  const root = marketplaceRoot({ name: 'ppt-master', metadata: { description: 'd', version: '6.8.0' }, plugins: [] });
+  try {
+    const result = checkMarketplaceVersion(root, '6.7.0');
+    assert.equal(result.ok, false, 'metadata.version 有值且不一致 → 必须报不一致，不得豁免');
+    assert.match(result.note, /6\.8\.0/);
+    assert.match(result.note, /6\.7\.0/);
+    assert.doesNotMatch(result.note, /豁免/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('checkMarketplaceVersion: metadata.version 一致 → ok:true 且无豁免 note', () => {
+  const root = marketplaceRoot({ name: 'ppt-master', metadata: { version: '6.7.0' }, plugins: [] });
+  try {
+    const result = checkMarketplaceVersion(root, '6.7.0');
+    assert.equal(result.ok, true);
+    assert.doesNotMatch(result.note, /豁免/, '版本字段可得时不得输出豁免 note');
+    assert.match(result.note, /6\.7\.0/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('checkMarketplaceVersion: 两层级并存 → metadata.version 优先于顶层 version', () => {
+  const root = marketplaceRoot({ name: 'ppt-master', version: '6.6.0', metadata: { version: '6.8.0' }, plugins: [] });
+  try {
+    // metadata.version=6.8.0 与 skillVersion 6.8.0 一致；若误读顶层 6.6.0 会误报不一致。
+    const result = checkMarketplaceVersion(root, '6.8.0');
+    assert.equal(result.ok, true, '并存时必须以 metadata.version 为准');
+    assert.match(result.note, /6\.8\.0/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('checkMarketplaceVersion: 顶层 version（旧 fixture 形态）向后兼容照旧 ok', () => {
+  // 旧形态（顶层 version）不因修复回归——upstream-tree fixture 即此形态，
+  // 与 fixture 版本一致 → ok:true。
+  const result = checkMarketplaceVersion(upstreamTreeRoot, '6.8.0');
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(result.note, /豁免/);
+});
+
 test('checkMarketplaceVersion: 读取上游仓库根路径，而非 skills/.claude-plugin/plugin.json', () => {
   // 钉子：两个路径不同——skills/.claude-plugin/plugin.json 是 staging 丢弃对象，
   // 其 version（0.1.0）不得被当作 marketplace 数据源。

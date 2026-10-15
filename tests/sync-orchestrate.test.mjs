@@ -126,6 +126,11 @@ function makeScenario({ vendorFrom = null, version = '6.7.0', origin = true, ups
   gitIn(seed, ['commit', '-q', '-m', 'seed']);
   gitIn(seed, ['remote', 'add', 'origin', upstreamBare]);
   gitIn(seed, ['push', '-q', 'origin', 'main']);
+  const upstreamMainShaOf = () =>
+    execFileSync('git', ['--git-dir', upstreamBare, 'rev-parse', 'refs/heads/main'], {
+      encoding: 'utf8',
+    }).trim();
+  const upstreamMainSha = upstreamMainShaOf();
   const tagShas = {};
   for (const tag of upstreamTags) {
     gitIn(seed, ['tag', tag]);
@@ -143,6 +148,16 @@ function makeScenario({ vendorFrom = null, version = '6.7.0', origin = true, ups
     repoUrl: `file://${upstreamBare}`,
     tarballPath,
     tagShas,
+    /** 上游 bare 的 branch main head sha（`--ref main` 的 ls-remote 解析对象）。 */
+    upstreamMainSha,
+    /** 在上游 seed 上追加一个 commit 并推送 → branch main head sha 前进，返回新 sha。 */
+    advanceUpstreamMain() {
+      writeFileSync(join(seed, `ADVANCE-${Date.now()}.md`), 'advance\n');
+      gitIn(seed, ['add', '-A']);
+      gitIn(seed, ['commit', '-q', '-m', 'advance main']);
+      gitIn(seed, ['push', '-q', 'origin', 'main']);
+      return upstreamMainShaOf();
+    },
     /** 解压树路径（`.upstream/<cacheKey>/`）——runVerify upstream 参数的期望值。 */
     extractDirOf(tag = 'v6.8.0') {
       return join(root, '.upstream', `refs/tags/${tag}@${tagShas[tag]}`);
@@ -225,6 +240,23 @@ function cannedGit(matchers = []) {
   };
 }
 
+/**
+ * 真实 git 的捕获式封装（部分注入 runGit 的用例把未匹配调用委托回真实 git）：
+ * 非零退出码不抛错、原样返回 `{code, stdout, stderr}`。
+ */
+async function realGitResult(args, opts = {}) {
+  try {
+    const stdout = execFileSync('git', args, {
+      cwd: opts.cwd ?? process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { code: 0, stdout, stderr: '' };
+  } catch (error) {
+    return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+  }
+}
+
 /** 读取 last-sync.json 原始 JSON（at 不可注入——断言放宽为可解析，其余字段精确）。 */
 function readLastSyncRaw(root) {
   const file = join(root, '.upstream', 'last-sync.json');
@@ -265,9 +297,11 @@ function withEnv(name, value, fn) {
 test('usage：--skip-guard 默认推送 → 退出码 1（Review Focus #5）', async () => {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'sync-orch-usage-'));
   try {
-    const { deps } = stubDeps({ tarballPath: 'unused' });
+    const { deps, calls } = stubDeps({ tarballPath: 'unused' });
     const code = await main({ ...parseArgs(['--skip-guard']), root: tmpRoot }, deps);
     assert.equal(code, 1);
+    // UltraReview #26：USAGE_TEXT 的联用措辞为「须至少与…之一联用」。
+    assert.match(calls.output(), /须至少与 --no-push 或 --dry-run 之一联用/);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -285,6 +319,57 @@ test('usage：非法 --ref（短 sha）→ normalizeRef usageError → 退出码
 });
 
 // ─── 退出码 5：环境失败（来源/网络/磁盘） ──────────────────────────
+
+// ─── git 工具链预检（UltraReview Fix #4）：spawn 级失败 → 退出码 7 ──
+//
+// 此前 git 二进制缺失（spawn ENOENT）在首个真实 git 调用（ls-remote）处以
+// 未分类异常冒泡到 CLI 入口 → 「未预期的失败（退出码 5）」+ 原始堆栈。工具链
+// 缺失属解释器级失败族（与 python3 ENOENT → 7 同族），应报 7 且不带堆栈。
+
+test('git 工具链缺失（spawn ENOENT）→ 退出码 7 且输出含「git」「工具链」，无原始堆栈', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: async () => {
+        const error = new Error('spawn git ENOENT');
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 7, 'spawn 级 git 失败 = 工具链缺失 = 解释器级失败族（退出码 7）');
+    assert.match(calls.output(), /git/);
+    assert.match(calls.output(), /工具链/);
+    assert.doesNotMatch(calls.output(), /ENOENT/, '不回显原始 spawn 错误（无堆栈/裸错误）');
+    assert.doesNotMatch(calls.output(), /\n\s+at\s/, '绝不输出原始堆栈');
+    assert.equal(calls.fetch.length, 0, '预检失败不得进入下载');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('git 预检：--version 非零退出不视为工具链缺失（流程照常继续）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      // --version 返回非零（git 在场但命令异常）→ 不判 7，其余调用走真实 git，
+      // 流程照常走到结构检测（🔴 second-skill）→ 退出码 2。
+      runGit: async (args, opts) => {
+        if (args[0] !== undefined && args[0] === '--version') {
+          return { code: 1, stdout: '', stderr: 'weird git' };
+        }
+        return realGitResult(args, opts);
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 2, '预检只认 spawn 级失败；非零退出的 git 继续原流程');
+    assert.doesNotMatch(calls.output(), /工具链/);
+  } finally {
+    s.cleanup();
+  }
+});
 
 test('无匹配 release tag → 退出码 5 且错误指引用 --ref', async () => {
   const s = makeScenario({ vendorFrom: VENDOR_SKILLS, upstreamTags: [] });
@@ -562,7 +647,10 @@ test('ref 回退：--confirm-structural 固定 **branch** ref（sha 不可得记
     );
     const recorded = readLastSyncRaw(s.root);
     assert.equal(recorded.ref, 'refs/heads/main', '记录 ref 为 branch 形态');
-    assert.equal(recorded.sha, '', 'branch ref 的 sha 落盘为空串（refSha 不可得）');
+    // Fix #3 后 branch head sha 经 ls-remote 解析落盘（不再恒空串）——「branch 记录
+    // 写入即不可读」的回归由 ref 可读性断言本身固定（空串形态的读取宽容语义另由
+    // sync-parse 的 last-sync 用例覆盖）。
+    assert.equal(recorded.sha, s.upstreamMainSha, 'branch ref 的 sha 落解析出的 head sha');
 
     // 重跑：带 --refresh 强制再拉（否则缓存复用不调 fetchTarball），不带 --ref。
     const { deps: depsAgain, calls: callsAgain } = stubDeps({ tarballPath: s.tarballPath });
@@ -589,7 +677,17 @@ test('branch ref 重跑：sha 不可得不得误判幂等同 ref（cacheKey 走 
   const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
   try {
     writeLastSync({ ref: 'refs/heads/main', sha: '', version: '6.7.0' }, s.root);
-    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    // Fix #3 后真实链路会解析出 branch head sha；本用例固定的是「sha 解析失败」
+    // 的兜底语义 → 拦截 branch-head ls-remote 返回空（远端解析不到）。
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: async (args, opts) => {
+        if (args[0] === 'ls-remote' && args[1] === s.repoUrl && args[2] === 'refs/heads/main') {
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        return realGitResult(args, opts);
+      },
+    });
     const code = await main(
       { root: s.root, repo: s.repoUrl, ref: 'main', refresh: true, noPush: true },
       deps,
@@ -603,6 +701,86 @@ test('branch ref 重跑：sha 不可得不得误判幂等同 ref（cacheKey 走 
     // 未误判幂等：真的走完了同步（版本按上游 6.8.0 落位 = 规则①）。
     assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
     assert.doesNotMatch(calls.output(), /already up to date/, 'sha 不可得不得被判同 ref');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── branch ref 的 head sha 解析（UltraReview Fix #3）──────────────
+//
+// 此前 `--ref <branch>` 的 refSha 恒 null → cacheKey 恒 `<branch>@no-sha`：
+// 上游 branch 前进（head sha 变化）缓存**永不失效**，last-sync.sha 也恒空。
+// 修复：解析阶段对 refs/heads/ 前缀 ref 增补 `git ls-remote <repo> refs/heads/<name>`，
+// 首行 sha 纳入 cacheKey 与 last-sync.sha；解析不到 → log 警告 + 维持 no-sha 现状。
+
+test('branch ref（Fix #3）：--ref main 首跑缓存键与 last-sync.sha 均含上游 head sha', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, version: '6.7.0' });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main(
+      { root: s.root, repo: s.repoUrl, ref: 'main', confirmStructural: true, noPush: true },
+      deps,
+    );
+    assert.equal(code, 0);
+    assert.equal(calls.fetch.length, 1);
+    assert.ok(
+      calls.fetch[0].dest.includes(`refs/heads/main@${s.upstreamMainSha}`),
+      `缓存键应含 branch head sha（而非 no-sha）: ${calls.fetch[0].dest}`,
+    );
+    const raw = readLastSyncRaw(s.root);
+    assert.equal(raw.sha, s.upstreamMainSha, 'last-sync.sha 落 branch head sha');
+    assert.doesNotMatch(calls.output(), /branch head sha 未能解析/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('branch ref（Fix #3）：上游 branch 前进（head sha 变）→ cacheKey 变化 → 重新下载', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    const depsA = stubDeps({ tarballPath: s.tarballPath });
+    const codeA = await main({ root: s.root, repo: s.repoUrl, ref: 'main', noPush: true }, depsA.deps);
+    assert.equal(codeA, 0);
+    assert.ok(depsA.calls.fetch[0].dest.includes(`refs/heads/main@${s.upstreamMainSha}`));
+
+    // 上游 branch 前进：seed 追加 commit 并推送 → head sha 变化。
+    const advancedSha = s.advanceUpstreamMain();
+    assert.notEqual(advancedSha, s.upstreamMainSha, '前置：head sha 确已前进');
+
+    const depsB = stubDeps({ tarballPath: s.tarballPath });
+    const codeB = await main({ root: s.root, repo: s.repoUrl, ref: 'main', noPush: true }, depsB.deps);
+    assert.equal(codeB, 0);
+    assert.equal(depsB.calls.fetch.length, 1, '缓存键随 head sha 变化 → 必须重新下载（而非复用 no-sha 旧缓存）');
+    assert.ok(
+      depsB.calls.fetch[0].dest.includes(`refs/heads/main@${advancedSha}`),
+      `新缓存键应含前进后的 sha: ${depsB.calls.fetch[0].dest}`,
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('branch ref（Fix #3）：head sha 解析失败（ls-remote 空输出）→ 警告 + no-sha 键留存', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: async (args, opts) => {
+        if (args[0] === 'ls-remote' && args[1] === s.repoUrl && args[2] === 'refs/heads/main') {
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        return realGitResult(args, opts);
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, ref: 'main', refresh: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.match(calls.output(), /branch head sha 未能解析/, '解析失败必须 log 警告');
+    assert.match(calls.output(), /无 sha 键/, '警告须说明缓存将以无 sha 键留存');
+    assert.ok(
+      calls.fetch[0].dest.includes('refs/heads/main@no-sha'),
+      `解析失败维持 no-sha 现状: ${calls.fetch[0].dest}`,
+    );
+    assert.equal(readLastSyncRaw(s.root).sha, '', 'sha 不可得 → last-sync.sha 空串');
   } finally {
     s.cleanup();
   }
@@ -686,6 +864,164 @@ test('幂等禁用①：工作区相对 HEAD 有包装层 diff（未提交）→
       assert.equal(commitCount(s.root), 1, 'no-change：不产生空提交');
       assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
       assert.match(calls.output(), /包装层/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── 规则③自触发修复（UltraReview Fix #1）：同步 commit 不算「未推送包装层提交」──
+//
+// `--no-push` 复核后正式跑（或重跑）时，上次同步 commit 自身（触碰 package.json）
+// 位于 @{u}..HEAD 内且过 isWrapperPath——被误判 wrapperPending=true → 规则③
+// double-bump。修复：待发布 = @{u}..HEAD 中**晚于 last-sync.head** 的提交（同步
+// commit 即 last-sync.head 本身，被区间排除）；锚缺失/非祖先 → 维持全部计入。
+
+test('规则③自触发（Fix #1）：--no-push 同步后立即重跑 → 同步 commit 被锚定排除 → 幂等短路不 double-bump', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, version: '6.7.0' });
+  try {
+    // 首跑：--no-push 自动路径 → sync commit（未推送、触碰 package.json）+ tag。
+    const depsA = stubDeps({ tarballPath: s.tarballPath });
+    const codeA = await main(
+      { root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true },
+      depsA.deps,
+    );
+    assert.equal(codeA, 0);
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+    assert.equal(commitCount(s.root), 2, 'init + 同步 commit');
+
+    // 重跑（不带 --ref）：sameRefSha + vendorDiff=false；同步 commit 虽在 @{u}..HEAD
+    // 内（未推送、package.json 为包装层文件）但 = last-sync.head → 必须排除 →
+    // wrapperPending=false → 幂等短路（否则规则③ double-bump 6.8.0-r1）。
+    const depsB = stubDeps({ tarballPath: s.tarballPath });
+    const codeB = await main({ root: s.root, repo: s.repoUrl }, depsB.deps);
+    assert.equal(codeB, 0);
+    assert.match(depsB.calls.output(), /already up to date/);
+    assert.equal(depsB.calls.verify.length, 0, '不 double-bump：不进自动路径');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0', '版本不得 double-bump');
+    assert.equal(commitCount(s.root), 2, '不得再产生同步 commit');
+    assert.deepEqual(tagList(s.root), ['v6.8.0'], '不得再产生 -r1 tag');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('规则③保留语义（Fix #1）：--no-push 后开发者提交包装层文件 → 重跑 wrapperPending=true → 规则③ bump', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS, version: '6.7.0' });
+  try {
+    const depsA = stubDeps({ tarballPath: s.tarballPath });
+    const codeA = await main(
+      { root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true },
+      depsA.deps,
+    );
+    assert.equal(codeA, 0);
+
+    // 同步 commit 之后，开发者另提交一个包装层文件（晚于 last-sync.head 锚）。
+    mkdirSync(join(s.root, 'lib'), { recursive: true });
+    writeFileSync(join(s.root, 'lib', 'foo.js'), 'export {};\n');
+    gitIn(s.root, ['add', '-A']);
+    gitIn(s.root, ['commit', '-q', '-m', 'wrapper change']);
+
+    const depsB = stubDeps({ tarballPath: s.tarballPath });
+    const codeB = await main({ root: s.root, repo: s.repoUrl, noPush: true }, depsB.deps);
+    assert.equal(codeB, 0);
+    assert.equal(depsB.calls.verify.length, 1, '锚只排除同步 commit 自身——后续包装层提交仍触发');
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0-r1', '规则③ -r+1');
+    assert.equal(commitCount(s.root), 4, 'init + 同步 + 开发者 + 第二次同步 commit');
+    assert.deepEqual(tagList(s.root), ['v6.8.0', 'v6.8.0-r1']);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── push 部分失败修复（UltraReview Fix #2）：幂等短路前补推缺失的发布 tag ──
+//
+// push 两段（main + tag）中 main 成功、tag 被拒（exit 6）后重跑：sameRefSha +
+// vendorDiff=false + wrapperPending=false 全中 → 被幂等短路吞掉，本地已就绪的
+// tag 永不发布。修复：短路 return 前——本地 tag 存在且 origin ls-remote 无该
+// tag → 补推该 tag 后再短路；本地 tag 不存在 / 远端已有 → 照常短路。
+
+/** Fix #2 场景的 runGit：origin 侧查询 canned、其余委托真实 git；push 记录并成功。 */
+function backPushRunGit(originUrl, pushes, originTagsStdout = '') {
+  return async (args, opts) => {
+    if (args[0] === 'remote' && args[1] === 'get-url') {
+      return { code: 0, stdout: `${originUrl}\n`, stderr: '' };
+    }
+    if (args[0] === 'ls-remote' && args[2] === originUrl) {
+      return { code: 0, stdout: originTagsStdout, stderr: '' };
+    }
+    if (args[0] === 'push') {
+      pushes.push(args);
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    return realGitResult(args, opts);
+  };
+}
+
+test('push 部分失败修复（Fix #2）：main 已推 tag 未推 → 重跑幂等短路前补推缺失 tag → exit 0', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    // 现场：上次运行 main 已推、本地 tag 已建但 tag push 被拒（远端无该 tag）。
+    writeLastSync(
+      { ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0', head: headSha(s.root) },
+      s.root,
+    );
+    gitIn(s.root, ['tag', 'v6.8.0']);
+
+    await withEnv('DSH_PPT_GITLAB_PAT', 'glpat-backpush', async () => {
+      const pushes = [];
+      const { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: backPushRunGit(CANNED_ORIGIN_URL, pushes),
+      });
+      const code = await main({ root: s.root, repo: s.repoUrl }, deps);
+      assert.equal(code, 0, '补推成功后照常短路 exit 0');
+      assert.match(calls.output(), /补推缺失的发布 tag/);
+      assert.equal(pushes.length, 1, '只补推 tag（main 已推，不重复推）');
+      assert.equal(pushes[0][0], 'push');
+      assert.ok(
+        pushes[0].includes('refs/tags/v6.8.0'),
+        `stub push 应收到 tag refspec: ${JSON.stringify(pushes[0])}`,
+      );
+      assert.equal(pushes[0][1], `https://oauth2:glpat-backpush@gitlab.example.com/zyx/dsh-wrapper-test.git`);
+      assert.match(calls.output(), /already up to date/);
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('push 部分失败修复（Fix #2）对照：本地 tag 不存在 / 远端已有该 tag → 照常短路（无补推）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    await withEnv('DSH_PPT_GITLAB_PAT', 'glpat-backpush', async () => {
+      // ① 本地 tag 不存在 → 无可补推对象，照常短路。
+      writeLastSync(
+        { ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0', head: headSha(s.root) },
+        s.root,
+      );
+      let pushes = [];
+      let { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: backPushRunGit(CANNED_ORIGIN_URL, pushes),
+      });
+      let code = await main({ root: s.root, repo: s.repoUrl }, deps);
+      assert.equal(code, 0);
+      assert.equal(pushes.length, 0, '本地 tag 不存在 → 不补推');
+      assert.match(calls.output(), /already up to date/);
+      assert.doesNotMatch(calls.output(), /补推缺失的发布 tag/);
+
+      // ② 本地 tag 存在但远端已有该 tag → 已发布，无需补推。
+      gitIn(s.root, ['tag', 'v6.8.0']);
+      pushes = [];
+      ({ deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: backPushRunGit(CANNED_ORIGIN_URL, pushes, `${CANNED_SHA}\trefs/tags/v6.8.0\n`),
+      }));
+      code = await main({ root: s.root, repo: s.repoUrl }, deps);
+      assert.equal(code, 0);
+      assert.equal(pushes.length, 0, '远端已有 tag → 不补推');
+      assert.doesNotMatch(calls.output(), /补推缺失的发布 tag/);
+    });
   } finally {
     s.cleanup();
   }
