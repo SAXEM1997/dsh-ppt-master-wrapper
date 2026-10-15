@@ -40,6 +40,12 @@
  *     形态，固定以源码正则读其入口文件）与本插件期望值比对：读得到且不等 →
  *     漂移告警 + 非零退出；读不到 → warning 降级该项（本脚本主职责是 SDK 契约，
  *     superpowers-dsh 为跟随策略观测项）。
+ *  7. §7.7 五项设计成立性前置检查（Task 10）——载体分工钉死：**③④＝静态源码文本
+ *     断言**（bundle insert 层 `cordis.patch.yml` 条目、受控解析通道存在），
+ *     **①②⑤＝实跑断言**（`ns.Config` volatile 声明、apply 第二参注入通道、
+ *     生产根形态经真实 SkillRegistry 读回入口技能）。**不采用 env 通道子进程**。
+ *     另含默认值交叉锚定（schema 校验默认值 ≡ 注入袋缺省默认值；两处字面拷贝的
+ *     唯一钉住处）。
  *
  * 全绿 → exit 0；任一契约失败/漂移 → 非零退出并列出全部 problems。
  *
@@ -69,12 +75,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // `lib/skill-provider.js` / `lib/tools.js` 零 npm 依赖、不触 schemastery，保持静态导入。
 import { SKILL_RANK } from '../lib/skill-provider.js';
 import { createTools } from '../lib/tools.js';
+// `lib/venv.js` 同为纯 fs 原语、零 npm 依赖、不触 schemastery，可静态导入：
+// §7.7 的默认值交叉锚定需 `snapshotVenvConfig` 与组合纯函数 `assembleInjectionBag`
+// 两者比对（schema 校验默认值 vs 注入袋缺省默认值）。
+import { assembleInjectionBag, snapshotVenvConfig } from '../lib/venv.js';
 
 /**
  * compat 挂载驱动的插件入口——本插件**包根** index.js（显式导出供测试断言：
  * 路径含 /index.js 且非参考实现的 lib/index.js，防照抄参考脚本挂错入口）。
  */
 export const PLUGIN_ENTRY = fileURLToPath(new URL('../index.js', import.meta.url));
+
+/** 本包根（§7.7③ 的 bundle 面静态断言取文位置）。 */
+const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+/** bundle insert 层 patch 文件（§7.7③：静态源码文本断言的唯一取文处）。 */
+const BUNDLE_PATCH_FILE = join(PACKAGE_ROOT, 'cordis.patch.yml');
 
 /** CLI `--skill-roots` 缺省值：包内 skills/（T14 首灌前不存在，smoke 须注入）。 */
 const PACKAGED_SKILLS_ROOT = fileURLToPath(new URL('../skills/', import.meta.url));
@@ -85,6 +101,38 @@ const PACKAGED_SKILLS_ROOT = fileURLToPath(new URL('../skills/', import.meta.url
  * **此名**豁免；其余候选（vendor）一律维持严格判定。
  */
 const ENTRY_SKILL_NAME = 'ppt-master-env';
+
+// ─── §7.7 五项设计成立性前置检查的判据锚（Task 10）───────────────
+
+/**
+ * ① 的遍历口径锚：Config 三叶子 volatile，**且**必须另有 ≥1 个非 volatile 叶。
+ *
+ * 本机宿主实测：`Config.toJSON()` 为 `{uid, refs}` 引用图（**顶层无属性对象**），
+ * 7 个 refs = 3 volatile（`enabled` boolean 叶、`path` string 叶、`oldPathPolicy`
+ * union 叶）+ 4 非 volatile（root/venv 两个 object 容器 + union 内两个 const 叶）。
+ * 只数 volatile 而不要求非 volatile 叶在场，会让替身/真实包"把所有叶都标 volatile"
+ * 时同样全绿——即自我印证。
+ */
+const VOLATILE_LEAF_COUNT = 3;
+
+/** ②/⑤ 判据锚：vendor 主技能名（生产包内根读回的在场证据）。 */
+const VENDOR_PRIMARY_SKILL = 'ppt-master';
+
+/** ③ 判据锚：bundle insert 条目 id（应与插件 `name` 导出一致；不一致即 problems）。 */
+const BUNDLE_INSERT_ID = 'dsh-ppt-master-wrapper';
+
+/**
+ * ④ 的静态文本判据（受控解析通道的两半）：正向标记必须出现、ESM 裸导入必须缺席。
+ *
+ * ④ 的**实跑**证据（入口装载成功）同时是 ① 的前提：`Config.toJSON()` 的引用图由同一个
+ * 受控解析出的 schemastery 产出，替身若失真（例如把所有叶都标 volatile）则 ① 会自我
+ * 印证——故 ① 的「另有非 volatile 叶」断言与 ④ 同批判定，缺一即整套验证面不可采信。
+ */
+const CONTROLLED_CHANNEL_MARKERS = [
+  { label: 'createRequire', pattern: /createRequire\(/ },
+  { label: '@deepseek-ai/schemastery', pattern: /@deepseek-ai\/schemastery/ },
+];
+const BARE_SCHEMASTERY_IMPORT = /(?:^|\n)\s*import\b[^\n]*from\s*['"]@deepseek-ai\/schemastery['"]/;
 
 /** 动态导入的 SDK 包（顺序即挂载顺序：systemPrompt 是 ToolRuntime 的构造依赖）。 */
 const SDK_PACKAGES = [
@@ -265,6 +313,84 @@ function readSuperpowersRank(modules) {
   return { ok: true, rank: Number(match[1]) };
 }
 
+// ─── §7.7 静态源码文本判据（③④；不引入 env 通道子进程）─────────
+
+/**
+ * 两**普通值**对象是否键集与值逐字相等（无 npm 依赖的浅比较；本契约对象只有标量键）。
+ *
+ * 用于默认值交叉锚定（§7.7 附带项）：`snapshotVenvConfig(Config({}).venv)` 与
+ * `assembleInjectionBag(undefined).venv` 是两处字面拷贝的产物，无此断言则漂移静默。
+ */
+function samePlainRecord(left, right) {
+  const keysOf = (value) => Object.keys(value ?? {}).sort();
+  const leftKeys = keysOf(left);
+  const rightKeys = keysOf(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && Object.is(left[key], right[key]));
+}
+
+/**
+ * 读回 bundle 层 `cordis.patch.yml` 的 `insert:` 段内条目 id 列表（③ 的静态源码文本断言）。
+ *
+ * **分层重解释（不可越界）**：本包 patch 的顶层是 `- insert:` 列表项，其下才是
+ * `- id: <插件 id>` 条目——compat 侧静态断言**只锁 bundle insert 层**。**profile 层**
+ * 条目（`$DSH_HOME/profiles/<p>/cordis.patch.yml`）只在**首次设置页编辑且 `index<0`**
+ * 时由宿主 config-editor `edit()` 以 `document.add({id,name,config})` 代建，故不写成
+ * bundle 面静态断言——其落点是验收期人工步骤（见 README §8 核对表）。
+ *
+ * 零 npm 依赖、不引入 YAML 解析：以「`insert:` 行之后、下一个同级或更外层键之前」为
+ * 段，段内收集 `- id:` 行。
+ *
+ * @returns {{ ok: true, ids: string[] } | { ok: false, reason: string }}
+ */
+function readBundleInsertIds() {
+  let source;
+  try {
+    source = readFileSync(BUNDLE_PATCH_FILE, 'utf8');
+  } catch (error) {
+    return { ok: false, reason: `bundle ${BUNDLE_PATCH_FILE} 不可读: ${firstLine(error)}` };
+  }
+  const lines = source.split('\n');
+  const insertAt = lines.findIndex((line) => /^(\s*)(?:-\s*)?insert:\s*$/.test(line));
+  if (insertAt < 0) return { ok: false, reason: `无 insert: 段（${BUNDLE_PATCH_FILE}）` };
+  const baseIndent = lines[insertAt].match(/^(\s*)/)[1].length;
+  const ids = [];
+  for (const line of lines.slice(insertAt + 1)) {
+    if (line.trim() === '') continue;
+    const indent = line.match(/^(\s*)/)[1].length;
+    if (indent <= baseIndent) break; // 段结束（下一个同级/更外层键）
+    const idMatch = /^\s*-\s*id:\s*(\S+)\s*$/.exec(line);
+    if (idMatch !== null) ids.push(idMatch[1]);
+  }
+  return { ok: true, ids };
+}
+
+/**
+ * §7.7④ 的静态文本证据：插件入口必须经**受控解析通道**取宿主 schemastery。
+ *
+ * 正向＝`createRequire` + 包名标记在场；负向＝无 `@deepseek-ai/schemastery` 的 ESM
+ * 裸导入（符号链接装载路径下裸导入必然 ERR_MODULE_NOT_FOUND，spec §5.1/§6.1⓪）。
+ * 与**实跑**（入口在本环境装载成功＝受控解析命中）合成本项证据；不另立 env 通道。
+ *
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+function readControlledChannelEvidence() {
+  let source;
+  try {
+    source = readFileSync(PLUGIN_ENTRY, 'utf8');
+  } catch (error) {
+    return { ok: false, reason: `插件入口 ${PLUGIN_ENTRY} 不可读: ${firstLine(error)}` };
+  }
+  const missing = CONTROLLED_CHANNEL_MARKERS.filter(({ pattern }) => !pattern.test(source));
+  if (missing.length > 0) {
+    return { ok: false, reason: `受控解析通道标记缺席: ${missing.map(({ label }) => label).join('、')}` };
+  }
+  if (BARE_SCHEMASTERY_IMPORT.test(source)) {
+    return { ok: false, reason: '插件入口存在 @deepseek-ai/schemastery 的 ESM 裸导入（受控解析通道被绕过）' };
+  }
+  return { ok: true };
+}
+
 // ─── runCompatCheck：主流程编排 ─────────────────────────────────
 
 /** 错误首行（多行 message 只保留第一行，报告可读）。 */
@@ -387,18 +513,25 @@ export async function runCompatCheck(options = {}) {
   // 入口用的是**真实**动态 import（不走可注入的 `importModule`——那条缝只服务 SDK stub
   // 模块替换；插件入口在每条用例里都必须是本包真实文件，否则挂载面失真）。
   // 装载失败（宿主包不可解析）如实转 problems，不静默：fail-loud 语义的唯一可观测面。
+  //
+  // 动态命名空间与第 4 步读回结果向第 7 步传递：§7.7① 取 `ns.Config`，§7.7② 的
+  // 实跑面复用本步的 `apply(ctx, toolOptions)` 结果，§7.7⑤ 在生产根形态下复用本步读回
+  // （toolOptions 缺省即生产包内根形态，避免同形态二次挂载）。
   let ctx = null;
+  let pluginNamespace = null;
+  let skillReadBack = null;
   try {
-    const ns = await import(pathToFileURL(PLUGIN_ENTRY).href);
-    if (typeof ns.apply !== 'function') {
+    pluginNamespace = await import(pathToFileURL(PLUGIN_ENTRY).href);
+    if (typeof pluginNamespace.apply !== 'function') {
       problems.push(`插件入口 ${PLUGIN_ENTRY} 未导出 apply——无法驱动 SkillRegistry 挂载`);
     } else {
       ctx = mount();
-      ns.apply(ctx, toolOptions);
+      pluginNamespace.apply(ctx, toolOptions);
     }
   } catch (error) {
     problems.push(`apply(ctx, { skillRoots }) 驱动 ${PLUGIN_ENTRY} 失败: ${firstLine(error)}`);
     ctx = null;
+    pluginNamespace = null;
   }
 
   if (ctx !== null) {
@@ -408,19 +541,22 @@ export async function runCompatCheck(options = {}) {
         problems.push('真实 SkillRegistry list() 返回 0 个候选——provider 挂载未生效');
       } else {
         const broken = [];
+        const loaded = new Map();
         for (const summary of summaries) {
-          const loaded = await ctx.skills.get(summary.name, {});
+          const definition = await ctx.skills.get(summary.name, {});
+          loaded.set(summary.name, definition);
           if (
-            loaded === undefined || loaded === null
-            || typeof loaded.content !== 'string' || loaded.content.trim() === ''
+            definition === undefined || definition === null
+            || typeof definition.content !== 'string' || definition.content.trim() === ''
           ) {
             broken.push(summary.name);
-          } else if (summary.name !== ENTRY_SKILL_NAME && loaded.resourceBase?.kind !== 'directory') {
+          } else if (summary.name !== ENTRY_SKILL_NAME && definition.resourceBase?.kind !== 'directory') {
             // 判据钉死为**名字**：只有内存合成的入口技能（无文件、无 resourceBase）豁免；
             // 任何其他候选缺 directory resourceBase 仍是 problem（判定不弱化）。
             broken.push(`${summary.name}（resourceBase.kind 非 directory）`);
           }
         }
+        skillReadBack = { names: summaries.map((summary) => summary.name), loaded };
         if (broken.length > 0) {
           problems.push(`候选经真实 SkillRegistry get() 读回失败: ${broken.join(', ')}`);
         } else {
@@ -429,6 +565,7 @@ export async function runCompatCheck(options = {}) {
       }
     } catch (error) {
       problems.push(`真实 SkillRegistry list()/get() 失败: ${firstLine(error)}`);
+      skillReadBack = null;
     }
   }
 
@@ -459,6 +596,186 @@ export async function runCompatCheck(options = {}) {
     );
   } else {
     notes.push(`superpowers-dsh PACKAGED_SKILL_RANK=${drift.rank} = 本插件 SKILL_RANK=${expectedRank} ✓（跟随一致）`);
+  }
+
+  // ── 7. §7.7 五项设计成立性前置检查（Task 10）──
+  //
+  // 载体分工（brief Step 1）：**③④＝静态源码文本断言**、**①②⑤＝实跑断言**；不采用
+  // env 通道子进程。⑤ 的生产根形态＝`toolOptions` 缺省（provider 以参数缺省创建 →
+  // 决策A 追加入口技能）；显式 `--skill-roots` 场景按决策A 不追加，故另挂一次生产根
+  // 形态专测本项（读回结果复用第 4 步，避免同形态二次挂载）。
+  //
+  // ③④ 是纯源码文本判据、与插件装载成败无关，故封装为可重复调用的报告段：装载失败
+  // 时也要给出这两项结论（①②⑤ 则确实无从判定）。
+
+  /** ③ bundle insert 层 ＋ ④ 受控解析通道（静态源码文本断言；两条 return 路径都调用）。 */
+  const reportStaticChecks = () => {
+    // ③ bundle insert 层（静态源码文本断言；profile 层归宿主 config-editor + 验收期人工步骤）
+    const bundle = readBundleInsertIds();
+    if (!bundle.ok) {
+      problems.push(`§7.7③ bundle insert 层静态断言失败: ${bundle.reason}`);
+    } else {
+      // 期望 id 优先取插件 `name` 导出（bundle 条目须指向本插件）；装载失败时回落常量。
+      const expectedId = typeof pluginNamespace?.name === 'string' && pluginNamespace.name !== ''
+        ? pluginNamespace.name
+        : BUNDLE_INSERT_ID;
+      if (!bundle.ids.includes(expectedId)) {
+        problems.push(
+          `§7.7③ bundle insert 层缺 id: ${expectedId} 条目（${BUNDLE_PATCH_FILE} 的 insert 段实读: `
+            + `${bundle.ids.join(', ') || '空'}）`,
+        );
+      } else {
+        notes.push(
+          `§7.7③ bundle insert 层: cordis.patch.yml 的 insert 段含 id: ${expectedId}（静态源码文本断言）；`
+            + 'profile 层条目由宿主 config-editor 首次设置页编辑时代建 → 验收期人工步骤，不在 bundle 面静态断言',
+        );
+      }
+    }
+
+    // ④ schemastery 可解析性：静态源码文本断言（受控解析通道存在）＋ 实跑（本环境装载成功）
+    const channel = readControlledChannelEvidence();
+    if (!channel.ok) {
+      problems.push(`§7.7④ 受控解析通道静态断言失败: ${channel.reason}`);
+    } else {
+      notes.push(
+        '§7.7④ schemastery 可解析性: index.js 含受控解析通道（createRequire 锚定定位到的宿主 '
+          + 'node_modules、无 ESM 裸导入——静态源码文本断言）＋ 本环境入口实跑装载成功（受控解析命中）',
+      );
+    }
+  };
+
+  if (pluginNamespace === null) {
+    reportStaticChecks();
+    problems.push('§7.7①/②/⑤ 无法判定：插件入口装载失败（见上）——Config/apply/入口技能三面均不可达');
+  } else {
+    // ① Config volatile 声明（访问路径钉死＝动态命名空间的 `ns.Config`）
+    try {
+      const json = typeof pluginNamespace.Config?.toJSON === 'function'
+        ? pluginNamespace.Config.toJSON()
+        : null;
+      if (json === null || typeof json !== 'object' || json.refs === undefined || json.refs === null) {
+        problems.push('§7.7① Config 不可达或其 toJSON() 非 {uid, refs} 引用图——volatile 声明无从遍历');
+      } else {
+        const refs = Object.values(json.refs);
+        const volatileRefs = refs.filter((node) => node.meta?.volatile === true);
+        // 「非 volatile 叶」＝无子节点的 ref（容器 object/union 不算）：只断言"存在非
+        // volatile 节点"会被 root/venv 容器满足，使本检查自我印证。
+        const nonVolatileLeaves = refs.filter(
+          (node) => node.meta?.volatile !== true && node.dict === undefined && node.list === undefined,
+        );
+        if (volatileRefs.length !== VOLATILE_LEAF_COUNT) {
+          problems.push(
+            `§7.7① Config volatile 声明异常: toJSON() refs 内 volatile 叶 ${volatileRefs.length} ≠ ${VOLATILE_LEAF_COUNT}`
+              + '（三字段 enabled/path/oldPathPolicy 须逐个 .volatile()）',
+          );
+        } else if (nonVolatileLeaves.length === 0) {
+          problems.push(
+            '§7.7① Config volatile 声明不可采信: 引用图内无任何非 volatile 叶——volatile 计数可能自我印证'
+              + '（须另含 ≥1 非 volatile 叶，如 oldPathPolicy 联合型的 const 子节点）',
+          );
+        } else {
+          notes.push(
+            `§7.7① Config volatile 声明: ns.Config 可达；toJSON() refs ${refs.length} 项，`
+              + `volatile 恰 ${volatileRefs.length}（Object.values(refs) 遍历口径），另有 ${nonVolatileLeaves.length} 个非 volatile 叶`,
+          );
+        }
+      }
+    } catch (error) {
+      problems.push(`§7.7① Config volatile 声明检查失败: ${firstLine(error)}`);
+    }
+
+    // ① 附带：默认值交叉锚定（携入自 Task 5 审查）——schema 校验默认值 vs 注入袋缺省默认值
+    try {
+      const parsed = typeof pluginNamespace.Config === 'function' ? pluginNamespace.Config({}) : null;
+      const schemaDefaults = snapshotVenvConfig(parsed?.venv);
+      const bagDefaults = assembleInjectionBag(undefined).venv;
+      if (!samePlainRecord(schemaDefaults, bagDefaults)) {
+        problems.push(
+          '默认值交叉锚定失败: schema 校验默认值与注入袋缺省默认值不一致'
+            + `（schema=${JSON.stringify(schemaDefaults)}，注入袋=${JSON.stringify(bagDefaults)}）`
+            + '——两处字面拷贝已漂移（index.js Config default vs lib/venv.js VENV_DEFAULTS）',
+        );
+      } else {
+        notes.push(
+          `默认值交叉锚定: snapshotVenvConfig(Config({}).venv) ≡ assembleInjectionBag(undefined).venv`
+            + ` = ${JSON.stringify(bagDefaults)}`,
+        );
+      }
+    } catch (error) {
+      problems.push(`默认值交叉锚定检查失败: ${firstLine(error)}`);
+    }
+
+    // ② apply 第二参注入通道（实跑；与第 4 步的 `apply(ctx, toolOptions)` 同一通道）
+    if (typeof pluginNamespace.apply !== 'function') {
+      problems.push('§7.7② 插件入口未导出 apply——第二参注入通道无从实跑');
+    } else if (ctx === null || skillReadBack === null || skillReadBack.names.length === 0) {
+      problems.push(
+        '§7.7② apply(ctx, toolOptions) 实跑未驱动注册面'
+          + `（第 4 步读回: ${skillReadBack === null ? '失败' : skillReadBack.names.join(', ') || '空'}）`,
+      );
+    } else {
+      try {
+        // 探针注入：显式根经**第二参**驱动注册面，且按决策A 不追加合成入口——两向都可观测。
+        const probeCtx = mount();
+        pluginNamespace.apply(probeCtx, { skillRoots: [PACKAGED_SKILLS_ROOT] });
+        const probeNames = (await probeCtx.skills.list({})).map((candidate) => candidate.name);
+        if (!probeNames.includes(VENDOR_PRIMARY_SKILL)) {
+          problems.push(
+            `§7.7② 显式 skillRoots 经第二参未生效: 读回 ${probeNames.join(', ') || '空'}（缺 ${VENDOR_PRIMARY_SKILL}）`,
+          );
+        } else if (probeNames.includes(ENTRY_SKILL_NAME)) {
+          problems.push(
+            `§7.7② 显式 skillRoots 不应追加合成入口技能 ${ENTRY_SKILL_NAME}（决策A：仅参数缺省时追加）`,
+          );
+        } else {
+          notes.push(
+            `§7.7② apply 第二参注入通道: apply(ctx, toolOptions) 实跑读回 ${skillReadBack.names.join(', ')}；`
+              + `显式 roots 探针 [包内 skills/] → ${probeNames.join(', ')}（第二参生效；决策A 下不追加合成入口）`,
+          );
+        }
+      } catch (error) {
+        problems.push(`§7.7② apply(ctx, { skillRoots }) 探针实跑失败: ${firstLine(error)}`);
+      }
+    }
+
+    // ③ bundle insert 层 ＋ ④ 受控解析通道（静态源码文本断言，与装载成败无关）
+    reportStaticChecks();
+
+    // ⑤ 入口技能读回（生产根形态；与 Task 6 决策A 联动）
+    try {
+      let production = toolOptions === undefined ? skillReadBack : null;
+      if (production === null) {
+        const productionCtx = mount();
+        pluginNamespace.apply(productionCtx, undefined); // 参数缺省 → 生产包内根（追加入口）
+        const summaries = await productionCtx.skills.list({});
+        const loaded = new Map();
+        for (const summary of summaries) {
+          loaded.set(summary.name, await productionCtx.skills.get(summary.name, {}));
+        }
+        production = { names: summaries.map((summary) => summary.name), loaded };
+      }
+      if (!production.names.includes(ENTRY_SKILL_NAME)) {
+        problems.push(
+          `§7.7⑤ 生产根形态读回不含入口技能 ${ENTRY_SKILL_NAME}`
+            + `（实际: ${production.names.join(', ') || '空'}）——合成入口未随 provider 挂载`,
+        );
+      } else {
+        const entry = production.loaded.get(ENTRY_SKILL_NAME);
+        if (
+          entry === undefined || entry === null
+          || typeof entry.content !== 'string' || entry.content.trim() === ''
+        ) {
+          problems.push(`§7.7⑤ 入口技能 ${ENTRY_SKILL_NAME} 经真实 SkillRegistry get() 读回失败或 content 为空`);
+        } else {
+          notes.push(
+            `§7.7⑤ 入口技能读回（生产根形态）: ${ENTRY_SKILL_NAME} 经真实 SkillRegistry 在场、可 get()、`
+              + `content 非空（${entry.content.length} 字符）`,
+          );
+        }
+      }
+    } catch (error) {
+      problems.push(`§7.7⑤ 生产根形态挂载/读回失败: ${firstLine(error)}`);
+    }
   }
 
   return { problems, warnings, notes, resolved, entry: PLUGIN_ENTRY };

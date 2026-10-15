@@ -24,7 +24,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-ppt-master-wrapper.git
 ```
 
-安装后重启会话，`ppt-master` 技能即对 agent 可见。DSH 通过 `resourceBase` 注入技能所在目录的绝对路径，由执行 agent 代入上游约定的 `${SKILL_DIR}`——机制等价满足上游 SKILL.md 的硬规则。
+安装后重启会话，`ppt-master` 技能即对 agent 可见（另有一个**内存合成**的入口技能 `ppt-master-env`——venv 解释器路由入口，不落盘，见下文「venv 隔离与插件配置页」）。DSH 通过 `resourceBase` 注入技能所在目录的绝对路径，由执行 agent 代入上游约定的 `${SKILL_DIR}`——机制等价满足上游 SKILL.md 的硬规则。
 
 ## 首次使用：环境自检、依赖与 `.env`
 
@@ -51,6 +51,50 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 | `ppt_master_info` | 无 | 返回插件版本、包裹的上游版本（解析 vendor `SKILL.md` 的 `metadata.version`）、`SKILL_DIR` 绝对路径（扫描 `skills/*/SKILL.md`，主目录按 `name: ppt-master` 锚定）与上游 repo 链接。纯读。 |
 | `ppt_master_check_env` | 无 | 环境自检：python3 ≥ 3.10 就绪度；运行 vendor `attribution_guard.py` 并报告通过与否；解析 `requirements.txt` 顶层发行版名并以发行版元数据（`importlib.metadata`）为一等手段探测安装状态（dist→import 映射缺失的项记 UNKNOWN 而非 FAIL）；检查 `.env` 是否存在（仅提示）。输出结构化诊断，只读。 |
 | `ppt_master_setup_deps` | `user?: boolean`、`breakSystemPackages?: boolean` | 幂等执行 `pip3 install -r "${SKILL_DIR}/requirements.txt"`（按参数附 `--user` / `--break-system-packages`）；完成后自动复跑环境自检并汇报。**唯一有副作用的工具**。 |
+
+> 三个工具均为 **venv 感知**：`ppt_master_info` / `ppt_master_check_env` 的 payload 带 `venv` 小节（`enabled`（**配置值**）/`path`/`exists`/`pythonPath` 等）；`ppt_master_setup_deps` 的 payload 带 `venv` / `cleanup` 两节（其中 `enabled` 为**生效态**：配置关闭或无效行均为 `false`），且 venv 的创建/删除只发生在它。`venv.enabled=true` 时 `info`/`check_env` 的工具描述追加解释器提示语（模型未读入口技能时的兜底）。
+
+## venv 隔离与插件配置页（运维核对表）
+
+插件声明原生 cordis Config（`venv.enabled` / `venv.path` / `venv.oldPathPolicy`，三叶子逐个 `.volatile()`），DSH 设置页自动出页；配置变更经宿主 config-editor → Loader 重建插件实例**热生效**（热重载失败兜底＝下次 DSH 重启生效）。**懒创建**：venv 的创建/删除**只**发生在 `ppt_master_setup_deps`，改配置本身零副作用。
+
+### venv 配置说明
+
+- **PEP 668 说明**：本机系统 Python 为 PEP 668（EXTERNALLY-MANAGED），裸 `pip3 install` 需 `--break-system-packages`，且装入容器 rootfs、重建即丢。开启 venv 隔离后由 `<venv>/bin/pip3 install -r ...` 安装，不受 PEP 668 拦截、依赖落在 `venv.path`。`user` / `breakSystemPackages` 两个参数**仅系统模式生效**，venv 模式下被忽略并在返回中注明。
+- **配置页指引**：DSH 设置页 → 插件 `dsh-ppt-master-wrapper` → venv 三项。`venv.path` 须为绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开；相对路径判无效 → venv 视为关闭 + 应用期 `console.warn`；可见反馈通道＝入口 skill「配置无效」态与 `ppt_master_check_env` 的 `venv.path=null`）。注意：宿主设置页的 `applies:"live"` 是固定输出，真正的可编辑性来自字段的 volatile 声明。
+- **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开且已建 → 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
+- **禁用后手动清理**：`venv.enabled=false` **不删除任何目录**（禁用后清理纯手动）：`rm -rf <原 venv.path>`。旧路径同理——`oldPathPolicy=keep`（默认）时旧 venv 保留待手动清理，`delete` 也仅删「带所有权标记且满足删除四条件」的旧目录。
+- **容器挂载卷建议**：容器用户宜把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`），不要留在容器 rootfs。
+
+> **默认路径理由（spec §5.1 逐字转录）**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6 exists-but-broken 行）。
+
+### 挂载卷 / 镜像不变边界
+
+挂载只保证**数据不丢**；跨容器重建后 venv 是否可用依赖**镜像不变**（venv 内符号链接指向容器内绝对路径）。镜像换代、或 venv 损坏（exists-but-broken：`venv.exists=true ∧ venv.python.found=false`）时，恢复方式＝**删除重建**：`rm -rf <venv.path>` 后重跑 `ppt_master_setup_deps`（工具不会自动删除损坏 venv，只给出该指引）。
+
+### 删除安全与孤儿处理
+
+- **标记即授权**：自动删除只对**带所有权标记**（`<venv>/.ppt-master-wrapper.json`）且同时满足四条件（路径≠当前、新旧路径互不前缀包含、`pyvenv.cfg` 存在、带标记）的目录生效。**已标记 venv 目录内混入的用户数据会被递归删除**——不要往 venv 目录里放数据。
+- **两类孤儿（均手动处理）**：
+  1. **未标记孤儿**（目录是 venv 但无标记）：清理永不触碰（安全侧默认），`info` / `check_env` 也不提示——需手动 `rm -rf`。
+  2. **有标记无登记孤儿**：登记位置固定为 `<HOME>/.ppt-master/wrapper-state.json`，而 venv 常居持久卷——**层级错配**：容器场景 HOME 易失，容器重建后登记丢失，旧 venv 便成「有标记但无登记」的孤儿；无登记即无清理依据，**永不自动删**，只能手动 `rm -rf`。取舍：登记位置保持 `<HOME>` 单一、不做多位置登记（spec §5.4/§8）。
+
+### 诊断
+
+- **设置页诊断**：设置页不可投影 / 写入被拒（volatile 未声明或宿主版本不支持）时，插件功能不受影响——配置仍可 profile `cordis.patch.yml` 手工编辑（spec §6.1①）。
+- **schemastery 解析失败诊断**：插件装载期经「宿主 node_modules 定位 + `createRequire` 受控解析」取 `@deepseek-ai/schemastery`（**禁 ESM 裸导入**）；解析失败＝模块加载期 fail-loud，**整插件不可加载、vendor 技能面连带丢失**。诊断：确认宿主 profile 的 `node_modules` 内存在该包，且 `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME(+DSH_PROFILE)` 指向它（spec §6.1⓪）。
+- **入口技能缺失诊断**：宿主注册面若拒绝**不带 `resourceBase`** 的合成候选，则入口技能缺失，而 **vendor 技能不受影响**（入口不落盘、不进字节比对面）；该字段已被宿主源码实证为条件透传的可选字段，接受性由 `node scripts/check-dsh-compat.mjs` 的 §7.7⑤ 实跑复核（spec §6.1④）。
+- **配置无效行的措辞**：`enabled=true` + 非法路径时工具描述仍按**配置开关**显示 venv 提示语，实际行为按系统模式降级——以 `venv.path=null` 与入口 skill 第四态为准。
+
+### 首次使用前：profile `cordis.patch.yml` 条目
+
+- **bundle insert 层**：本包自带 `cordis.patch.yml`（`insert:` 段内 `id: dsh-ppt-master-wrapper`），随插件安装生效——由 `check-dsh-compat` 静态断言。
+- **profile 层条目**：只在**首次于设置页编辑并保存任一 venv 字段**时由宿主 config-editor 代建（`index<0` → `add({id,name,config})`）；此前 profile 层无该条目属正常，bundle 层静态存在**不替代**它。操作者也可手工在 profile `cordis.patch.yml` 写同 id 条目（`config:` 下三个 venv 字段）。
+- **升级补全（config 整体替换语义）**：profile patch 内的 config 是**整体替换**而非深合并——插件升级新增字段后，已存在的 patch 条目须与新字段集比对补全，否则新字段回落默认值（例如升级后旧条目不会自动长出 `enabled`）。建议升级后在设置页重新保存一次，或手工补齐缺失字段。
+
+### 兼容面负向确认
+
+合成入口 skill `ppt-master-env` **不落盘**（内存合成），不进入 vendor `skills/` 树——`scripts/verify-plugin.mjs` 的字节比对面因此**零变化**（负向确认；`node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@b4efe3ddf237a97a42880164759162f8e2412f2f` 实跑 problems 0 / warnings 0）。`scripts/sync-upstream.mjs` 不读取本插件产物，本特性零脚本交互面。
 
 ## 同步上游更新
 
@@ -83,7 +127,9 @@ node scripts/sync-upstream.mjs [选项]
 # 取 .upstream/ 缓存目录名 <ref>@<sha>）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@<sha>
 
-# 对照已安装 DSH SDK 的契约检查（真实 SkillRegistry 挂载 + tools.register + rank）
+# 对照已安装 DSH SDK 的契约检查（真实 SkillRegistry 挂载 + tools.register + rank
+# + spec §7.7 五项设计成立性前置检查：Config volatile / apply 第二参 / bundle insert
+#   层 / schemastery 受控解析通道 / 生产根形态读回入口技能）
 node scripts/check-dsh-compat.mjs
 
 # 全套测试

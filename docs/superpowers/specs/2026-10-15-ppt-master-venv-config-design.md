@@ -31,11 +31,11 @@ profile cordis.patch.yml（按 id config 整体替换语义）
         ▼
 index.js  ── export const Config = z.object({ venv: {enabled,path,oldPathPolicy} })
    │           （模块加载期生成版本注解：插件版本 ← package.json；上游版本 ← skills 扫描）
-   ├─ createSkillProvider(config)   skill-provider.js
+   ├─ createSkillProvider(roots?, { venv })   skill-provider.js
    │     ├─ vendor 技能（现状：skills/ 树字节原样）
    │     ├─ 合成入口 skill ppt-master-env（body 按四态渲染，内存合成，无文件）
    │     │      └─ lib/venv.js（生效解释器/四态判定原语，与 tools 共用）
-   └─ createTools(config)           tools.js
+   └─ createTools({ skillRoots?, venv?, testSeams? })   tools.js
          └─ lib/venv.js（纯函数 + 注入 run）
               resolveVenvPath / venvExists / marker 读写
               ensureVenv / cleanupOldVenv / wrapper-state 登记
@@ -63,7 +63,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 | `venv.path` | string，`'~/.ppt-master/venv'` | `~` 于使用处按 DSH 宿主进程 HOME 展开；须绝对或 `~` 前缀 |
 | `venv.oldPathPolicy` | `'keep' \| 'delete'`，`'keep'` | 路径变更后对旧标记 venv 的处理 |
 
-- **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。
+- **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。**落点具名**（`lib/venv.js`）：`snapshotVenvConfig(raw) → { enabled, path, oldPathPolicy }`（逐叶去引用快照）＋组合纯函数 `assembleInjectionBag(raw) → { skillRoots, venv }`（`skillRoots` 原样透传、`venv` 经前者快照，**缺省补默认在此完成**——三默认值 `enabled:false` / `path:'~/.ppt-master/venv'` / `oldPathPolicy:'keep'`）；`apply` 只调该组合函数后下传。
 - **引入通道**：Config schema 依赖的 schemastery 经"宿主 node_modules 定位 + 受控解析（createRequire 等价通道）"获取，禁 ESM 裸导入（符号链接插件路径下必然 ERR_MODULE_NOT_FOUND）；插件零 npm 依赖声明保持（解析失败的 fail-loud 语义见 §6.1⓪）。
 - **`~` 展开基准**：按 DSH 宿主进程 HOME 展开（Node `os.homedir()` 实测语义：**HOME 为空串时返回空串、不回退**——该输入下 `~` 展开判无效走 §6 配置无效降级；仅 HOME **未设置**才回退 passwd 目录/getpwuid）；"与上游 config.py 的 `Path.home()/.ppt-master` 同一基准"仅 HOME 非空时成立（空串边界 Node/Python 行为分叉：Python `Path.home()`→`'/'`）；降级分支在解析结果非法（空/相对/空串 HOME）时触发（走 §6 配置无效降级）；本机容器 HOME=/root → 默认路径解析为 `/root/.ppt-master/venv`。
 - **默认路径理由**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6 exists-but-broken 行）。
@@ -81,40 +81,42 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
    3. venv 关：系统 `python3`（现状）。
    4. 配置无效（相对路径）：指明修正方式，按系统模式继续。
 - 四态说明：第四态（配置无效）为 §6 无效配置降级在入口 skill 面的对应文案——超出澄清时的三态，但同源于已确认的错误处理决策；invalid×disabled 组合落态 3（disabled 优先，见 §5.3 组合细则）。
-- 注册形态：provider 技能列表 = vendor N + 入口 1；入口不落盘，不进 verify-plugin 字节比对面。
+- 注册形态：provider 技能列表 = vendor N + 入口 1；入口不落盘，不进 verify-plugin 字节比对面。**前提（决策A 收窄）**：入口**仅当 provider 以参数缺省创建**（无显式 scanRoots）时追加；任何**显式 roots**（含等于包内 `skills/` 者）一律不追加——零改动保护面（fixture 根不追加）据此成立。生产调用点经 `createSkillProvider(roots?, opts?)` 的**第二参** `opts = { venv }`（方案甲：roots 保持首参数组）传入已去引用的 venv 普通值。
 
 ### 5.3 工具 payload 增量（全部 additive；现有字段与系统模式语义不动）
 
-- `ppt_master_info` += `venv: { enabled: boolean, path: string|null(解析后绝对), exists: boolean, pythonPath: string|null }`。
+- `ppt_master_info` += `venv: { enabled: boolean, path: string|null(解析后绝对), exists: boolean, pythonPath: string|null }`。基类型注记的**唯一例外**：`off` 行 `path` 按配置原样（未解析）——见矩阵与细则。**`enabled` 为配置值**（invalid 行为 `true`）。
 - `ppt_master_check_env` += `venv: { enabled, path, exists, python: {found, version, meetsSkillRequirement}|{skipped} }`；顶层 `python` 小节保持系统探测；依赖探测与 guard 探测同走**生效解释器**（与 §4.2 使用契约一致）：venv 开且存在 → venv python；venv 关 → 系统 python；**venv 开但缺失或损坏 → 不回退系统探测**，依赖条目全 `'UNKNOWN'`/`source:'unknown'`。guard 载荷词汇=`{ran, exitCode}|{skipped}`：生效解释器缺失或损坏→guard=`{skipped}`（`UNKNOWN` 是依赖条目词汇，不得挪用于 guard）；guard 跳过判定基准由"系统 python 探测"切换为"生效解释器探测"（行为变更：现行实现挂 python.found）。
-- `ppt_master_setup_deps`：venv 开 → `installCmd = [<venv>/bin/pip3, 'install', '-r', <req>]`（`user`/`breakSystemPackages` 参数仅系统模式生效，venv 模式忽略并在 payload 注明）；payload += `venv: { created, path, error?: string }`、`cleanup: { oldPath, action: 'none'|'kept'|'deleted'|'failed', error?: string }`；`action='kept'` 时 render 输出一行闲置提示（旧路径 + 建议手动清理或改回配置）。
+- `ppt_master_setup_deps`：venv 开 → `installCmd = [<venv>/bin/pip3, 'install', '-r', <req>]`（`user`/`breakSystemPackages` 参数仅系统模式生效，venv 模式忽略并在 payload 注明）；payload += `venv: { enabled, created, adopted, path, error?: string }`、`cleanup: { oldPath, action: 'none'|'kept'|'deleted'|'failed', error?: string }`；`action='kept'` 时 render 输出一行闲置提示（旧路径 + 建议手动清理或改回配置）。**字段语义澄清（两处 `enabled` 口径不同）**：本条 `venv.enabled` 为**生效态**——off/invalid 行均为 `false`；info/check_env 的 `venv.enabled` 为**配置值**（invalid 行为 `true`）。**`adopted`** 标识「复用既有有效 venv 并补写标记」的收编结果（签名见 §5.4）。
 - **工具描述增量（交付项）**：venv 开时 `ppt_master_info`/`ppt_master_check_env` 的工具描述追加解释器提示语（指向入口 skill 的解释器契约）——模型未读入口时的兜底提示面（§6 软路由失效行）。
 
 **字段×状态矩阵**（info/check_env 断言基准；`{skipped}`（venv 关时 python 小节）与依赖条目 `UNKNOWN`（venv 开缺失/损坏时）两种形状分开断言；guard 载荷词汇见上）：
 
 | 状态 | venv.enabled | venv.path | venv.exists | venv.pythonPath | check_env venv.python | deps 探测解释器 | guard 载荷 |
 |---|---|---|---|---|---|---|---|
-| venv.off | false | 按配置原样（不解析） | false（定值：不探测） | null | `{skipped}` | 系统 python3 | `{ran,exitCode}`（系统 python3） |
+| venv.off | false | 按配置原样（不解析）〔**仅路径合法的 disabled**；`invalid×disabled` 组合落 `off` 但诊断面 `path=null`，见下方细则〕 | false（定值：不探测） | null | `{skipped}` | 系统 python3 | `{ran,exitCode}`（系统 python3） |
 | venv.invalid | true（配置值，行为按关闭） | null（定值） | false（定值：不探测） | null | `{skipped}` | 系统 python3（降级续行） | `{ran,exitCode}`（系统 python3） |
-| venv.on-missing | true | 解析后绝对 | false | null | `{found:false, …}` | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
+| venv.on-missing | true | 解析后绝对 | false | null | `{found:false, …}`（版本探测挂**候选** `<absPath>/bin/python3`） | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
 | venv.on-ready | true | 解析后绝对 | true | `<path>/bin/python3` | `{found, version, meets}` | venv python | `{ran,exitCode}`（venv python） |
-| venv.on-ready 子态 exists-but-broken | true | 解析后绝对 | true | `<path>/bin/python3` | `{found:false, …}` | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
+| venv.on-ready 子态 exists-but-broken | true | 解析后绝对 | true | `null`（推断式口径：`exists=true ∧ pythonPath=null` ⇒ 本子态） | `{found:false, …}`（版本探测挂**候选** `<absPath>/bin/python3`） | 无生效解释器→条目全 UNKNOWN | `{skipped}` |
 
 **组合与求值细则**：invalid×disabled 组合——行为按 off、诊断面 path 如实（无效→null）、入口 skill 落态 3（disabled 优先）；**off/invalid 行取定值，N/A 语义废除**（off：exists=false 不探测、path 按配置原样不解析；invalid：exists=false、path=null）。exists-but-broken 定义：venv.exists=true 且 venv.python.found=false（on-ready 取值空间的显式子态）。**矩阵注记（info 面可观测性）**：exists-but-broken **不另增字段**，按推断式可观测——`venv.exists=true ∧ venv.pythonPath=null ⇒ exists-but-broken`（该子态 on-ready 正常态给 `<path>/bin/python3`，broken 时给 null）。
 
-### 5.4 lib/venv.js（纯函数 + 注入 run；风格同现有 spawnRun。入参 `config` 为 §5.1 去引用快照后的普通对象）
+### 5.4 lib/venv.js（纯函数 + 注入 run；风格同现有 spawnRun。入参一律作 `venv`——§5.1 去引用快照后的普通对象 `{ enabled, path, oldPathPolicy }`）
 
-- `resolveVenvPath(config) → { path: string|null, invalidReason: string|null }`（`~` 展开；相对路径判无效）。
-- `effectiveInterpreter(config, 探测) → { state: 'off'|'invalid'|'on-missing'|'on-ready', pythonPath: string|null, invalidReason: string|null }`：生效解释器/四态判定原语，skill-provider 四态渲染与 tools 探测**共用**；on-ready 含解释器体检（exists-but-broken 子态判定，与 ensureVenv 体检共用同一探测）。
+- `resolveVenvPath(venv) → { path: string|null, invalidReason: string|null }`（`~` 展开；相对路径判无效）。
+- `effectiveInterpreter(venv, primitives = {}) → { state: 'off'|'invalid'|'on-missing'|'on-ready', path: string|null, exists: boolean, pythonPath: string|null, invalidReason: string|null, broken: boolean }`：生效解释器/四态判定原语，skill-provider 四态渲染与 tools 探测**共用**；on-ready 含解释器体检（exists-but-broken 子态判定，与 ensureVenv 体检共用同一探测）。**第二参为具名原语对象** `{ probeVenvInterpreter }`（design 原抽象写作"探测"），**且可整体缺省**（`primitives = {}` → 回退模块自身的同步原语；apply 降级视图等单参调用点依赖该回退）。**`path` / `exists` / `broken` 为返回增量**，且本原语是消费方 `path`/`exists` 的**唯一数据源**；逐行语义＝`off`→`path` 按配置原样（未解析）、`exists=false`；`invalid`→`path=null`、`exists=false`；`on-missing`→解析后绝对、`exists=false`；`on-ready`（含 broken 子态）→解析后绝对、`exists=true`；`broken` 仅 on-ready 且体检不通过时为 `true`，其余行一律 `false`（payload 面据此推断式可观测 `exists=true ∧ pythonPath=null`，§5.3）。
+- **命名原语与分工**：`probeVenvInterpreter(venvDir) → { found }`＝**同步 fs 存在性**探测，**入参为 venv 目录、内部拼 `bin/python3` 后探测**（dangling symlink → `found:false`），供 ensureVenv 体检 / `effectiveInterpreter` / 入口 skill body 三处共用；与**现有 async 三字段版本探测** `probePython`（`{ found, version, meetsSkillRequirement }`，check_env 的 `venv.python` 用；`pythonPath=null` 的两行改挂**候选** `<absPath>/bin/python3`）是**两个不同接口**，不得混用。
 - `venvExists(path)`：`pyvenv.cfg` 存在性。
 - marker：`<venv>/.ppt-master-wrapper.json`（`{ createdAt, path }`），读写 + 收编（存在 venv 缺标记则补写）。
-- `wrapper-state.json`：`<HOME>/.ppt-master/wrapper-state.json`，`{ lastVenvPath }`。登记位置保持 `<HOME>` 单一；**持久性层级错配（显式承认）**：容器场景 HOME 易失而 venv 居持久卷，容器重建后登记丢失→旧 venv 成"有标记无登记"孤儿（§6）——取舍：不做多位置登记，README 明示手动清理（§8）。
-- `ensureVenv(run, path, signal) → { created, error? }`：
+- `wrapper-state.json`：`<HOME>/.ppt-master/wrapper-state.json`。`readWrapperState() → { lastVenvPath: string|null, readError?: string }`——**「不存在」与「读失败」分离且均不抛**：不存在→无 `readError`（首次运行初始化语义）；读失败→附 `readError`（不知旧路径→跳过清理并注记，§6 同名行）。登记位置保持 `<HOME>` 单一；**持久性层级错配（显式承认）**：容器场景 HOME 易失而 venv 居持久卷，容器重建后登记丢失→旧 venv 成"有标记无登记"孤儿（§6）——取舍：不做多位置登记，README 明示手动清理（§8）。
+- `ensureVenv(run, path, { signal, probeVenvInterpreter, writeMarker }) → { created, adopted, error? }`：第三参收 options（`signal` 透传；`probeVenvInterpreter`/`writeMarker` 为可注入依赖，缺省即模块原语）；返回增 **`adopted`**（复用既有有效 venv 并补写标记的收编可观测）。形参命名口径：本条 `path` 即调用方传入的**去引用绝对路径**。
    - **创建/收编前置**：目标目录须为（不存在 | 为空 | 已含 `pyvenv.cfg`）方可创建或收编；存在且非空且无 `pyvenv.cfg` → fail-loud 拒绝（`error="目标目录非空且非 venv"`，不创建、不写标记）——实测 `python3 -m venv` 对非空目录 EXIT=0 成功且保留用户文件，前置判定是唯一防线。
    - **已存在 venv 解释器体检**：损坏（exists-but-broken）→ 不自动删（保守），返回 error 提示"手动删除该 venv 目录后重跑"（恢复指引，§6）。
    - **复用语义**：重新启用 venv 且同路径已存在有效 venv → 直接复用（`venvExists` 判定，缺才建，不重建）。
    - error 直通 §5.3 payload 的 `venv.error`，创建失败呈现以 §6 对应行为准。
-- `cleanupOldVenv(oldPath, policy, currentPath) → { action, error? }`（删除仅当**前置四条件**：路径≠当前、新旧路径互不前缀包含（方向性判定：任一方以另一方为路径前缀即拒绝，防嵌套配置自毁）、`venvExists`、带标记；`rmSync` 递归）。
+- `cleanupOldVenv(oldPath, policy, currentPath, { remove } = {}) → { action, error? }`（**`remove` 为可选删除注入缝**，缺省即 `rmSync` 递归——测试造删除失败用；删除仅当**前置四条件**：路径≠当前、新旧路径互不前缀包含（方向性判定：任一方以另一方为路径前缀即拒绝，防嵌套配置自毁）、`venvExists`、带标记；`rmSync` 递归）。
+- **tools 装配面（`lib/tools.js`）**：`createTools(opts)`，`opts = { skillRoots?, venv?, testSeams? }`；其中 `testSeams = { writeMarker?, writeWrapperState?, readWrapperState?, remove? }` 为**测试面专用**桩通道（生产省略、测试注入，替代 fs stub 观测面）。
 
 **删除安全模型**：前置四条件缺一不删。残留风险（显式接受）：① venv 建成后生命周期内混入的用户数据仍被递归删除（标记即授权，README 注明）；② 删除中途失败呈半删态——下轮 setup_deps 重试删除，`pyvenv.cfg` 仍在即仍符合删除条件；③ 孤儿目录（未标记）永不自动删。
 
@@ -131,7 +133,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 | check_env venv 探测 | 全程诊断性（缺 venv = 状态值非错误） |
 | 解释器软路由失效（模型未读入口） | 入口 description 强引导 + 工具描述兜底提示（§5.3 工具描述增量）为缓解；不承诺硬保证（方案A 约束） |
 | 设置页不可投影/写入被拒（volatile 未声明或宿主版本不支持） | 插件功能不受影响（配置仍可用 profile patch 手工编辑），README 注明诊断方式 |
-| `wrapper-state.json` 不存在或读失败 | 不存在（首次运行）=初始化语义→无旧路径、不清理（`action='none'`）；读失败=不知旧路径→跳过清理，`cleanup.action='none'` + error 注记（不冒充删除失败），不抛 |
+| `wrapper-state.json` 不存在或读失败 | 不存在（首次运行）=初始化语义→无旧路径、不清理（`action='none'`）；读失败=不知旧路径→跳过清理，`cleanup.action='none'` + error 注记（不冒充删除失败），不抛。`readWrapperState()` 的返回面即按此分离：不存在→无 `readError`；读失败→附 `readError`（§5.4） |
 | `wrapper-state.json` 写失败（登记失败） | 清理结果如实保留（action 不因登记失败改写）；登记失败单独 warn + payload 注记，不影响安装结果（与 §7 第 1 项单测对齐） |
 | marker 写入/收编补写失败 | venv 仍可用（下次 setup_deps 重试补写），warn |
 | 未标记的既有 venv 目录 | 清理永不触碰的孤儿（安全侧默认）；info/check_env 不提示（保守），README 注明手动处理方式 |
@@ -142,11 +144,11 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 宿主依赖及降级语义（⓪–④）：
 
-- ⓪ **schemastery 可解析**（宿主 node_modules 定位 + 受控解析，§3/§5.1）：解析失败=模块加载期故障→整插件不可加载（fail-loud，宿主 loader 记录该故障）；README 注明诊断（宿主 node_modules 需存在该包）。
+- ⓪ **schemastery 可解析**（宿主 node_modules 定位 + 受控解析，§3/§5.1）：解析失败=模块加载期故障→整插件不可加载（fail-loud，宿主 loader 记录该故障）——**vendor 技能面连带丢失**（技能 provider 与 Config 同处一个模块，不存在"无 Config 降级"形态）；README 注明诊断（宿主 node_modules 需存在该包）。**装载形态注记**：`scripts/check-dsh-compat.mjs` 对插件入口**不做顶层静态 import**——装载期 fail-loud 会抢先于 CLI 参数解析与 SDK 定位，使"无定位线索""未知参数"两例的断言语义失效；入口改在 **SDK 定位成功后**动态装载（机制见 §7.5）。
 - ① SettingsForms volatile 投影不可用→配置仍可 profile patch 手工编辑。
 - ② 宿主 config-editor 编辑通道：真实机制=`edit()`→reconcileProfilePatches→Loader 重建，配置变更**无条件热生效**（hmr 串行化）；通道不可用或热重载失败→配置变更于下次 DSH 重启时生效（兜底）。
 - ③ apply 第二参注入异常→venv 视为关闭 + warn。
-- ④ 合成入口 skill 候选（无文件）经真实注册面的接受性未验证→降级：宿主拒绝则入口技能缺失（vendor 技能不受影响），README 诊断。
+- ④ 合成入口 skill 候选（无文件、按设计**不带 `resourceBase`**）经真实注册面的接受性：**该字段已凭宿主源码实证为条件透传的可选字段**（`@deepseek-ai/dsh-skill/lib/index.js:445`/`:501`，本机装包实测），故"接受性未验证"措辞升级为**"不带 `resourceBase` 的候选已实证该字段可选，接受性由 compat §7.7⑤ 实跑复核"**；降级：宿主拒绝则入口技能缺失（vendor 技能不受影响），README 诊断。
 
 schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules 的 `@deepseek-ai/schemastery`），插件自身零 npm 依赖不变（不打包、不声明 runtime 依赖）。engines.dsh 门槛维持现状（0.1.1-rc.1，本特性不引入更高 API）。
 
@@ -158,7 +160,7 @@ schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules �
 2. **tools venv 分支**：tmpdir 假 venv（`pyvenv.cfg` + marker）；info/check_env/setup_deps 的 venv 分支与 payload 断言；schema 快照（新增字段）；`installCmd` 形态（venv pip 路径；flags 忽略注明）；系统模式回归——系统模式行为断言保持全绿；既有 schema 形状断言（逐字属性集 deepEqual）随 venv 增量同步修订，修订面限于形状断言，行为断言不改。
 3. **入口 skill**：四态 body 内容断言（解释器路径、前置路由语、准备指引）；provider 数量 = vendor N + 1；不落盘断言；工具描述解释器提示语断言（venv 开时 `ppt_master_info`/`ppt_master_check_env` 描述含提示语——§5.3 交付项）。
 4. **apply 集成**：Config 默认值；config 注入路径（loader 形态、opts 覆盖、两者共存、venv 缺省默认值）；**volatile 引用→普通值快照断言**（loader 形态下叶子为引用对象，apply 下传前已 `.get()` 去引用）；无效配置降级 warn。
-5. **兼容面**：verify-plugin（入口 skill 不在 vendor 面——负向确认）；sync-upstream 零交互；check-dsh-compat 通过——验证面**需扩展**（当前脚本无此面）：新增 Config 挂载形态 + volatile 声明存在性检查，并经真实 SkillRegistry 读回技能列表断言入口技能在场。
+5. **兼容面**：verify-plugin（入口 skill 不在 vendor 面——负向确认）；sync-upstream 零交互；check-dsh-compat 通过——验证面**扩展为 §7.7 五项全映射**（`ns.Config` volatile 声明 + apply 第二参注入通道 + bundle insert 层静态断言 + schemastery 受控解析通道 + 生产根形态经真实 SkillRegistry 读回入口技能）。**机制注记**：该脚本对插件入口**不做顶层静态 import**（装载期 schemastery fail-loud 会抢先于 CLI 参数解析与 SDK 定位，使"无定位线索""未知参数"两例的断言语义失效），入口改在 **SDK 定位成功后**动态 `import(PLUGIN_ENTRY)`、`apply` 取该动态命名空间的 `ns.apply`（`createTools` 仍为静态导入）。
 6. **真实树 smoke（验收期）**：本机以 `/dsh-home/.ppt-master/venv` 实建 venv + 实装 19 依赖（用户触发；该路径为本机**显式配置值**而非 `~` 展开结果，与默认值 `~/.ppt-master/venv` 构成默认/显式覆盖关系）；热重载验证：本机改配置→观察入口 skill 正文/工具行为换代（依赖 Config volatile 声明与 apply 统一注入通道成立）。
 7. **设计成立性前置检查**（可执行验收项）：① Config volatile 声明存在；② apply 第二参注入通道可用；③ profile `cordis.patch.yml` 存在 `id: dsh-ppt-master-wrapper` 条目；④ schemastery 可解析性（compat 脚本经 §3 同一受控解析通道验证）；⑤ 入口技能经真实注册面接受（compat 脚本经真实 SkillRegistry 读回列表断言在场）。
 
@@ -174,7 +176,7 @@ README 交付核对表（散点义务合并于此）：
 - 孤儿处理：未标记孤儿手动处理；有标记无登记（容器重建后登记丢失，§5.4）手动处理。
 - 设置页诊断：不可投影/写入被拒时的 profile patch 手工编辑路径（§6.1①）。
 - schemastery 解析失败诊断：宿主 node_modules 需存在该包（§6.1⓪）。
-- 入口技能缺失诊断：宿主注册面拒绝合成候选时 vendor 技能不受影响（§6.1④）。
+- 入口技能缺失诊断：宿主注册面拒绝**不带 `resourceBase`** 的合成候选时，vendor 技能不受影响（该字段已实证为条件透传的可选字段，接受性由 compat §7.7⑤ 实跑复核；§6.1④）。
 
 版本历史行随下次 sync 规则③ `-r` 递增发布（本特性为包装层提交，不触碰上游）。
 

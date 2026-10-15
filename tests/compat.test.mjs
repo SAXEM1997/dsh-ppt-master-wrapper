@@ -41,6 +41,16 @@ import { SKILL_RANK } from '../lib/skill-provider.js';
  * - 新增「可解析/不可解析」两态子进程观测量（Env 清空 + 仍传 `--dsh-modules` →
  *   装载期 fail-loud 命中 `@deepseek-ai/schemastery` 且非零退出）——fail-loud 语义的
  *   唯一可观测面（spec §6.1⓪）。
+ *
+ * Task 10 追加面（§7.7 五项设计成立性前置检查，一律**追加**、不弱化既有基线）：
+ * - compat 输出须含五项断言行（`§7.7①`–`§7.7⑤`）：① Config volatile（`ns.Config`
+ *   + `toJSON()` 引用图内 volatile 恰 3 且另含非 volatile 叶）、② apply 第二参注入
+ *   通道实跑、③ bundle insert 层静态源码文本断言、④ schemastery 受控解析通道
+ *   （静态文本 + 实跑装载）、⑤ 生产根形态经真实 SkillRegistry 读回 `ppt-master-env`
+ *   （可 `get()`、`content` 非空）。载体分工钉死：③④＝静态源码文本断言，①②⑤＝实跑；
+ *   **不采用 env 通道子进程**。
+ * - 默认值交叉锚定（携入自 Task 5 审查）：schema 校验默认值 ≡ 注入袋缺省默认值。
+ * - 三条既有基线按测试名原样保留（`problems`/`warnings` 空集与两条 CLI stdout）。
  */
 
 
@@ -597,6 +607,14 @@ test('stub schemastery 替身: 可调用 CJS 命名空间 + toJSON 引用图（v
       refs.some((node) => node.meta?.volatile !== true),
       '须另含 ≥1 非 volatile 叶（否则 volatile 检查自我印证）',
     );
+    // Task 10（携入自 Task 5 审查）：把「非 volatile 叶」收紧到**真正的叶**——容器节点
+    // （root/venv object）恒非 volatile，只断言"存在非 volatile 节点"会被容器满足，
+    // 替身若把所有叶子都标 volatile 仍能自我印证。真实 Config 的非 volatile 叶＝
+    // oldPathPolicy 联合型的两个 const 子节点（本机实测）。
+    assert.ok(
+      refs.some((node) => node.meta?.volatile !== true && node.dict === undefined && node.list === undefined),
+      '须另含 ≥1 非 volatile **叶**（容器节点不算；否则 volatile 检查自我印证）',
+    );
     assert.deepEqual(
       volatileRefs.map((node) => node.meta.description).sort(),
       ['enabled', 'path', 'policy'],
@@ -851,6 +869,42 @@ test('runCompatCheck: provider fail-loud 透传——注入含 broken 的根 →
   }
 });
 
+// ─── §7.7 五项设计成立性前置检查（Task 10）─────────────────────
+
+test('runCompatCheck §7.7 五项: ns.Config volatile(恰 3 + 另含非 volatile 叶)/默认值交叉锚定/apply 第二参/bundle insert 静态/受控解析通道/生产根入口读回', async () => {
+  const sdk = await makeStubSdk();
+  try {
+    // 无 skillRoots（toolOptions 缺省）→ 生产包内根形态：决策A 下合成入口技能在场。
+    const result = await runCompatCheck({ dshModules: sdk.modules, env: {} });
+    assert.deepEqual(result.problems, [], `§7.7 五项须全绿: ${result.problems.join(' | ')}`);
+    assert.deepEqual(result.warnings, []);
+
+    const joined = result.notes.join('\n');
+    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤']) {
+      assert.ok(
+        result.notes.some((note) => note.includes(marker)),
+        `compat 输出缺 ${marker} 断言行（实际 notes:\n${joined}）`,
+      );
+    }
+    // ① 遍历口径与计数落在断言行内：volatile 恰 3 **且**另含非 volatile 叶（防自我印证）
+    assert.match(joined, /§7.7①[^\n]*volatile[^\n]*3/);
+    assert.match(joined, /§7.7①[^\n]*非 volatile 叶/);
+    // 默认值交叉锚定（携入自 Task 5 审查）：schema 校验默认值 ≡ 注入袋缺省默认值
+    assert.ok(
+      result.notes.some((note) => note.includes('默认值交叉锚定')),
+      `缺默认值交叉锚定断言行（实际 notes:\n${joined}）`,
+    );
+    // ② apply 第二参注入通道实跑（显式根经第二参生效）
+    assert.match(joined, /§7.7②[^\n]*apply/);
+    // ⑤ 生产根形态：入口技能经真实 SkillRegistry 在场、可 get()、content 非空
+    const entryNote = result.notes.find((note) => note.includes('§7.7⑤'));
+    assert.match(entryNote, /ppt-master-env/);
+    assert.match(entryNote, /content 非空/);
+  } finally {
+    await sdk.cleanup();
+  }
+});
+
 // ─── CLI ─────────────────────────────────────────────────────────
 
 test('CLI: --dsh-modules stub --skill-roots fixture → exit 0 且输出 OK', async () => {
@@ -970,5 +1024,22 @@ test('T5⑧: schemastery 两态——可解析（注入 stub env）→ 装载成
     );
   } finally {
     await Promise.all([sdk.cleanup(), fixture.cleanup()]);
+  }
+});
+
+test('CLI: §7.7 五项断言行（无 --skill-roots → 生产根形态）→ exit 0 且 stdout 五项齐', async () => {
+  const sdk = await makeStubSdk();
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [scriptPath, '--dsh-modules', sdk.modules],
+      { env: stubLoadEnv(sdk) },
+    );
+    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤']) {
+      assert.ok(stdout.includes(marker), `CLI stdout 缺 ${marker} 断言行（实际 stdout:\n${stdout}）`);
+    }
+    assert.match(stdout, /OK/);
+  } finally {
+    await sdk.cleanup();
   }
 });
