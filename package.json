@@ -1,6 +1,6 @@
 {
   "name": "dsh-ppt-master-wrapper",
-  "version": "6.7.0",
+  "version": "6.7.0-r1",
   "description": "DeepSeek Harness plugin wrapping the upstream ppt-master skill set.",
   "type": "module",
   "main": "index.js",
