@@ -91,3 +91,12 @@ node --test tests/*.test.mjs
 - 上游项目：[hugohe3/ppt-master](https://github.com/hugohe3/ppt-master)（MIT）——本包装层的全部能力来自上游技能集，感谢作者的杰出工作。
 - **双 LICENSE 归属**：插件根 [`LICENSE`](LICENSE) 为本项目 `dsh-ppt-master-wrapper` 自身的 MIT 许可；vendor `skills/ppt-master/LICENSE` 为**上游原文，逐字节保留**（受上游 `attribution_guard.py` 完整性门校验，不得改动）。两者独立共存。
 - vendor 内的 `SPONSORS.md` / `SPONSORS_CN.md` 等归属文件同样逐字节保留，欢迎按上游指引赞助原作者。
+
+## 版本历史
+
+| 版本 | 说明 |
+|------|------|
+| `6.7.0` | 首次交付：vendor 上游 v6.7.0（78MB 逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
+| `6.7.0-r1` | 包装层修订（规则③自动 bump 首跑）：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、spec §4.3 规则③执行主体修订（自动语义） |
+
+> 版本规则：`base` 镜像上游 release；包装层修订追加 `-rN`（无后缀视为 r0，见设计文档 §4.3）。
