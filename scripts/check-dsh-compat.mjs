@@ -608,8 +608,14 @@ export async function runCompatCheck(options = {}) {
   // ③④ 是纯源码文本判据、与插件装载成败无关，故封装为可重复调用的报告段：装载失败
   // 时也要给出这两项结论（①②⑤ 则确实无从判定）。
 
-  /** ③ bundle insert 层 ＋ ④ 受控解析通道（静态源码文本断言；两条 return 路径都调用）。 */
-  const reportStaticChecks = () => {
+  /**
+   * ③ bundle insert 层 ＋ ④ 受控解析通道（静态源码文本断言；两条 return 路径都调用）。
+   *
+   * @param {{ pluginLoaded: boolean }} outcome 入口装载结果——④ 的**实跑半**只在装载成功时
+   *   才能声称「受控解析命中」；装载失败时如实标为实跑半失败（否则该行会在 ④ 本应诊断的
+   *   场景里自相矛盾地报成功）。
+   */
+  const reportStaticChecks = ({ pluginLoaded }) => {
     // ③ bundle insert 层（静态源码文本断言；profile 层归宿主 config-editor + 验收期人工步骤）
     const bundle = readBundleInsertIds();
     if (!bundle.ok) {
@@ -632,20 +638,23 @@ export async function runCompatCheck(options = {}) {
       }
     }
 
-    // ④ schemastery 可解析性：静态源码文本断言（受控解析通道存在）＋ 实跑（本环境装载成功）
+    // ④ schemastery 可解析性：静态源码文本断言（受控解析通道存在）＋ 实跑半（装载结果如实陈述）
     const channel = readControlledChannelEvidence();
     if (!channel.ok) {
       problems.push(`§7.7④ 受控解析通道静态断言失败: ${channel.reason}`);
     } else {
       notes.push(
         '§7.7④ schemastery 可解析性: index.js 含受控解析通道（createRequire 锚定定位到的宿主 '
-          + 'node_modules、无 ESM 裸导入——静态源码文本断言）＋ 本环境入口实跑装载成功（受控解析命中）',
+          + 'node_modules、无 ESM 裸导入——静态源码文本断言）'
+          + (pluginLoaded
+            ? '＋ 本环境入口实跑装载成功（受控解析命中）'
+            : '；**本环境入口实跑装载失败**——受控解析未命中（见 problems），本项仅静态半成立'),
       );
     }
   };
 
   if (pluginNamespace === null) {
-    reportStaticChecks();
+    reportStaticChecks({ pluginLoaded: false });
     problems.push('§7.7①/②/⑤ 无法判定：插件入口装载失败（见上）——Config/apply/入口技能三面均不可达');
   } else {
     // ① Config volatile 声明（访问路径钉死＝动态命名空间的 `ns.Config`）
@@ -739,7 +748,7 @@ export async function runCompatCheck(options = {}) {
     }
 
     // ③ bundle insert 层 ＋ ④ 受控解析通道（静态源码文本断言，与装载成败无关）
-    reportStaticChecks();
+    reportStaticChecks({ pluginLoaded: true });
 
     // ⑤ 入口技能读回（生产根形态；与 Task 6 决策A 联动）
     try {

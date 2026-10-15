@@ -162,7 +162,7 @@ schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules �
 4. **apply 集成**：Config 默认值；config 注入路径（loader 形态、opts 覆盖、两者共存、venv 缺省默认值）；**volatile 引用→普通值快照断言**（loader 形态下叶子为引用对象，apply 下传前已 `.get()` 去引用）；无效配置降级 warn。
 5. **兼容面**：verify-plugin（入口 skill 不在 vendor 面——负向确认）；sync-upstream 零交互；check-dsh-compat 通过——验证面**扩展为 §7.7 五项全映射**（`ns.Config` volatile 声明 + apply 第二参注入通道 + bundle insert 层静态断言 + schemastery 受控解析通道 + 生产根形态经真实 SkillRegistry 读回入口技能）。**机制注记**：该脚本对插件入口**不做顶层静态 import**（装载期 schemastery fail-loud 会抢先于 CLI 参数解析与 SDK 定位，使"无定位线索""未知参数"两例的断言语义失效），入口改在 **SDK 定位成功后**动态 `import(PLUGIN_ENTRY)`、`apply` 取该动态命名空间的 `ns.apply`（`createTools` 仍为静态导入）。
 6. **真实树 smoke（验收期）**：本机以 `/dsh-home/.ppt-master/venv` 实建 venv + 实装 19 依赖（用户触发；该路径为本机**显式配置值**而非 `~` 展开结果，与默认值 `~/.ppt-master/venv` 构成默认/显式覆盖关系）；热重载验证：本机改配置→观察入口 skill 正文/工具行为换代（依赖 Config volatile 声明与 apply 统一注入通道成立）。
-7. **设计成立性前置检查**（可执行验收项）：① Config volatile 声明存在；② apply 第二参注入通道可用；③ profile `cordis.patch.yml` 存在 `id: dsh-ppt-master-wrapper` 条目；④ schemastery 可解析性（compat 脚本经 §3 同一受控解析通道验证）；⑤ 入口技能经真实注册面接受（compat 脚本经真实 SkillRegistry 读回列表断言在场）。
+7. **设计成立性前置检查**（可执行验收项）：① Config volatile 声明存在；② apply 第二参注入通道可用；③ profile `cordis.patch.yml` 存在 `id: dsh-ppt-master-wrapper` 条目（**分层**：仅 bundle insert 层可静态断言——本包 `cordis.patch.yml` 的 `insert:` 段；profile 层条目由宿主 config-editor 在首次设置页编辑且 `index<0` 时 `add` 代建，归**验收期人工步骤**，bundle 层静态存在不替代之）；④ schemastery 可解析性（compat 脚本经 §3 同一受控解析通道验证）；⑤ 入口技能经真实注册面接受（compat 脚本经真实 SkillRegistry 读回列表断言在场）。
 
 > 注记：本机 Node v22 下测试命令须用 glob 形态 `node --test tests/*.test.mjs`（目录形式 MODULE_NOT_FOUND）。
 
