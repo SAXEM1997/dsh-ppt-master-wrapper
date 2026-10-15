@@ -113,7 +113,7 @@
 - Test: `tests/apply.test.mjs`（追加）+ `tests/skeleton.test.mjs:34-42`/`:50-58`（exports/包面形状随 `package.json` 增补联动修订）
 
 **Interfaces:**
-- Consumes: **Task 1 原语为前提**（`resolveVenvPath`/`wrapperStatePath` 系列是注入袋与降级视图的判定基础；Task 2 `effectiveInterpreter` 由消费方 Task 6/7/8 调用，本 Task 只装配、不判定）。宿主 schemastery 经**受控解析**：定位器读 `process.env`（`DSH_NODE_MODULES`/`DSH_PROFILE_DIR`/`DSH_HOME`+`DSH_PROFILE`/`DSH_HOME/profiles` 五级，与 `scripts/check-dsh-compat.mjs:141` 的 `resolveDshModules` 同源）后 `createRequire` 同步解析（`@deepseek-ai/schemastery` 为 CJS，main=`lib/index.cjs`，同步解析可行）；不可解析即模块加载期 fail-loud——**整插件不可加载，vendor 技能面连带丢失**（spec §6.1⓪：index.js 不捕获、不降级为无 Config 导出，宿主 loader 记录该故障，README 注明诊断）。测试侧复用 `tests/compat.test.mjs:400-420` 的 stub node_modules 范式造"可解析/不可解析"两态。
+- Consumes: **Task 1 原语为前提**（`resolveVenvPath`/`wrapperStatePath` 系列是注入袋与降级视图的判定基础；Task 2 `effectiveInterpreter` 由消费方 Task 6/7/8 调用，本 Task 只装配、不判定）。宿主 schemastery 经**受控解析**：定位器读 `process.env`（`DSH_NODE_MODULES`/`DSH_PROFILE_DIR`/`DSH_HOME`+`DSH_PROFILE`/`DSH_HOME/profiles` 五级，与 `scripts/check-dsh-compat.mjs` 的 `resolveDshModules` 同源——按函数名定位，勿锚行号）后 `createRequire` 同步解析（`@deepseek-ai/schemastery` 为 CJS，main=`lib/index.cjs`，同步解析可行）；不可解析即模块加载期 fail-loud——**整插件不可加载，vendor 技能面连带丢失**（spec §6.1⓪：index.js 不捕获、不降级为无 Config 导出，宿主 loader 记录该故障，README 注明诊断）。测试侧复用 `tests/compat.test.mjs:400-420` 的 stub node_modules 范式造"可解析/不可解析"两态。
 - Produces: `export const Config`（叶子级 volatile 三字段 + §5.1 注解文案，含模块加载期求值的插件版本/上游版本/SKILL_DIR）；`apply(ctx, opts)` 第二参统一注入包：入口调 **`snapshotVenvConfig(raw) -> {enabled, path, oldPathPolicy}`**（`lib/venv.js` 纯函数：检测各叶子是否带 `.get()` 引用对象→取普通值）→ 组装注入袋 **`{skillRoots, venv}`** 下传 `createSkillProvider(roots?, opts?)`（**方案甲形态**：roots 保持首参数组、`lib/skill-provider.js:338` 校验不动，venv/入口选项走第二参；见 Task 6）与 `createTools(opts)`。注入袋**不含** `invalidReason`——无效/生效判定唯一经 Task 2 `effectiveInterpreter`，由各消费方自行求值。降级视图：路径无效→注入包保留原值（apply 不改写 venv 值），无效时 console.warn 仅作日志补充。缺省补默认的分层事实（不作对称表述）：**缺省补默认有两个提供者（cordis 校验填默认 vs apply 自填）；loader 路径永不带 skillRoots，两键共存只在测试路径成立**。
 
 - [ ] **Step 1: 写失败测试**（Review Focus #3）— ①**直测 `snapshotVenvConfig`**：入参给带 `.get()` 的引用对象 → 返回 `{enabled,path,oldPathPolicy}` 三普通值（`typeof` 级"引用对象→普通值"断言；探针 provider 捕获方案作废）；②loader 形态缺 venv 键 → 注入袋为 apply 自填的默认值；③测试形态 `{skillRoots, venv}` 两键共存互不干扰（仅测试路径成立）；④相对路径 venv → 注入包原值保留 + warn 触发断言；⑤既有 **12 处可执行 `apply` 调用**行为不回归：tests 10（字面 `{skillRoots}` 8 + 裸 opts 2，集中在 `tests/apply.test.mjs`、`tests/verify-plugin.test.mjs` **两文件**；`tests/compat.test.mjs` 的命中为 fixture 字符串非调用）+ scripts 2（`scripts/check-dsh-compat.mjs:367` `toolOptions` 变量形态、`scripts/verify-plugin.mjs:265`）——scripts 两处列入本 Task 回归面。
@@ -146,7 +146,7 @@
 
 **Interfaces:**
 - Consumes: Task 5 注入袋 `{venv}` + Task 2 `effectiveInterpreter`（存在性体检走同步 `probeVenvInterpreter`）。
-- Produces: `ppt_master_info` payload += `venv: {enabled, path(string|null), exists, pythonPath(string|null)}`（取值按 spec §5.3 矩阵，off/invalid 两行取定值）；**broken 子态不增字段**——声明为**推断式可观测**：`venv.exists=true ∧ venv.pythonPath=null ⇒ exists-but-broken`（故 broken 时 `pythonPath=null`；spec §5.3 broken 行单元格与该式的出入入"spec 偏差登记"，归 Task 10 勘误面）；工具 description 在 `venv.enabled=true` 时追加解释器提示语（指向入口 skill 契约，spec §5.3 交付项）——**追加语只进中文段，英文段保持纯 ASCII**（现测试断言恰两段、第二段 `/^[\x20-\x7e]+$/`，见 `tools-info:92-98`）。
+- Produces: `ppt_master_info` payload += `venv: {enabled, path(string|null), exists, pythonPath(string|null)}`（取值按 spec §5.3 矩阵：**off/invalid 定值；on-missing/on-ready/broken 行 `path`=解析后绝对（定值）**）；**broken 子态不增字段**——声明为**推断式可观测**：`venv.exists=true ∧ venv.pythonPath=null ⇒ exists-but-broken`（故 broken 时 `pythonPath=null`；spec §5.3 broken 行单元格与该式的出入入"spec 偏差登记"，归 Task 10 勘误面）；工具 description 在 `venv.enabled=true` 时追加解释器提示语（指向入口 skill 契约，spec §5.3 交付项）——**追加语只进中文段，英文段保持纯 ASCII**（现测试断言恰两段、第二段 `/^[\x20-\x7e]+$/`，见 `tools-info:92-98`）。
 
 - [ ] **Step 1: 写失败测试** — 矩阵 venv.off/invalid/on-missing/on-ready(×broken) 的 info.venv 字段取值（off/invalid 定值；broken 行按 `exists=true ∧ pythonPath=null` 推断式断言）；描述含/不含提示语切换断言 + 提示语落中文段、英文段仍纯 ASCII；形状修订（`INFO_FIELDS` 增 `venv`，`:105-113`/`:263` 两处 deepEqual 同步）。
 - [ ] **Step 2: 运行确认失败** — `node --test tests/tools-info.test.mjs` → FAIL：追加用例红（payload/schema 无 `venv` 键），已修订的形状用例同红即为 RED 表现。
@@ -197,7 +197,7 @@
 - Produces: compat 脚本验证面与 spec §7.7 **五项全映射**——① Config volatile 声明存在（`runtime.Config` 可达 + toJSON meta 三叶子检查）；② apply 第二参注入通道可用（**与 Task 5 断言联动登记**：Task 5 Step 1②③即该通道证据，compat 侧再以 `apply(ctx, toolOptions)` 实跑驱动注册面，两面不断裂）；③ profile `cordis.patch.yml` 的 `id: dsh-ppt-master-wrapper` 条目——**分层**：bundle insert 层已在本包 `cordis.patch.yml`（→静态断言即足）；profile 层条目由宿主 config-editor `edit()` 在 `index<0` 时 `document.add({id,name,config})` 代建（`dsh-config-editor:105-109` 实证）→ 归 compat/实跑验证路径，不写成 bundle 面静态断言；④ schemastery 可解析性经 §3/Task 5 **同一受控解析通道**断言（不另立通道）；⑤ 入口技能经真实 SkillRegistry 读回列表含 `ppt-master-env`（生产根形态，与 Task 6 决策A 联动）。README 增 spec §8 核对表全部条目（venv 配置/挂载卷与镜像边界/标记即授权/两类孤儿/设置页诊断/schemastery 诊断含 vendor 技能连带丢失/入口技能诊断）；verify-plugin 负向确认（入口 skill 不落盘→比对面不变，实跑）；全量回归 + 版本历史行随下次 sync 规则③处理（**本 Task 不手动 bump**）。
 - [ ] **Step 1: 写失败测试** — compat 脚本输出含 §7.7 五项断言的静态/实跑校验（`tests/compat.test.mjs` 以源码文本或子进程方式断言，沿用既有风格）；同文件既有基线 `:600`（`problems` 空集）与 `:671-672`（stdout `OK`/`alpha`）随验证面扩展联动修订。
 - [ ] **Step 2: 运行确认失败** — `node --test tests/compat.test.mjs` → FAIL：追加用例红（compat 输出缺五项断言行），已修订的既有基线用例同红即为 RED 表现。
-- [ ] **Step 3: 实现** — 扩 compat 脚本 + README 核对表 + spec 回写（**仅"spec 偏差登记"剩余澄清项**；Gate 2 已落的四处勘误不重复改）+ 实跑 `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@…` 与 `node scripts/check-dsh-compat.mjs`。
+- [ ] **Step 3: 实现** — 扩 compat 脚本 + README 核对表 + spec 回写（**仅"spec 偏差登记"剩余澄清项**；Gate 2 已落的四处勘误不重复改）+ 实跑 `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@b4efe3ddf237a97a42880164759162f8e2412f2f` 与 `node scripts/check-dsh-compat.mjs`。
 - [ ] **Step 4: 运行确认通过** — `node --test tests/*.test.mjs` 全绿；verify-plugin OK；compat OK（五项断言行全部出现）。
 - [ ] **Step 5: Commit + push** — `git commit` 后 `git push origin main`；PAT 取 env `DSH_PPT_GITLAB_PAT`（一次性 URL 注入，输出脱敏）；**push 失败不阻塞本 Task 完成**——保留本地提交待下次推送，未推送包装层提交由下次 sync 按规则③自动处理（不手动 bump）。
 
@@ -208,7 +208,8 @@
 - §5.3 setup_deps payload `venv.path`：计划侧曾丢，**裁决=补回 path 字段**（Task 9 产 `venv:{created,adopted,path,error?}`）。
 - §5.4 签名与返回：`ensureVenv(run, path, signal)` → 第三参收 options（`{signal, probeVenvInterpreter, writeMarker}`）；返回增 `adopted`（收编可观测）；`cleanupOldVenv` 增可选 `{remove}` 删除注入缝（Task 4 RED 所需）。
 - 命名原语：`probeVenvInterpreter`（同步 fs 存在性）与 `snapshotVenvConfig`（去引用快照）为计划层新增具名，spec 未命名——回写 §5.4/§5.1 措辞并声明与现有 async 三字段版本探测的分工。
-- §5.3 on-ready 子态（exists-but-broken）行的 `pythonPath` 单元格与推断式可观测式（Task 6/7：`exists=true ∧ pythonPath=null`）取值不一致——回写时统一，或在该行注明取值口径；同节"invalid×disabled 诊断面 path 如实（无效→null）"与 off 行"按配置原样（不解析）"的定值措辞也需一并对齐。
+- §5.3 on-ready 子态（exists-but-broken）行的 `pythonPath` 单元格与推断式可观测式（Task 6/7：`exists=true ∧ pythonPath=null`）取值不一致——**裁决：统一为 null 并在该行注明推断式口径**（不再二选一）；同节"invalid×disabled 诊断面 path 如实（无效→null）"与 off 行"按配置原样（不解析）"的定值措辞也需一并对齐。
+- §5.2 注册形态"vendor N + 入口 1"原文为**无条件**——**决策A 收窄：入口仅当 scanRoots 缺省（生产包内根）时追加**，理由=保全 27 处位置型调用与约 20 处 fixture 根 `list()` 内容断言零改动（Gate 2 收敛性修正；唯一生产形态断言 `apply.test:194-198` 已入 Task 6 预期变更面）。回写 §5.2 使原文带此前提。
 - §6.1⓪ 后果面：schemastery 解析失败除整插件不可加载外，**vendor 技能面连带丢失**（Task 5 已声明）——回写 §6.1⓪ 加半句连带评估。
 
 ## 验收期人工步骤（spec §7.6 真实树 smoke；用户触发，不入自动化测试面）
