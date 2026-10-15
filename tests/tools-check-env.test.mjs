@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,8 +56,8 @@ const CHECK_ENV_INDEX = 1;
 /** 工具入参 schema：无参数（与 T4 stub 逐字相同）。 */
 const EMPTY_PARAMETERS = { type: 'object', properties: {}, additionalProperties: false };
 
-/** 诊断对象四字段的逐字名单（output.schema 属性集 = 返回对象字段集）。 */
-const DIAGNOSTIC_FIELDS = ['python', 'guard', 'deps', 'envFileExists'];
+/** 诊断对象五字段的逐字名单（output.schema 属性集 = 返回对象字段集）。 */
+const DIAGNOSTIC_FIELDS = ['python', 'guard', 'deps', 'envFileExists', 'venv'];
 
 /** fixture 的依赖真值（诊断对象里的 `deps[].dist`，`envFileExists` 用例已写盘）。 */
 const FIXTURE_DIST_ALL = [
@@ -200,12 +200,12 @@ test('check_env: description 为中英双语短句（一句中文 + 一句英文
   assert.ok(/env|depend/.test(lowered), '英文段点明环境/依赖探测');
 });
 
-test('check_env: output.schema 嵌套逐字（python/guard/deps/envFileExists，每层 AP:false）', () => {
+test('check_env: output.schema 嵌套逐字（python/guard/deps/envFileExists/venv，每层 AP:false）', () => {
   const { schema } = toolNamed('ppt_master_check_env').output;
   assert.equal(schema.type, 'object');
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.type === 'json', false, "不得用 type:'json'（SDK 静默降级为空契约）");
-  assert.deepEqual(Object.keys(schema.properties), DIAGNOSTIC_FIELDS, '属性集即诊断四字段');
+  assert.deepEqual(Object.keys(schema.properties), DIAGNOSTIC_FIELDS, '属性集即诊断五字段');
 
   // python：version 可空（oneOf 形态）、meetsSkillRequirement 三态可空布尔。
   assert.equal(schema.properties.python.type, 'object');
@@ -264,6 +264,43 @@ test('check_env: output.schema 嵌套逐字（python/guard/deps/envFileExists，
   });
 
   assert.deepEqual(schema.properties.envFileExists, { type: 'boolean' });
+
+  // venv：四字段子对象（对象级同样 AP:false、四字段全 required、可空字段 oneOf 拼写）；
+  // `venv.python` 为「三字段版本探测 | {skipped}」二选一，且探测变体与顶层 python 同形
+  // （同一构造器产出——顶层 `python` 恒为系统探测，`venv.python` 是生效解释器面）。
+  const venvSchema = schema.properties.venv;
+  assert.equal(venvSchema.type, 'object');
+  assert.equal(venvSchema.additionalProperties, false);
+  assert.deepEqual(Object.keys(venvSchema.properties), ['enabled', 'path', 'exists', 'python']);
+  assert.deepEqual(venvSchema.required, ['enabled', 'path', 'exists', 'python']);
+  assert.deepEqual(venvSchema.properties.enabled, { type: 'boolean' });
+  assert.deepEqual(venvSchema.properties.path, { oneOf: [{ type: 'string' }, { type: 'null' }] });
+  assert.deepEqual(venvSchema.properties.exists, { type: 'boolean' });
+  assert.deepEqual(venvSchema.properties.python, {
+    oneOf: [
+      {
+        type: 'object',
+        properties: {
+          found: { type: 'boolean' },
+          version: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          meetsSkillRequirement: { oneOf: [{ type: 'boolean' }, { type: 'null' }] },
+        },
+        required: ['found', 'version', 'meetsSkillRequirement'],
+        additionalProperties: false,
+      },
+      {
+        type: 'object',
+        properties: { skipped: { type: 'boolean', const: true } },
+        required: ['skipped'],
+        additionalProperties: false,
+      },
+    ],
+  });
+  assert.deepEqual(
+    venvSchema.properties.python.oneOf[0],
+    schema.properties.python,
+    'venv.python 的探测变体与顶层 python 同形（单构造器）',
+  );
 });
 
 test('check_env: schema 通过 SDK 的 assertSupportedJsonSchema（可解析到 SDK 时）', (t) => {
@@ -509,7 +546,7 @@ test('check_env: python 元数据 hit → installed:true、source:metadata、imp
         { skillRoots: [root], ...healthyExec() },
       );
 
-      assert.deepEqual(Object.keys(payload), DIAGNOSTIC_FIELDS, '返回对象恰为诊断四字段');
+      assert.deepEqual(Object.keys(payload), DIAGNOSTIC_FIELDS, '返回对象恰为诊断五字段');
       assert.deepEqual(payload.python, {
         found: true,
         version: '3.11.2',
@@ -523,6 +560,13 @@ test('check_env: python 元数据 hit → installed:true、source:metadata、imp
       ]);
       assert.equal(payload.envFileExists, true, '存在性检查：<SKILL_DIR>/.env');
       assert.equal(skill, join(root, 'ppt-master'));
+      // venv 小节恒在场（未配置 ⇒ 按 `invalid` 行诊断如实：path=null、不探测）。
+      assert.deepEqual(payload.venv, {
+        enabled: false,
+        path: null,
+        exists: false,
+        python: { skipped: true },
+      });
     } finally {
       removeReq();
     }
@@ -1289,4 +1333,419 @@ test('check_env: 无 exec.run 注入时退回内置 spawn 助手（本机有 pyt
   } finally {
     restoreHome();
   }
+});
+
+// ─── venv 感知：spec §5.3 矩阵逐行 × 生效解释器路由 ───────────────
+//
+// 矩阵口径（逐行对 check_env 求值）：`off`/`invalid` 两行取**定值**、不探测 venv 解释器
+// （off：path 按配置原样不解析、exists=false；invalid：path=null；invalid×disabled 组合落
+// off 且 path=null），deps/guard 走系统 python3（invalid 为降级续行）；`on-missing` 与
+// `on-ready` 子态 exists-but-broken 无生效解释器 → 版本探测挂**候选** `<absPath>/bin/python3`、
+// deps 全 UNKNOWN/source:'unknown'、guard `{skipped}`（**不回退**系统探测）；`on-ready` 正常态
+// → deps/guard 同走 venv python。顶层 `python` 恒为系统探测。broken 不另增字段（推断式
+// `exists=true ∧ python.found=false`）。探测分工：`venv.python` 用 **async 三字段版本探测**
+// （on-ready 挂 `pythonPath` 本身，两 null 行改挂候选），与 Task 2 的**同步**
+// `probeVenvInterpreter`（入参 venv 目录）是两个接口，勿混用。
+
+/** `createTools(options)` 里的某个工具定义，按 name 精确查找（venv 注入用例）。 */
+function toolNamedWith(options, name) {
+  return createTools(options).find((tool) => tool.name === name);
+}
+
+/**
+ * 造一个假 venv 目录（POSIX 布局）：`pyvenv.cfg` 恒在；`withPython=false` ⇒ 无
+ * `bin/python3`（§5.3 的 exists-but-broken 子态）；`withMarker` 写所有权标记。
+ *
+ * `dir` 给定则在**精确路径**落地——`~` 展开基准的用例需要
+ * `<isolatedHome>/.ppt-master/venv` 这类确定路径（缺省为新建 tmp 目录）。
+ */
+function makeVenvDir({ dir, withPython = true, withMarker = false } = {}) {
+  const target = dir ?? mkdtempSync(join(tmpdir(), 'check-env-venv-'));
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, 'pyvenv.cfg'), 'home = /usr/local/bin\n');
+  if (withPython) {
+    mkdirSync(join(target, 'bin'), { recursive: true });
+    writeFileSync(join(target, 'bin', 'python3'), '#!/bin/sh\nexit 0\n');
+  }
+  if (withMarker) writeFileSync(join(target, '.ppt-master-wrapper.json'), '{}\n');
+  return target;
+}
+
+/**
+ * venv 感知的 exec stub：`--version` 按**被调解释器**回答（系统 `python3` → `systemVersion`；
+ * venv 解释器 → `venvVersion`，但解释器文件不存在时按真实 spawn 抛 ENOENT——候选不存在即
+ * "absent"）；guard 与元数据查询按 argv 分派，不校验解释器（路由由 `calls` 断言）。
+ *
+ * `calls` 逐条记录 `{command, args}`：数组顺序即调用顺序，是本文件「探测挂在哪个解释器上」
+ * 与「两 null 行确实探测了候选」的唯一事实来源。
+ */
+function venvExec({ systemVersion = 'Python 3.11.2\n', venvVersion = 'Python 3.12.1\n', guardExit = 3 } = {}) {
+  const calls = [];
+  const run = async (command, args) => {
+    calls.push({ command, args });
+    if (args.includes('--version')) {
+      if (command === 'python3') return { stdout: systemVersion, stderr: '', exitCode: 0 };
+      if (!existsSync(command)) throw enoentError(command); // 候选不存在：spawn 级失败
+      return { stdout: venvVersion, stderr: '', exitCode: 0 };
+    }
+    if (String(args.at(-1)).endsWith('.py')) {
+      return { stdout: 'guard fixture\n', stderr: '', exitCode: guardExit };
+    }
+    return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+  };
+  return { exec: stubExec(run), calls };
+}
+
+/** 版本探测的目标序列（哪个解释器被 `--version` 探测）。 */
+function versionProbeTargets(calls) {
+  return calls.filter((call) => call.args.includes('--version')).map((call) => call.command);
+}
+
+/** 探测调用分桶：guard 脚本调用与 `-c` 查询（deps 的两条通道）。 */
+function probeBuckets(calls) {
+  return {
+    guards: calls.filter((call) => String(call.args.at(-1)).endsWith('.py')),
+    inlines: calls.filter((call) => call.args[0] === '-c'),
+  };
+}
+
+test('check_env venv.off：不探测（盘上是真 venv 也 exists=false）、path 按配置原样（`~` 不解析）、python={skipped}', async () => {
+  const isolated = isolateHome();
+  const { root, remove } = makeSkillRoot();
+  // 盘上放一个**真实可用**的 venv，恰好是配置的 `~` 展开目标：off 行必须完全不看它。
+  const venvDir = join(isolated.home, '.ppt-master', 'venv');
+  makeVenvDir({ dir: venvDir });
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    const { exec, calls } = venvExec();
+    const payload = await toolNamedWith(
+      { venv: { enabled: false, path: '~/.ppt-master/venv', oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(
+      payload.venv,
+      { enabled: false, path: '~/.ppt-master/venv', exists: false, python: { skipped: true } },
+      'off 行定值：path 按配置原样（不解析）、exists=false 不探测、python={skipped}',
+    );
+    assert.deepEqual(Object.keys(payload.venv), ['enabled', 'path', 'exists', 'python']);
+    assert.deepEqual(
+      payload.python,
+      { found: true, version: '3.11.2', meetsSkillRequirement: true },
+      '顶层 python 恒为系统探测',
+    );
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 3 }, 'guard 走系统 python');
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
+    ], 'deps 走系统 python');
+    assert.deepEqual(
+      calls.map((call) => call.command),
+      ['python3', 'python3', 'python3'],
+      'venv 零探测：--version/guard/元数据三条子进程一律系统 python3',
+    );
+    assert.ok(
+      !calls.some((call) => call.command.includes(venvDir)),
+      'off 不发现：盘上的真 venv 不得被探测',
+    );
+  } finally {
+    removeReq();
+    remove();
+    isolated.restore();
+  }
+});
+
+test('check_env venv.invalid：enabled 如实 true、path=null 定值、python={skipped}；deps/guard 降级续行（系统 python）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    for (const path of ['relative/venv', '']) {
+      const { exec, calls } = venvExec();
+      const payload = await toolNamedWith(
+        { venv: { enabled: true, path, oldPathPolicy: 'keep' } },
+        'ppt_master_check_env',
+      ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+      assert.deepEqual(
+        payload.venv,
+        { enabled: true, path: null, exists: false, python: { skipped: true } },
+        `invalid 行定值（path=${JSON.stringify(path)}）：配置开关如实、path=null、不探测`,
+      );
+      assert.deepEqual(payload.python, {
+        found: true,
+        version: '3.11.2',
+        meetsSkillRequirement: true,
+      });
+      assert.deepEqual(
+        payload.guard,
+        { ran: true, exitCode: 3 },
+        'invalid 为降级续行：guard 仍走系统 python（非 skip）',
+      );
+      assert.equal(payload.deps[0].installed, true, 'invalid 不阻断依赖探测');
+      assert.ok(calls.every((call) => call.command === 'python3'), 'invalid 行零 venv 探测');
+    }
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env venv.invalid×disabled：组合落 off——enabled=false 且 path=null（无效如实，非配置原样）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    const { exec, calls } = venvExec();
+    const payload = await toolNamedWith(
+      { venv: { enabled: false, path: 'relative/venv', oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(
+      payload.venv,
+      { enabled: false, path: null, exists: false, python: { skipped: true } },
+      'disabled 优先落 off，但诊断面 path 定值 null（无效如实）',
+    );
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 3 }, '行为按 off：deps/guard 走系统 python');
+    assert.equal(payload.deps[0].installed, true);
+    assert.ok(calls.every((call) => call.command === 'python3'));
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env venv.on-missing：path=解析后绝对、版本探测挂候选 <absPath>/bin/python3；deps 全 UNKNOWN 不回退、guard={skipped}', async () => {
+  const isolated = isolateHome();
+  const { root, remove } = makeSkillRoot();
+  const absVenv = join(isolated.home, 'missing-venv');
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'flask']);
+  try {
+    const { exec, calls } = venvExec();
+    const payload = await toolNamedWith(
+      { venv: { enabled: true, path: '~/missing-venv', oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(
+      payload.venv,
+      {
+        enabled: true,
+        path: absVenv,
+        exists: false,
+        python: { found: false, version: null, meetsSkillRequirement: null },
+      },
+      'on-missing 行：解析后绝对路径 + 候选探测的 absent 三字段',
+    );
+    assert.deepEqual(
+      versionProbeTargets(calls),
+      ['python3', join(absVenv, 'bin', 'python3')],
+      'venv 版本探测挂候选 <absPath>/bin/python3（Task 2 拼接口径）',
+    );
+    assert.deepEqual(
+      payload.python,
+      { found: true, version: '3.11.2', meetsSkillRequirement: true },
+      '顶层 python 仍是系统探测（系统 python 明明可用）',
+    );
+    assert.deepEqual(
+      payload.guard,
+      { skipped: true },
+      'guard 载荷为 {skipped}（UNKNOWN 是依赖条目词汇，不得挪用）',
+    );
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+      { dist: 'flask', importName: 'flask', installed: 'UNKNOWN', source: 'unknown' },
+    ], '无生效解释器 → deps 全 UNKNOWN/source:unknown（不回退系统探测）');
+    const { guards, inlines } = probeBuckets(calls);
+    assert.deepEqual(guards, [], 'guard 未运行（不比系统 found 判定）');
+    assert.deepEqual(inlines, [], 'deps 未发起任何元数据/import 探测');
+  } finally {
+    removeReq();
+    remove();
+    isolated.restore();
+  }
+});
+
+test('check_env venv.on-ready 子态 exists-but-broken：exists=true ∧ python.found=false 推断式、不增字段、候选探测同挂', async () => {
+  const { root, remove } = makeSkillRoot();
+  const venvDir = makeVenvDir({ withPython: false }); // pyvenv.cfg 在、bin/python3 缺
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    const { exec, calls } = venvExec();
+    const payload = await toolNamedWith(
+      { venv: { enabled: true, path: venvDir, oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(
+      Object.keys(payload.venv),
+      ['enabled', 'path', 'exists', 'python'],
+      'broken 不另增字段（只按推断式可观测）',
+    );
+    assert.deepEqual(payload.venv, {
+      enabled: true,
+      path: venvDir,
+      exists: true,
+      python: { found: false, version: null, meetsSkillRequirement: null },
+    }, 'exists=true ∧ python.found=false ⇒ exists-but-broken');
+    assert.deepEqual(
+      versionProbeTargets(calls),
+      ['python3', join(venvDir, 'bin', 'python3')],
+      'broken 的版本探测同样挂候选 <absPath>/bin/python3',
+    );
+    assert.deepEqual(payload.guard, { skipped: true });
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+    ]);
+    const { guards, inlines } = probeBuckets(calls);
+    assert.deepEqual(guards, [], 'guard 未运行');
+    assert.deepEqual(inlines, [], 'deps 未探测');
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env venv.on-ready：venv 注入直达 payload 与探测路由（runCheckEnv 第 4 参目的地契约）、deps/guard 同走 venv python', async () => {
+  const { root, remove } = makeSkillRoot();
+  const venvDir = makeVenvDir();
+  const venvPython = join(venvDir, 'bin', 'python3');
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'flask']);
+  try {
+    // 系统 python 故意低于技能下限：顶层 python 与 venv.python 是两次独立探测，结论不同。
+    const { exec, calls } = venvExec({ systemVersion: 'Python 3.9.18\n' });
+    const payload = await toolNamedWith(
+      { venv: { enabled: true, path: venvDir, oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(payload.venv, {
+      enabled: true,
+      path: venvDir,
+      exists: true,
+      python: { found: true, version: '3.12.1', meetsSkillRequirement: true },
+    }, 'on-ready：venv.python 为 venv 解释器的三字段版本探测');
+    assert.deepEqual(
+      payload.python,
+      { found: true, version: '3.9.18', meetsSkillRequirement: false },
+      '顶层 python 保持系统探测（两小节独立）',
+    );
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 3 });
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
+      { dist: 'flask', importName: 'flask', installed: true, source: 'metadata' },
+    ]);
+    assert.deepEqual(
+      versionProbeTargets(calls),
+      ['python3', venvPython],
+      'venv 版本探测目标 = 生效解释器的 pythonPath 本身',
+    );
+    const { guards, inlines } = probeBuckets(calls);
+    assert.deepEqual(guards.map((call) => call.command), [venvPython], 'guard 走 venv python');
+    assert.deepEqual(
+      inlines.map((call) => call.command),
+      [venvPython, venvPython],
+      'deps 元数据查询走 venv python',
+    );
+    assert.ok(
+      !calls.some((call) => call.command === 'python3' && call.args[0] === '-c'),
+      'deps 不得挂在系统 python3 上',
+    );
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env venv：系统模式回归——off 态与未配置态诊断四字段逐字等价、子进程零 venv 增量', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'flask']);
+  try {
+    const base = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...healthyExec() },
+    );
+    const calls = [];
+    const off = await toolNamedWith(
+      { venv: { enabled: false, path: '/tmp/venv-off', oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    ).execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...healthyExec({ onCall: (command, args) => calls.push({ command, args }) }) },
+    );
+
+    for (const field of ['python', 'guard', 'deps', 'envFileExists']) {
+      assert.deepEqual(off[field], base[field], `系统模式字段零回归：${field}`);
+    }
+    assert.deepEqual(
+      base.venv,
+      { enabled: false, path: null, exists: false, python: { skipped: true } },
+      'venv 选项缺省 ⇒ 诊断如实（path=null、不探测）',
+    );
+    assert.deepEqual(
+      off.venv,
+      { enabled: false, path: '/tmp/venv-off', exists: false, python: { skipped: true } },
+      'off ⇒ path 按配置原样、exists=false、不探测',
+    );
+    assert.ok(calls.length > 0, 'off 态照常探测系统环境');
+    assert.ok(
+      calls.every((call) => call.command === 'python3'),
+      'off 态子进程一律系统 python3（venv 零探测）',
+    );
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env：未标记孤儿 venv 目录 → 不发现/不探测/不提示（spec §6 保守口径）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const orphan = makeVenvDir(); // 盘上真实 venv：无所有权标记、未被配置引用
+  const untouched = join(tmpdir(), 'check-env-venv-not-configured-xyz');
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    for (const venv of [
+      undefined,
+      { enabled: false, path: untouched, oldPathPolicy: 'keep' },
+      { enabled: true, path: untouched, oldPathPolicy: 'keep' },
+    ]) {
+      const { exec, calls } = venvExec();
+      const tool = toolNamedWith({ venv }, 'ppt_master_check_env');
+      const payload = await tool.execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+      assert.deepEqual(Object.keys(payload), DIAGNOSTIC_FIELDS, '孤儿不新增提示/告警字段');
+      assert.equal(
+        JSON.stringify(payload).includes(orphan),
+        false,
+        `孤儿路径不得出现在 payload 任何位置：${JSON.stringify(venv)}`,
+      );
+      assert.equal(tool.description.includes(orphan), false, 'description 不得提示孤儿');
+      assert.ok(!calls.some((call) => call.command.includes(orphan)), '孤儿零探测（不发现即不探测）');
+    }
+  } finally {
+    removeReq();
+    remove();
+    rmSync(orphan, { recursive: true, force: true });
+  }
+});
+
+test('check_env：description 的 venv 提示语切换——enabled=true 才追加、只进中文段、英文段逐字不动', () => {
+  const baseDescription = createTools()[CHECK_ENV_INDEX].description;
+  const disabled = createTools({ venv: { enabled: false, path: '/tmp/venv-off' } })[CHECK_ENV_INDEX].description;
+  const enabled = createTools({ venv: { enabled: true, path: '/tmp/venv-on' } })[CHECK_ENV_INDEX].description;
+
+  assert.equal(disabled, baseDescription, 'enabled=false → 描述逐字不变');
+  assert.notEqual(enabled, disabled, 'enabled=true → 追加解释器提示语');
+  assert.ok(enabled.startsWith(baseDescription.split(' / ')[0]), '提示语追加在中文段尾部（中文段以原文为前缀）');
+
+  const parts = enabled.split('/').map((part) => part.trim()).filter(Boolean);
+  assert.equal(parts.length, 2, `追加后仍恰为两段（提示语不得含斜杠）：${enabled}`);
+  assert.match(parts[0], /[\u4e00-\u9fff]/, '第一段为中文');
+  assert.match(parts[1], /^[\x20-\x7e]+$/, '第二段仍为纯 ASCII 英文');
+  assert.equal(
+    parts[1],
+    baseDescription.split('/').map((part) => part.trim()).filter(Boolean)[1],
+    '英文段逐字不动（追加面只在中文段）',
+  );
+  assert.ok(parts[0].includes('ppt-master-env'), '提示语指向入口 skill（解释器契约所在）');
+  assert.match(parts[0], /解释器/, '提示语点明解释器契约');
+  assert.ok(!parts[0].includes('/tmp/venv-on'), '提示语不复述配置路径（不泄漏配置值）');
 });
