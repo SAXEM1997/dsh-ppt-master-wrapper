@@ -965,3 +965,291 @@ test('ensureVenv: 创建中 abort → 拒绝传播（不折成 {error} 环境故
   }
 });
 
+// ─── cleanupOldVenv：四条件删除安全模型（spec §5.4；本模块唯一删除原语） ───
+//
+// 四条件（路径≠当前、互不前缀包含、pyvenv.cfg 存在、带标记）**每次调用都从文件系统重读**，
+// 因而半删态下轮仍满足条件并重试（spec §5.4 残留风险②）。删除失败注入经已声明的第四参
+// `{ remove }`（缺省即 rmSync 递归 + force），不改写模块函数、不 monkey-patch node:fs。
+
+/** 造一个「可授权删除」的旧 venv：`pyvenv.cfg` + 所有权标记齐备。 */
+function makeMarkedVenv(parent, name) {
+  const dir = makeVenvDir(parent, name);
+  venv.writeMarker(dir);
+  return dir;
+}
+
+/** 记录调用的 `{remove}` 桩：缺省真删目录；`throws` 给定时改为抛错（可先经 `beforeThrow` 造副作用）。 */
+function makeRemoveStub({ beforeThrow = null, throws = null } = {}) {
+  const calls = [];
+  const remove = (dirPath) => {
+    calls.push(dirPath);
+    if (throws === null) {
+      rmSync(dirPath, { recursive: true, force: true });
+      return;
+    }
+    beforeThrow?.(dirPath);
+    throw throws;
+  };
+  return { calls, remove };
+}
+
+test('cleanupOldVenv: 四条件齐备 + policy=delete → deleted（默认 rmSync 递归删；路径经 `~` 展开）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 旧/新路径按 Task 9 的真实数据源取得：resolveVenvPath 展开 `~` 后的绝对路径。
+    const oldPath = venv.resolveVenvPath(cfg('~/.ppt-master/venv-old')).path;
+    const currentPath = venv.resolveVenvPath(cfg('~/.ppt-master/venv')).path;
+    const oldVenv = makeMarkedVenv(join(home, '.ppt-master'), 'venv-old');
+    assert.equal(oldVenv, oldPath, '前置：旧路径即被标记的 venv 目录');
+    addPythonBinary(oldVenv); // 嵌套内容——证明递归删除而非只删空目录
+
+    const result = venv.cleanupOldVenv(oldPath, 'delete', currentPath);
+
+    assert.deepEqual(result, { action: 'deleted' }, '四条件齐备且 policy=delete → deleted（无 error 键）');
+    assert.equal(existsSync(oldPath), false, '旧 venv 目录应被递归删除');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 四条件齐备 + policy=keep → kept（零删除调用、目录原样）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const oldPath = makeMarkedVenv(home, 'keep-venv');
+    const currentPath = join(home, 'current-venv');
+    const { calls, remove } = makeRemoveStub();
+
+    const result = venv.cleanupOldVenv(oldPath, 'keep', currentPath, { remove });
+
+    assert.deepEqual(result, { action: 'kept' }, 'keep 行只报闲置：不删除、不带 error');
+    assert.deepEqual(calls, [], 'keep 行不得触碰删除原语');
+    assert.equal(existsSync(oldPath), true, '目录原样保留');
+    assert.notEqual(venv.readMarker(oldPath), null, '标记仍可读（未被删除/改写）');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 条件一（oldPath === currentPath）→ none 且不删（两 policy 同判）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const oldPath = makeMarkedVenv(home, 'same-venv');
+    const { calls, remove } = makeRemoveStub();
+
+    for (const policy of ['delete', 'keep']) {
+      const result = venv.cleanupOldVenv(oldPath, policy, oldPath, { remove });
+
+      assert.deepEqual(Object.keys(result).sort(), ['action', 'error'], `policy=${policy}：none 行附原因`);
+      assert.equal(result.action, 'none', `policy=${policy}：同路径必须拒绝删除`);
+      assert.match(result.error, /相同/, '原因应指明路径相同');
+      assert.deepEqual(calls, [], `policy=${policy}：零删除调用`);
+      assert.equal(existsSync(oldPath), true, `policy=${policy}：目录未被触碰`);
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 条件二——前缀包含双向拒绝（Review Focus #4：嵌套配置不得自毁）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const { calls, remove } = makeRemoveStub();
+
+    // 方向一：旧路径是新路径的祖先（旧=<home>/nested，新=<home>/nested/inner）——最危险的自毁形态；
+    // 该目录本身是四条件齐备的合法 venv，故被拒只能归因于前缀判定。
+    const outerOld = makeMarkedVenv(home, 'nested');
+    const innerNew = join(outerOld, 'inner');
+    let result = venv.cleanupOldVenv(outerOld, 'delete', innerNew, { remove });
+    assert.equal(result.action, 'none', '旧路径前缀包含新路径 → 拒绝');
+    assert.match(result.error, /前缀包含/, '原因应指向前缀包含');
+    assert.equal(existsSync(outerOld), true, '拒绝时目录原样保留');
+
+    // 方向二：新路径是旧路径的祖先（旧=<home>/outer2/venv-old，新=<home>/outer2）。
+    const outerNew = join(home, 'outer2');
+    const nestedOld = makeMarkedVenv(outerNew, 'venv-old');
+    result = venv.cleanupOldVenv(nestedOld, 'delete', outerNew, { remove });
+    assert.equal(result.action, 'none', '新路径前缀包含旧路径 → 同样拒绝（方向性判定须双向）');
+    assert.match(result.error, /前缀包含/);
+    assert.equal(existsSync(nestedOld), true, '拒绝时目录原样保留');
+
+    // 同目录异拼写（尾斜杠）：字面不等却互为前缀 → 仍拒绝，删除目标与当前 venv 不得重合。
+    const slashed = makeMarkedVenv(home, 'slash-venv');
+    for (const [old, current] of [[slashed, `${slashed}/`], [`${slashed}/`, slashed]]) {
+      result = venv.cleanupOldVenv(old, 'delete', current, { remove });
+      assert.equal(result.action, 'none', `尾斜杠同目录（old=${old}）→ 拒绝`);
+    }
+
+    assert.deepEqual(calls, [], '前缀类各行一律零删除调用');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 条件三——缺 pyvenv.cfg（不存在/空目录/仅标记）→ none 且不删', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const currentPath = join(home, 'current');
+    const { calls, remove } = makeRemoveStub();
+
+    // 形态一：路径不存在（登记残留的旧路径）。
+    let result = venv.cleanupOldVenv(join(home, 'gone-venv'), 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '路径不存在 → 不删');
+    assert.match(result.error, /非 venv/, '原因应指明不是 venv 目录');
+
+    // 形态二：目录存在但为空（无 pyvenv.cfg）。
+    const emptyDir = join(home, 'empty-dir');
+    mkdirSync(emptyDir);
+    result = venv.cleanupOldVenv(emptyDir, 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '空目录不是 venv → 拒绝（venvExists 判定）');
+
+    // 形态三：带标记但无 pyvenv.cfg——证明条件三独立生效，标记不能替代 venv 判定。
+    const markedOnly = join(home, 'marked-only');
+    mkdirSync(markedOnly);
+    venv.writeMarker(markedOnly);
+    result = venv.cleanupOldVenv(markedOnly, 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '有标记但无 pyvenv.cfg → 仍拒绝');
+
+    assert.deepEqual(calls, [], '三形态零删除调用');
+    assert.equal(existsSync(emptyDir), true, '空目录原样保留');
+    assert.equal(existsSync(markedOnly), true, '仅标记目录原样保留');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 条件四——venv 无标记/标记损坏 → none（标记即删除授权）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const currentPath = join(home, 'current');
+    const { calls, remove } = makeRemoveStub();
+
+    // 形态一：合法 venv 但缺标记（历史遗留或手工建的 venv）。
+    const unmarked = makeVenvDir(home, 'unmarked-venv');
+    let result = venv.cleanupOldVenv(unmarked, 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '无标记即无删除授权');
+    assert.match(result.error, /标记/, '原因应指明缺所有权标记');
+
+    // 形态二：标记不可解析 → readMarker 返回 null → 同样不授权。
+    const malformed = makeVenvDir(home, 'malformed-venv');
+    writeFileSync(join(malformed, venv.MARKER_FILENAME), '{ 不是 JSON');
+    assert.equal(venv.readMarker(malformed), null, '前置：损坏标记读回 null');
+    result = venv.cleanupOldVenv(malformed, 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '损坏标记不授予删除权');
+
+    // 形态三：标记可解析但字段类型不符（缺 path）→ readMarker 判 null。
+    const wrongShape = makeVenvDir(home, 'wrong-shape-venv');
+    writeFileSync(join(wrongShape, venv.MARKER_FILENAME), JSON.stringify({ createdAt: 1 }));
+    result = venv.cleanupOldVenv(wrongShape, 'delete', currentPath, { remove });
+    assert.equal(result.action, 'none', '字段类型不符的标记不授予删除权');
+
+    assert.deepEqual(calls, [], '三形态零删除调用');
+    for (const dir of [unmarked, malformed, wrongShape]) {
+      assert.equal(existsSync(dir), true, `${dir} 应原样保留`);
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 注入桩 remove 抛错 → failed + error 且不抛（恰一次调用、目录留存）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const oldPath = makeMarkedVenv(home, 'fail-venv');
+    const currentPath = join(home, 'current');
+    const { calls, remove } = makeRemoveStub({ throws: new Error('EBUSY: 目录忙') });
+
+    let result;
+    assert.doesNotThrow(() => {
+      result = venv.cleanupOldVenv(oldPath, 'delete', currentPath, { remove });
+    }, '删除失败必须值返回，不得抛（spec §6 cleanup 行）');
+
+    assert.deepEqual(Object.keys(result).sort(), ['action', 'error'], 'failed 行两键');
+    assert.equal(result.action, 'failed', '桩抛错 → failed');
+    assert.match(result.error, /EBUSY/, 'error 应携带原因（不吞细节）');
+    assert.deepEqual(calls, [oldPath], '删除原语恰一次、入参即旧路径');
+    assert.equal(existsSync(oldPath), true, '桩未真删——目录留存待下轮重试');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 半删态重试——首轮桩部分删除后抛错，次轮仍满足四条件并再次尝试删除', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const oldPath = makeMarkedVenv(home, 'retry-venv');
+    addPythonBinary(oldPath);
+    const currentPath = join(home, 'current');
+
+    // 首轮桩：造成可观测的部分删除（bin/ 被删）后抛错——模拟 rmSync 中途失败（残留风险②）。
+    const first = makeRemoveStub({
+      beforeThrow: (dirPath) => rmSync(join(dirPath, 'bin'), { recursive: true, force: true }),
+      throws: new Error('EACCES: 删除中途被拒'),
+    });
+    const firstResult = venv.cleanupOldVenv(oldPath, 'delete', currentPath, { remove: first.remove });
+    assert.equal(firstResult.action, 'failed', '首轮如实报 failed');
+    assert.equal(existsSync(join(oldPath, 'bin')), false, '前置：首轮确已部分删除');
+    assert.equal(venv.venvExists(oldPath), true, '前置：pyvenv.cfg 仍在 → 四条件仍可满足');
+    assert.notEqual(venv.readMarker(oldPath), null, '前置：标记仍在 → 删除授权仍在');
+
+    // 次轮：删除原语换成「记录调用 + 真删」——重试不得因「上次失败」被短路成 none。
+    const second = makeRemoveStub();
+    const secondResult = venv.cleanupOldVenv(oldPath, 'delete', currentPath, { remove: second.remove });
+    assert.notEqual(secondResult.action, 'none', '半删态不得被判为无可清理（须再次尝试删除）');
+    assert.equal(secondResult.action, 'deleted', '四条件复读仍成立 → 次轮删除成功');
+    assert.deepEqual(second.calls, [oldPath], '次轮确实再次调用了删除原语');
+    assert.equal(existsSync(oldPath), false, '残留目录最终被清除');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 前缀判定的段边界——兄弟目录（名字共前缀但非嵌套）不误判 → deleted', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 朴素 startsWith 会把 `/…/venv` 当作 `/…/venv2` 的前缀而误拒；段边界判定必须放行。
+    for (const [oldName, currentName] of [['venv', 'venv2'], ['venv2', 'venv']]) {
+      const oldPath = makeMarkedVenv(home, oldName);
+      const sentinel = join(home, `${currentName}-keep.txt`);
+      writeFileSync(sentinel, '当前 venv 侧的哨兵文件\n');
+      const { calls, remove } = makeRemoveStub();
+
+      const result = venv.cleanupOldVenv(oldPath, 'delete', join(home, currentName), { remove });
+
+      assert.equal(result.action, 'deleted', `${oldName} vs ${currentName}：兄弟目录不是前缀包含`);
+      assert.deepEqual(calls, [oldPath], '删除目标须恰为旧路径');
+      assert.equal(existsSync(oldPath), false, '旧目录被删');
+      assert.equal(existsSync(sentinel), true, '当前侧文件不得被误删');
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 非字符串/空路径入参 → none 且不抛（无删除授权时永不触删除缝）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const currentPath = join(home, 'current');
+    const { calls, remove } = makeRemoveStub();
+
+    // currentPath 为 null 是真实可达形态：venv.path 无效时 Task 2 的解析结果为 null。
+    for (const [oldPath, current] of [
+      [null, currentPath],
+      [undefined, currentPath],
+      [currentPath, null],
+      [42, currentPath],
+      ['', currentPath],
+      [null, null],
+    ]) {
+      let result;
+      assert.doesNotThrow(() => {
+        result = venv.cleanupOldVenv(oldPath, 'delete', current, { remove });
+      }, `oldPath=${String(oldPath)} currentPath=${String(current)}：不得抛`);
+      assert.equal(result.action, 'none', `oldPath=${String(oldPath)}：无授权 → none`);
+    }
+
+    assert.deepEqual(calls, [], '非法入参一行都不得到达删除缝');
+  } finally {
+    restore();
+  }
+});
+
