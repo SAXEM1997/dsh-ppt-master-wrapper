@@ -102,7 +102,6 @@ node --test tests/*.test.mjs
 |------|------|
 | `6.7.0` | 首次交付：vendor 上游 v6.7.0（78MB 逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
 | `6.7.0-r1` | 包装层修订（规则③自动 bump 首跑）：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、spec §4.3 规则③执行主体修订（自动语义） |
-
-> **待发布**：`v6.7.0-r1` 之后 HEAD 已累积包装层提交（测试语义修正、版本历史等），下次同步将按规则③自动 bump 为 `6.7.0-r2`。
+| `6.7.0-r2` | 包装层修订（规则③）：UltraReview 独立复审两轮修复——规则③自触发锚定排除、push 部分失败 tag 补推（鉴权预判）、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置（`~/.ppt-master/.env`）、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生条目、dry-run 状态写门控、文档四处机制补记 |
 
 > 版本规则：`base` 镜像上游 release；包装层修订追加 `-rN`（无后缀视为 r0，见设计文档 §4.3）。
