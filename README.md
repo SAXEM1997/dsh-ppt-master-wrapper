@@ -36,7 +36,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
    cp skills/ppt-master/.env.example .env
    ```
 
-   > 请在**你的会话工作目录**（即运行 PPT 生成的 cwd——上游 `.env` 查找顺序的第 1 位）执行该 `cp`；插件根目录下的副本仅被 `check_env` 的包根顺位覆盖，不作为生成期读取来源。
+   > 请在**你的会话工作目录**（即运行 PPT 生成的 cwd——上游 `.env` 查找顺序的第 1 位）执行该 `cp`；插件根目录下的副本也会被上游按第 3 顺位（`REPO_ROOT`）读取——打包布局下插件根恰为上游 `config.py` 的 `REPO_ROOT`；仅当工作目录无 `.env` 时才会走到该顺位。
 
    然后按需填写图像后端 API key：设置 `IMAGE_BACKEND`（推荐核心后端 `openai` / `gemini` / `qwen` / `zhipu` / `volcengine`）并取消注释对应提供商的 key/model 行（如 `OPENAI_API_KEY`、`GEMINI_API_KEY` 等）。也可不写 `.env`，直接以进程环境变量提供同样配置。各项含义与全部可用后端见 `.env.example` 内注释。
 
@@ -74,7 +74,7 @@ node scripts/sync-upstream.mjs [选项]
 
 **版本策略**：`package.json` version 镜像上游版本（如 `6.7.0`）；仅包装层自身变更或同版本重同步时追加 `-rN` 后缀。
 
-退出码速查：`0` 成功/已是最新；`1` 用法错误；`2` 结构变化待人工；`3` 完整性门失败；`4` verify-plugin 校验失败（vendor 树未触碰）；`5` 网络/来源失败；`6` 推送失败/tag 冲突；`7` 工具链缺失（python3/git 不可用，或无法运行 guard 脚本）。
+退出码速查：`0` 成功/已是最新；`1` 用法错误；`2` 结构变化待人工；`3` 完整性门失败；`4` verify-plugin 校验失败（vendor 树未触碰）；`5` 网络/来源失败；`6` 推送失败/tag 冲突；`7` 工具链缺失（python3/git/tar 不可用，或无法运行 guard 脚本）。
 
 ## 本地校验（开发）
 
