@@ -58,7 +58,7 @@
 │   ├── verify-plugin.mjs       # 驱动真实 provider 的本地校验
 │   └── check-dsh-compat.mjs    # 对照已安装 DSH SDK 的契约检查
 ├── docs/superpowers/specs/     # 本设计文档
-├── .gitignore                  # .env、.upstream/、.skills-staging/、sync-report.txt、__pycache__/、*.pyc、.mnemon/（同 §5 清单）
+├── .gitignore                  # .env、.upstream/、.skills-staging/、sync-report.txt、__pycache__/、*.pyc、.mnemon/、.superpowers/（同 §5 清单）
 ├── LICENSE                     # 插件自身 MIT 许可（vendor 内另有上游原文 LICENSE，见 §3.2 归属说明）
 └── README.md                   # 安装/使用/更新/致谢；说明用户首次使用时从 vendor skills/ppt-master/.env.example 复制为工作区 .env 并按需填写图像后端 API key（.env 已入 .gitignore，见 §5）
 ```
@@ -98,9 +98,9 @@
 
 | 工具 | 参数 | 行为 |
 |---|---|---|
-| `ppt_master_info` | 无 | 返回插件版本、包裹的上游版本（解析 vendor SKILL.md metadata）、SKILL_DIR 绝对路径（确定性定位规则：扫描 `skills/*/SKILL.md`，跳过不含 `SKILL.md` 的目录（无论是否 dotfile，与 §3.4 权威谓词一致），主目录锚定 `ppt-master`（按 name/metadata 匹配本体 skill；若无匹配则回退目录名排序第一并标注）；存在多个 skill 目录时返回全部目录并标注主目录）、上游 repo/release 链接。纯读。 |
+| `ppt_master_info` | 无 | 返回插件版本、包裹的上游版本（解析 vendor SKILL.md metadata）、SKILL_DIR 绝对路径（确定性定位规则：扫描 `skills/*/SKILL.md`，跳过不含 `SKILL.md` 的目录（无论是否 dotfile，与 §3.4 权威谓词一致），主目录锚定 `ppt-master`（按 name/metadata 匹配本体 skill；若无匹配则回退目录名排序第一并标注）；存在多个 skill 目录时返回全部目录并标注主目录）、上游 repo 链接。纯读。 |
 | `ppt_master_check_env` | 无 | 检测 python3 ≥3.10（该版本线是上游 skill 套件的就绪度要求，属本工具探测项并单独报告；退出码 7 判据**不做版本号嗅探**、仅看 guard 能否运行成功——python3 过老导致 guard 无法运行时自然落入退出码 7，与本探测项互不替代）；运行 `attribution_guard.py` 并报告通过与否；解析 vendor `requirements.txt` 的顶层发行版名，以**查询发行版元数据**（如 `importlib.metadata`）为一等手段探测已安装状态；import 探测仅作辅助，且必须经 dist→import 映射表转换后执行（已知发行版名与 import 名不一致：PyYAML→yaml、Pillow→PIL、python-pptx→pptx 等），映射缺失时该项标记 UNKNOWN（非 FAIL）；检查 `.env` 是否存在（仅提示）。注：同步流程不校验 python3 版本——低版本 python3 下 guard 大概率仍可运行（纯标准库），版本就绪度由 check_env 在使用期报告。输出结构化诊断，只读。 |
-| `ppt_master_setup_deps` | `user?: boolean`、`breakSystemPackages?: boolean` | 幂等执行 `pip install -r "${SKILL_DIR}/requirements.txt"`（按参数附 `--user` / `--break-system-packages`）；完成后自动复跑环境自检并汇报。**唯一有副作用的工具**。 |
+| `ppt_master_setup_deps` | `user?: boolean`、`breakSystemPackages?: boolean` | 幂等执行 `pip3 install -r "${SKILL_DIR}/requirements.txt"`（按参数附 `--user` / `--break-system-packages`）；完成后自动复跑环境自检并汇报。**唯一有副作用的工具**。 |
 
 **实现风险与兜底**：`ctx.tools.register` 的输入契约以 `@deepseek-ai/dsh-tools` 的 `defineTool` 产物为准。首选零依赖手写等价定义；若实现期发现不被接受，回退为声明 `@deepseek-ai/dsh-tools` 为 peerDependency 并 import `defineTool`（宿主必带该包）。`check-dsh-compat.mjs` 负责兜底验证。`inject` 设计期即定死：index.js 显式声明 `inject = ['skills', 'tools']`；apply 内对 `ctx.tools` 做存在性探测（缺失或不可注册时降级为仅注册 skill provider，并在启动日志声明降级）；compat 脚本持续验证该契约（注：该做法的实装参考证据未独立复核，但与宿主 register 契约一致）。
 
@@ -112,7 +112,7 @@
   --repo <url>                上游仓库 URL（默认：https://github.com/hugohe3/ppt-master.git；同步源与 ls-remote/codeload 均取此值）
   --refresh                   强制忽略 .upstream/ 缓存重新下载
   --confirm-structural        结构变化已人工确认，强制走自动路径
-  --skip-guard                跳过步骤 4 attribution_guard 的执行（省一次 guard 运行、免 python 依赖；verify-plugin 的 JS 等价校验（digest/metadata/归属文件）仍会拦截，不构成完整性放行）。真实用途：python3 缺失时的本地调试同步路径（配合 --no-push --skip-guard，verify 的 JS 校验不依赖 python）。联用约束：必须与 --no-push 或 --dry-run 组合；只要该次运行最终会执行推送（含默认推送）即属非法组合，usage 错误（退出码 1）
+  --skip-guard                跳过步骤 4 attribution_guard 的执行（省一次 guard 运行、免 python 依赖；verify-plugin 的 JS 等价校验（digest/metadata/归属文件）仍会拦截，不构成完整性放行）。真实用途：python3 缺失时的本地调试同步路径（配合 --no-push --skip-guard，verify 的 JS 校验不依赖 python）。联用约束：须至少与 --no-push 或 --dry-run 之一联用；只要该次运行最终会执行推送（含默认推送）即属非法组合，usage 错误（退出码 1）
   --no-push                   只本地 commit，不推送
   --dry-run                   只输出将发生的变化
 ```
@@ -179,7 +179,7 @@
 - **PAT 解析顺序**（推送时）：环境变量 `DSH_PPT_GITLAB_PAT` → `git credential fill`（系统 credential helper）→ 失败并输出指引。经 credential helper 路径时 PAT 完全不经由本插件脚本参数/环境，仅在 git 进程内流转，安全边界不变。推送使用一次性 URL（`https://oauth2:<PAT>@…`——不落盘、不进 git 历史、不回显于日志；经 git argv 传递时同主机同用户理论上可经 `/proc` 短暂观测，故优先 credential helper 路径）。**PAT 绝不写入任何被提交的文件、绝不出现在日志与 git 历史中。**
 - **授权边界**：`--confirm-structural` 仅表示人工已确认结构变化，其后的推送授权与自动路径**一致**（仍受 `--no-push` 控制、PAT 解析顺序相同）——结构确认不额外要求推送审批（与 4.1 步骤 7 的人工流程顺序呼应）。
 - 首次交付时由开发者会话完成初始 commit/tag/push（PAT 通过环境变量注入）。
-- `.gitignore`：`.env`、`.upstream/`、`.skills-staging/`、`sync-report.txt`、`__pycache__/`、`*.pyc`、`.mnemon/`。
+- `.gitignore`：`.env`、`.upstream/`、`.skills-staging/`、`sync-report.txt`、`__pycache__/`、`*.pyc`、`.mnemon/`、`.superpowers/`。
 - 归属：vendor 内 LICENSE/SPONSORS* 逐字节保留；插件 README 显著致谢并链接上游。
 
 ## 6. 校验与测试

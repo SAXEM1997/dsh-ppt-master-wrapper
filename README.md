@@ -8,7 +8,7 @@
 
 ## 安装
 
-前置要求：Node.js ≥ 20；`python3`（上游完整性门与脚本套件运行需要，建议 ≥ 3.10）。
+前置要求：Node.js ≥ 20；`python3`（上游完整性门与脚本套件运行需要，建议 ≥ 3.10）；`pip3`（`ppt_master_setup_deps` 安装 Python 依赖用）；`git`（同步脚本的 `ls-remote`/commit/tag/push 与凭据解析用）；`tar`（同步脚本解压上游 tarball 用，含 `gzip` 委托——`tar -xzf` 由 tar 调用 gzip 解压）。
 
 方式一——本地路径 link（开发机 / 内网已 clone 场景）：
 
@@ -27,7 +27,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 ## 首次使用：环境自检、依赖与 `.env`
 
 1. **环境自检**：调用 `ppt_master_check_env` 工具（或见下文工具说明），确认 python3 就绪、完整性门通过、Python 依赖已安装。
-2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等执行 `pip install -r "${SKILL_DIR}/requirements.txt"`），或手动 `pip install -r skills/ppt-master/requirements.txt`。
+2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等执行 `pip3 install -r "${SKILL_DIR}/requirements.txt"`），或手动 `pip3 install -r skills/ppt-master/requirements.txt`。
 3. **配置 `.env`（按需）**：上游图像生成脚本需要图像后端配置。首次使用时从 vendor 的模板复制一份到**工作区根目录**：
 
    ```bash
@@ -44,9 +44,9 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 | 工具 | 参数 | 行为 |
 |---|---|---|
-| `ppt_master_info` | 无 | 返回插件版本、包裹的上游版本（解析 vendor `SKILL.md` 的 `metadata.version`）、`SKILL_DIR` 绝对路径（扫描 `skills/*/SKILL.md`，主目录按 `name: ppt-master` 锚定）与上游 repo/release 链接。纯读。 |
+| `ppt_master_info` | 无 | 返回插件版本、包裹的上游版本（解析 vendor `SKILL.md` 的 `metadata.version`）、`SKILL_DIR` 绝对路径（扫描 `skills/*/SKILL.md`，主目录按 `name: ppt-master` 锚定）与上游 repo 链接。纯读。 |
 | `ppt_master_check_env` | 无 | 环境自检：python3 ≥ 3.10 就绪度；运行 vendor `attribution_guard.py` 并报告通过与否；解析 `requirements.txt` 顶层发行版名并以发行版元数据（`importlib.metadata`）为一等手段探测安装状态（dist→import 映射缺失的项记 UNKNOWN 而非 FAIL）；检查 `.env` 是否存在（仅提示）。输出结构化诊断，只读。 |
-| `ppt_master_setup_deps` | `user?: boolean`、`breakSystemPackages?: boolean` | 幂等执行 `pip install -r "${SKILL_DIR}/requirements.txt"`（按参数附 `--user` / `--break-system-packages`）；完成后自动复跑环境自检并汇报。**唯一有副作用的工具**。 |
+| `ppt_master_setup_deps` | `user?: boolean`、`breakSystemPackages?: boolean` | 幂等执行 `pip3 install -r "${SKILL_DIR}/requirements.txt"`（按参数附 `--user` / `--break-system-packages`）；完成后自动复跑环境自检并汇报。**唯一有副作用的工具**。 |
 
 ## 同步上游更新
 
@@ -70,7 +70,7 @@ node scripts/sync-upstream.mjs [选项]
 
 **版本策略**：`package.json` version 镜像上游版本（如 `6.7.0`）；仅包装层自身变更或同版本重同步时追加 `-rN` 后缀。
 
-退出码速查：`0` 成功/已是最新；`1` 用法错误；`2` 结构变化待人工；`3` 完整性门失败；`4` verify-plugin 校验失败（vendor 树未触碰）；`5` 网络/来源失败；`6` 推送失败/tag 冲突；`7` 工具链缺失（python3）。
+退出码速查：`0` 成功/已是最新；`1` 用法错误；`2` 结构变化待人工；`3` 完整性门失败；`4` verify-plugin 校验失败（vendor 树未触碰）；`5` 网络/来源失败；`6` 推送失败/tag 冲突；`7` 工具链缺失（python3/git 不可用，或无法运行 guard 脚本）。
 
 ## 本地校验（开发）
 
@@ -98,5 +98,7 @@ node --test tests/*.test.mjs
 |------|------|
 | `6.7.0` | 首次交付：vendor 上游 v6.7.0（78MB 逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
 | `6.7.0-r1` | 包装层修订（规则③自动 bump 首跑）：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、spec §4.3 规则③执行主体修订（自动语义） |
+
+> **待发布**：`v6.7.0-r1` 之后 HEAD 已累积包装层提交（测试语义修正、版本历史等），下次同步将按规则③自动 bump 为 `6.7.0-r2`。
 
 > 版本规则：`base` 镜像上游 release；包装层修订追加 `-rN`（无后缀视为 r0，见设计文档 §4.3）。
