@@ -466,7 +466,7 @@ test('setup_deps: requirements.txt 缺失仍构造同一命令（幂等由 pip �
   }
 });
 
-test('setup_deps: output.render 返回含安装命令/退出码/自检结论的字符串', async () => {
+test('setup_deps: output.render 返回含安装命令/退出码/自检结论的 text 内容块数组', async () => {
   const { root, remove } = makeSkillDir();
   try {
     const tool = toolNamed('ppt_master_setup_deps');
@@ -474,12 +474,17 @@ test('setup_deps: output.render 返回含安装命令/退出码/自检结论的�
     const { exec } = recordingExec({ installExit: 0 });
     const payload = await tool.execute({}, { skillRoots: [root], ...exec });
     const rendered = tool.output.render({}, payload);
-    assert.equal(typeof rendered, 'string');
-    assert.ok(rendered.includes('pip3'), 'render 点出安装命令');
-    assert.ok(rendered.includes('install'), 'render 点出 install 子命令');
-    assert.ok(rendered.includes(String(payload.installExit)), 'render 点出退出码');
-    assert.ok(rendered.includes('python3'), 'render 含复跑自检结论');
-    assert.ok(rendered.includes('pyyaml'), 'render 逐项列出依赖');
+    // 宿主管线契约：render 返回内容块数组（同 tools-info 测试内注记）。
+    assert.ok(Array.isArray(rendered), 'render 返回内容块数组');
+    assert.equal(rendered.length, 1, '单个内容块');
+    assert.equal(rendered[0].type, 'text', '块类型为 text');
+    assert.equal(typeof rendered[0].text, 'string');
+    const text = rendered[0].text;
+    assert.ok(text.includes('pip3'), 'render 点出安装命令');
+    assert.ok(text.includes('install'), 'render 点出 install 子命令');
+    assert.ok(text.includes(String(payload.installExit)), 'render 点出退出码');
+    assert.ok(text.includes('python3'), 'render 含复跑自检结论');
+    assert.ok(text.includes('pyyaml'), 'render 逐项列出依赖');
   } finally {
     remove();
   }

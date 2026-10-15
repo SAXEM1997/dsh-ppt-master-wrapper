@@ -276,7 +276,7 @@ test('check_env: schema 通过 SDK 的 assertSupportedJsonSchema（可解析到 
   assertSupportedJsonSchema(toolNamed('ppt_master_check_env').output.schema);
 });
 
-test('check_env: output.render 为函数且返回含探测结论的字符串', async () => {
+test('check_env: output.render 为函数且返回含探测结论的 text 内容块数组', async () => {
   const { root, skill, remove } = makeSkillRoot({ withEnvFile: true });
   try {
     writeFileSync(join(skill, 'requirements.txt'), 'PyYAML\nflask\n');
@@ -284,11 +284,16 @@ test('check_env: output.render 为函数且返回含探测结论的字符串', a
     assert.equal(typeof tool.output.render, 'function');
     const payload = await tool.execute({}, { skillRoots: [root], ...healthyExec() });
     const rendered = tool.output.render({}, payload);
-    assert.equal(typeof rendered, 'string');
-    assert.ok(rendered.includes('python3'), 'render 点出 python3');
-    assert.ok(rendered.includes('guard'), 'render 点出 guard 结论');
-    assert.ok(rendered.includes('pyyaml'), 'render 逐项列出依赖');
-    assert.ok(rendered.includes(String(payload.guard.exitCode)), 'render 点出 guard 退出码');
+    // 宿主管线契约：render 返回内容块数组（同 tools-info 测试内注记）。
+    assert.ok(Array.isArray(rendered), 'render 返回内容块数组');
+    assert.equal(rendered.length, 1, '单个内容块');
+    assert.equal(rendered[0].type, 'text', '块类型为 text');
+    assert.equal(typeof rendered[0].text, 'string');
+    const text = rendered[0].text;
+    assert.ok(text.includes('python3'), 'render 点出 python3');
+    assert.ok(text.includes('guard'), 'render 点出 guard 结论');
+    assert.ok(text.includes('pyyaml'), 'render 逐项列出依赖');
+    assert.ok(text.includes(String(payload.guard.exitCode)), 'render 点出 guard 退出码');
   } finally {
     remove();
   }

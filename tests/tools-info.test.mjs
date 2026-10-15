@@ -113,7 +113,7 @@ test('info: output.schema 为 object-rooted、七字段属性集、显式 additi
   assert.deepEqual(schema.properties.repository, { type: 'string' });
 });
 
-test('info: output.render 为函数且返回含主目录信息的字符串', async () => {
+test('info: output.render 为函数且返回含主目录信息的 text 内容块数组', async () => {
   const { root, remove } = makeRoot();
   try {
     makeSkill(root, 'alpha', 'alpha', '9.9.9');
@@ -121,11 +121,18 @@ test('info: output.render 为函数且返回含主目录信息的字符串', asy
     assert.equal(typeof tool.output.render, 'function');
     const info = await tool.execute({}, {});
     const rendered = tool.output.render({}, info);
-    assert.equal(typeof rendered, 'string');
-    assert.ok(rendered.length > 0);
-    assert.ok(rendered.includes(info.primarySkillDir), 'render 点出主目录');
-    assert.ok(rendered.includes(info.pluginVersion), 'render 点出插件版本');
-    assert.ok(rendered.includes('9.9.9'), 'render 点出上游版本');
+    // 宿主管线契约（dsh-tools createSuccessResult）：render 返回值原样成为
+    // result.content，必须是内容块数组（首方参考 dsh-tool-todo）——返回
+    // 字符串会让下游 content.some(...) 抛 "content.some is not a function"。
+    assert.ok(Array.isArray(rendered), 'render 返回内容块数组');
+    assert.equal(rendered.length, 1, '单个内容块');
+    assert.equal(rendered[0].type, 'text', '块类型为 text');
+    assert.equal(typeof rendered[0].text, 'string');
+    const text = rendered[0].text;
+    assert.ok(text.length > 0);
+    assert.ok(text.includes(info.primarySkillDir), 'render 点出主目录');
+    assert.ok(text.includes(info.pluginVersion), 'render 点出插件版本');
+    assert.ok(text.includes('9.9.9'), 'render 点出上游版本');
   } finally {
     remove();
   }
