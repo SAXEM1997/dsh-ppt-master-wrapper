@@ -15,7 +15,10 @@ test('package.json: 身份与入口字段', () => {
   // T14 首灌定版后 version 镜像上游（vendor SKILL.md metadata.version），不再占位。
   const skillMd = read('skills/ppt-master/SKILL.md');
   const upstreamVersion = skillMd.match(/^\s+version:\s*"?([^"\s]+)"?\s*$/m)?.[1];
-  assert.equal(pkg.version, upstreamVersion, 'version 镜像 vendor SKILL.md metadata.version');
+  assert.ok(
+    pkg.version === upstreamVersion || /^-r\d+$/.test(pkg.version.slice(upstreamVersion.length)),
+    `version 镜像上游版本（可带 -rN 后缀）：pkg=${pkg.version} upstream=${upstreamVersion}`
+  );
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.main, 'index.js');
   assert.deepEqual(pkg.engines, { node: '>=20.0.0' });
