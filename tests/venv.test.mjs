@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -651,6 +652,274 @@ test('effectiveInterpreter: exists-but-broken 自然形态——悬空 bin/pytho
       invalidReason: null,
       broken: true,
     });
+  } finally {
+    restore();
+  }
+});
+
+// ─── ensureVenv：五类结果矩阵（创建/收编/体检损坏/非空拒绝/创建失败） ────
+//
+// 前置三态判定：不存在 | 空目录 → 创建；含 pyvenv.cfg → 体检后收编；存在且非空且无
+// pyvenv.cfg → fail-loud 拒绝。创建走注入 `run`（同 tools.js spawnRun 形态：非零记码、
+// reject＝spawn 失败），体检走 Task 2 的同步 `probeVenvInterpreter`（传 venv 目录，
+// 本处**不得**自带 `bin/python3` 拼接），标记写失败经桩注入、只走 warn 通道。
+
+/**
+ * `run` 桩：逐次记录 `(command, args, options)`，默认返回 `{exitCode: 0}`。
+ * `create: true` 时模拟 `python3 -m venv <path>` 的**真实副作用**（建目录 + pyvenv.cfg）——
+ * 这是被注入命令桩的如实副作用，不是 fs 桩；否则随后的 marker 写入没有落点。
+ * `throws` 非空时以该错误 reject，模拟 spawn 失败（如 ENOENT）。
+ */
+function makeRunStub({ exitCode = 0, stderr = '', throws = null, create = false } = {}) {
+  const calls = [];
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    if (throws !== null) throw throws;
+    if (create) {
+      const target = args[args.length - 1];
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, 'pyvenv.cfg'), 'home = /usr/bin\n');
+    }
+    return { exitCode, stderr };
+  };
+  return { run, calls };
+}
+
+/** 捕获 `console.warn`（异步版）：返回被 await 的返回值与逐行日志，finally 原样还原。 */
+async function captureWarnAsync(run) {
+  const original = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    return { value: await run(), warnings };
+  } finally {
+    console.warn = original;
+  }
+}
+
+test('ensureVenv: 目标不存在 → 创建（run argv 逐字 + signal 透传 + 写标记）→ created:true', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'fresh-venv');
+    const { run, calls } = makeRunStub({ create: true });
+    const signal = new AbortController().signal;
+
+    const result = await venv.ensureVenv(run, target, { signal });
+
+    assert.deepEqual(result, { created: true, adopted: false });
+    assert.equal(calls.length, 1, '创建路径恰调用一次 run');
+    assert.equal(calls[0].command, 'python3');
+    assert.deepEqual(calls[0].args, ['-m', 'venv', target], 'argv 逐字：-m venv <absPath>');
+    assert.equal(calls[0].options.signal, signal, 'signal 应原样透传给 run 的 options');
+    assert.equal(venv.readMarker(target)?.path, target, '创建成功后应写入所有权标记');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 目标为空目录 → 同创建路径（复用空目录、created:true）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'empty-venv');
+    mkdirSync(target, { recursive: true });
+    const { run, calls } = makeRunStub({ create: true });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.deepEqual(result, { created: true, adopted: false }, '空目录走创建路径而非拒绝');
+    assert.deepEqual(calls[0].args, ['-m', 'venv', target]);
+    assert.equal(venv.readMarker(target)?.path, target, '创建成功后应写入所有权标记');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 既有可用 venv 缺标记 → 收编（探针入参＝venv 目录、补写标记、不重建）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = makeVenvDir(home, 'adoptable');
+    addPythonBinary(target);
+    const { run, calls } = makeRunStub({ create: true });
+    const probeCalls = [];
+
+    const result = await venv.ensureVenv(run, target, {
+      probeVenvInterpreter: (dir) => {
+        probeCalls.push(dir);
+        return { found: true };
+      },
+    });
+
+    assert.deepEqual(result, { created: false, adopted: true }, '既有可用 venv 应复用（收编）');
+    assert.deepEqual(probeCalls, [target], '体检入参必须是 venv 目录本身，不得自带 bin/python3 拼接');
+    assert.equal(calls.length, 0, '复用路径不得重建（缺才建）');
+    assert.equal(venv.readMarker(target)?.path, target, '缺标记应补写（收编可清理授权）');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 既有可用 venv 已有标记 → 复用且不重写标记（writeMarker 桩零调用）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = makeVenvDir(home, 'marked');
+    addPythonBinary(target);
+    venv.writeMarker(target);
+    const before = venv.readMarker(target);
+    const writes = [];
+
+    const result = await venv.ensureVenv(makeRunStub().run, target, {
+      writeMarker: (dir) => writes.push(dir),
+    });
+
+    assert.deepEqual(result, { created: false, adopted: true });
+    assert.deepEqual(writes, [], '已有标记不得重写（缺标记才补写）');
+    assert.deepEqual(venv.readMarker(target), before, '既有标记应原样保留');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 既有 venv 体检不可用（exists-but-broken）→ 拒绝且不自动删', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 形态一：只有 pyvenv.cfg、没有 bin/python3。
+    const bare = makeVenvDir(home, 'broken-bare');
+    // 形态二：bin/python3 是悬空符号链接（真正经本模块默认同步探针判定）。
+    const dangling = makeVenvDir(home, 'broken-dangling');
+    addPythonBinary(dangling, { symlinkTo: join(dangling, 'bin', 'python3-absent') });
+    const { run, calls } = makeRunStub({ create: true });
+
+    const expected = {
+      created: false,
+      adopted: false,
+      error: 'venv 解释器不可用（exists-but-broken）——手动删除该目录后重跑',
+    };
+    for (const target of [bare, dangling]) {
+      assert.deepEqual(await venv.ensureVenv(run, target), expected, `损坏行应拒绝: ${target}`);
+      assert.ok(existsSync(join(target, 'pyvenv.cfg')), '不自动删：目录与 pyvenv.cfg 必须原样保留');
+      assert.equal(venv.readMarker(target), null, '损坏行不写标记');
+    }
+    assert.equal(calls.length, 0, '损坏行不得重建（python3 -m venv 会覆盖既有 venv）');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 非空非 venv → fail-loud 拒绝（不创建/不写标记/既有文件原样保留）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'occupied');
+    mkdirSync(target, { recursive: true });
+    const payload = join(target, 'data.txt');
+    writeFileSync(payload, 'user data');
+    const { run, calls } = makeRunStub({ create: true });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.deepEqual(result, { created: false, adopted: false, error: '目标目录非空且非 venv' });
+    assert.equal(calls.length, 0, '拒绝行不得调用创建命令');
+    assert.equal(readFileSync(payload, 'utf8'), 'user data', '既有文件必须原样保留');
+    assert.deepEqual(readdirSync(target), ['data.txt'], '拒绝不得增删该目录内容');
+    assert.equal(existsSync(join(target, venv.MARKER_FILENAME)), false, '拒绝行不得写标记');
+
+    // 同族第二形态：目标路径被普通文件占用（既非空目录也非 venv）——同一拒绝口径，文件不被触碰。
+    const fileTarget = join(home, 'plain-file');
+    writeFileSync(fileTarget, 'keep me');
+    const second = await venv.ensureVenv(run, fileTarget);
+    assert.deepEqual(second, { created: false, adopted: false, error: '目标目录非空且非 venv' });
+    assert.equal(readFileSync(fileTarget, 'utf8'), 'keep me', '普通文件形态同样不得被触碰');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 创建 run 非零退出码 → {created:false, error 含退出码与 stderr} 且不写标记', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'fail-venv');
+    const { run, calls } = makeRunStub({ exitCode: 1, stderr: 'boom\n' });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.deepEqual(Object.keys(result).sort(), ['adopted', 'created', 'error'], '恰好三键');
+    assert.equal(result.created, false);
+    assert.equal(result.adopted, false);
+    assert.match(result.error, /退出码 1/, 'error 应如实带非零退出码');
+    assert.match(result.error, /boom/, 'error 应附 stderr 摘要');
+    assert.equal(calls.length, 1, '创建失败不得重试');
+    assert.equal(existsSync(join(target, venv.MARKER_FILENAME)), false, '创建失败不得写标记');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 创建 spawn 失败（run reject）→ {created:false, error} 不抛', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'spawn-fail-venv');
+    const spawnError = Object.assign(new Error('spawn python3 ENOENT'), { code: 'ENOENT' });
+    const { run, calls } = makeRunStub({ throws: spawnError });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.deepEqual(Object.keys(result).sort(), ['adopted', 'created', 'error']);
+    assert.equal(result.created, false);
+    assert.equal(result.adopted, false);
+    assert.match(result.error, /ENOENT/, 'spawn 失败原因应如实进 error');
+    assert.equal(calls.length, 1);
+    assert.equal(existsSync(join(target, venv.MARKER_FILENAME)), false, 'spawn 失败不得写标记');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 收编行 marker 补写失败 → 仍 adopted:true（warn 含 marker 路径、不置 error）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = makeVenvDir(home, 'adopt-warn');
+    addPythonBinary(target);
+    const writes = [];
+    const { value: result, warnings } = await captureWarnAsync(() =>
+      venv.ensureVenv(makeRunStub().run, target, {
+        writeMarker: (dir) => {
+          writes.push(dir);
+          throw new Error('EISDIR: marker 名位被目录占用');
+        },
+      })
+    );
+
+    assert.deepEqual(writes, [target], '缺标记应触发补写（桩确实被调用）');
+    assert.deepEqual(result, { created: false, adopted: true }, '写失败不改写收编结论、不置 error');
+    assert.equal(warnings.length, 1, '写失败恰一行 warn');
+    assert.ok(
+      warnings[0].includes(join(target, venv.MARKER_FILENAME)),
+      `warn 应含 marker 路径: ${warnings[0]}`
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 创建行 marker 写入失败 → 仍 created:true（warn 含 marker 路径、不置 error）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'create-warn');
+    const { run } = makeRunStub({ create: true });
+    const { value: result, warnings } = await captureWarnAsync(() =>
+      venv.ensureVenv(run, target, {
+        writeMarker: () => {
+          throw new Error('EPERM: 写入被拒');
+        },
+      })
+    );
+
+    assert.deepEqual(result, { created: true, adopted: false }, '写失败不改写创建结论、不置 error');
+    assert.equal(warnings.length, 1, '写失败恰一行 warn');
+    assert.ok(
+      warnings[0].includes(join(target, venv.MARKER_FILENAME)),
+      `warn 应含 marker 路径: ${warnings[0]}`
+    );
+    assert.equal(venv.readMarker(target), null, '桩未落盘——写失败被降级为警告，venv 仍可用');
   } finally {
     restore();
   }
