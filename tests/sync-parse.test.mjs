@@ -465,6 +465,83 @@ test('readLastSync: JSON 合法但非状态对象（数组/字符串/缺字段�
   });
 });
 
+// ─── last-sync：branch ref（sha 不可得）记录必须可读 ─────────────
+//
+// `--ref <branch>` 时编排的 refSha 恒为 null（branch 名的 sha 不经 ls-remote
+// --tags 解析），writeLastSync 于是写 `sha: ''`。此前 readLastSync 要求 sha
+// **必填且非空**，整条记录因此被判 null——`--confirm-structural` 对 branch 的
+// 「固定上次检出 ref」承诺（spec §4.1 步骤 7）静默失效，回落最新 tag。
+// 修复：`sha` 降为可选（空串/缺失 → 保留记录、sha 字段为 null）；`ref`/`version`/`at`
+// 仍是必填判据。
+
+test('writeLastSync/readLastSync: branch ref（sha 空串）→ 读回非 null 且 ref 正确', () => {
+  withTmpRoot('sync-state-', (root) => {
+    const written = writeLastSync(
+      { ref: 'refs/heads/main', sha: '', version: '6.8.0' },
+      root,
+    );
+    // 落盘 shape 不变（sha 仍写空串，写入侧语义未动）。
+    assert.equal(written.sha, '');
+    assert.equal(
+      JSON.parse(readFileSync(join(root, '.upstream', 'last-sync.json'), 'utf8')).sha,
+      '',
+      '落盘 sha 仍是空串——修复只在读取侧放宽',
+    );
+
+    const readBack = readLastSync(root);
+    assert.notEqual(readBack, null, 'branch ref 记录必须可读（否则 --confirm-structural 固定 ref 失效）');
+    assert.equal(readBack.ref, 'refs/heads/main');
+    assert.equal(readBack.version, '6.8.0');
+    assert.equal(readBack.sha, null, 'sha 不可得 → null（不再吞掉整条记录）');
+    assert.equal(typeof readBack.at, 'string');
+  });
+});
+
+test('readLastSync: sha 缺失（旧记录/无该字段）→ 保留记录、sha 为 null', () => {
+  withTmpRoot('sync-state-', (root) => {
+    mkdirSync(join(root, '.upstream'), { recursive: true });
+    const statePath = join(root, '.upstream', 'last-sync.json');
+    writeFileSync(
+      statePath,
+      JSON.stringify({ ref: 'refs/heads/main', version: '6.8.0', at: '2026-10-14T00:00:00.000Z' }),
+      'utf8',
+    );
+    const readBack = readLastSync(root);
+    assert.notEqual(readBack, null, '缺 sha 字段不得吞掉整条记录');
+    assert.equal(readBack.ref, 'refs/heads/main');
+    assert.equal(readBack.sha, null);
+  });
+});
+
+test('readLastSync: ref/version/at 仍为必填判据（任一缺失或空 → null）', () => {
+  withTmpRoot('sync-state-', (root) => {
+    mkdirSync(join(root, '.upstream'), { recursive: true });
+    const statePath = join(root, '.upstream', 'last-sync.json');
+    const full = { ref: 'refs/heads/main', sha: '', version: '6.8.0', at: '2026-10-14T00:00:00.000Z' };
+    for (const key of ['ref', 'version', 'at']) {
+      writeFileSync(statePath, JSON.stringify({ ...full, [key]: '' }), 'utf8');
+      assert.equal(readLastSync(root), null, `${key} 为空串 → null（判据不放宽）`);
+      const without = { ...full };
+      delete without[key];
+      writeFileSync(statePath, JSON.stringify(without), 'utf8');
+      assert.equal(readLastSync(root), null, `${key} 缺失 → null（判据不放宽）`);
+    }
+    // 非字符串 sha（畸形记录）同样归 null —— 只有「缺失/空串」才是「不可得」。
+    writeFileSync(statePath, JSON.stringify({ ...full, sha: 12345 }), 'utf8');
+    assert.equal(readLastSync(root), null, '非字符串 sha → null');
+  });
+});
+
+test('readLastSync: tag ref 的 sha 行为不回归（非空 sha 原样读回）', () => {
+  withTmpRoot('sync-state-', (root) => {
+    const sha = '0123456789abcdef0123456789abcdef01234567';
+    writeLastSync({ ref: 'refs/tags/v6.7.0', sha, version: '6.7.0' }, root);
+    const readBack = readLastSync(root);
+    assert.equal(readBack.ref, 'refs/tags/v6.7.0');
+    assert.equal(readBack.sha, sha, 'tag ref 的 sha 仍是字符串原值');
+  });
+});
+
 test('readLastSync/writeLastSync: 缺省 root 锚定仓库根，与 cwd 无关', () => {
   const original = process.cwd();
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');

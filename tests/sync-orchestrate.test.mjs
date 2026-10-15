@@ -541,6 +541,73 @@ test('--confirm-structural：🔴 存在时强制走自动路径 → 替换/bump
 
 // ─── ref 缺省回退：--confirm-structural 固定上次 ref ───────────────
 
+test('ref 回退：--confirm-structural 固定 **branch** ref（sha 不可得记录的可读性回归）', async () => {
+  // P1-②：branch ref 的 refSha 恒为 null，writeLastSync 落 `sha: ''`；此前
+  // readLastSync 要求 sha 非空，整条记录被判 null → 回退分支走不到，
+  // --confirm-structural 静默回落最新 tag（违反 spec §4.1 步骤 7）。本用例固定
+  // 「branch 记录写入即不可读」这一回归：重跑必须取记录的 branch ref。
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
+  try {
+    // 先跑一次 --ref main 让编排自己写记录（sha 不可得 → 空串），再重跑确认可读。
+    const { deps: depsFirst, calls: callsFirst } = stubDeps({ tarballPath: s.tarballPath });
+    const codeFirst = await main(
+      { root: s.root, repo: s.repoUrl, ref: 'main', confirmStructural: true, noPush: true },
+      depsFirst,
+    );
+    assert.equal(codeFirst, 0);
+    assert.equal(callsFirst.fetch.length, 1);
+    assert.ok(
+      callsFirst.fetch[0].url.endsWith('/tar.gz/refs/heads/main'),
+      `首次 --ref main 应取 branch ref: ${callsFirst.fetch[0].url}`,
+    );
+    const recorded = readLastSyncRaw(s.root);
+    assert.equal(recorded.ref, 'refs/heads/main', '记录 ref 为 branch 形态');
+    assert.equal(recorded.sha, '', 'branch ref 的 sha 落盘为空串（refSha 不可得）');
+
+    // 重跑：带 --refresh 强制再拉（否则缓存复用不调 fetchTarball），不带 --ref。
+    const { deps: depsAgain, calls: callsAgain } = stubDeps({ tarballPath: s.tarballPath });
+    const codeAgain = await main(
+      { root: s.root, repo: s.repoUrl, confirmStructural: true, refresh: true, noPush: true },
+      depsAgain,
+    );
+    assert.equal(codeAgain, 0);
+    assert.equal(callsAgain.fetch.length, 1, '--refresh 绕过缓存 → 必调 fetchTarball');
+    assert.ok(
+      callsAgain.fetch[0].url.endsWith('/tar.gz/refs/heads/main'),
+      `--confirm-structural 必须固定记录的 branch ref，实际: ${callsAgain.fetch[0].url}`,
+    );
+    assert.match(callsAgain.output(), /固定上次检出 ref refs\/heads\/main/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('branch ref 重跑：sha 不可得不得误判幂等同 ref（cacheKey 走 no-sha 且继续同步）', async () => {
+  // sameRefSha 比对 `previousSync.sha === (refSha ?? '')`：branch 侧 previousSync.sha
+  // 现在是 null、refSha 仍是 null → null === '' 为 false，正确地**不**判同 ref。
+  // 若把 null 归一成 '' 就会误命中幂等短路，把应同步的变更吞掉。
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    writeLastSync({ ref: 'refs/heads/main', sha: '', version: '6.7.0' }, s.root);
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main(
+      { root: s.root, repo: s.repoUrl, ref: 'main', refresh: true, noPush: true },
+      deps,
+    );
+    assert.equal(code, 0);
+    // sha 不可得 → 缓存键回落 'no-sha'（分支 ref 的既定缓存语义）。
+    assert.ok(
+      calls.fetch[0].dest.includes('refs/heads/main@no-sha'),
+      `branch ref 缓存键应为 no-sha 形态: ${calls.fetch[0].dest}`,
+    );
+    // 未误判幂等：真的走完了同步（版本按上游 6.8.0 落位 = 规则①）。
+    assert.equal(JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version, '6.8.0');
+    assert.doesNotMatch(calls.output(), /already up to date/, 'sha 不可得不得被判同 ref');
+  } finally {
+    s.cleanup();
+  }
+});
+
 test('ref 回退：--confirm-structural 且未传 --ref → fetchTarball 收到 last-sync 记录 ref；对照：不带则取最新 tag', async () => {
   const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0' });
   try {

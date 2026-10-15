@@ -315,6 +315,29 @@ test('mapDistToImport: 未收录发行版 → 逐字 UNKNOWN', () => {
   assert.equal(mapDistToImport(undefined), 'UNKNOWN');
 });
 
+test('mapDistToImport: 原型链键 → 逐字 UNKNOWN（不得泄漏 Object.prototype 成员）', () => {
+  // 裸 `TABLE[key]` 查表会沿原型链命中 Object.prototype：'__proto__' 返回对象、
+  // 'constructor' 返回函数——两者都不是字符串，会污染 deps[].importName 的字面
+  // 契约（output.schema 声明 string）。own-property 查表把它们归入 UNKNOWN。
+  assert.equal(mapDistToImport('__proto__'), 'UNKNOWN', '__proto__ 必须归 UNKNOWN');
+  assert.equal(mapDistToImport('constructor'), 'UNKNOWN', 'constructor 必须归 UNKNOWN');
+  assert.equal(mapDistToImport('toString'), 'UNKNOWN');
+  assert.equal(mapDistToImport('hasOwnProperty'), 'UNKNOWN');
+  assert.equal(mapDistToImport('valueOf'), 'UNKNOWN');
+  assert.equal(mapDistToImport('__PROTO__'), 'UNKNOWN', '大小写归一后仍须 own 判定');
+  assert.equal(mapDistToImport('CONSTRUCTOR'), 'UNKNOWN');
+  // 逐字串契约：任何不在表内的键都必须是字符串 UNKNOWN，绝非对象/函数。
+  for (const key of ['__proto__', 'constructor', 'toString', 'prototype']) {
+    assert.equal(typeof mapDistToImport(key), 'string', `${key} 必须返回字符串`);
+  }
+});
+
+test('mapDistToImport: 原型键防护不回归合法键', () => {
+  assert.equal(mapDistToImport('pyyaml'), 'yaml');
+  assert.equal(mapDistToImport('python-pptx'), 'pptx');
+  assert.equal(mapDistToImport('edge-tts'), 'edge_tts');
+});
+
 // ─── 纯函数：parseRequirements ───────────────────────────────────
 
 test('parseRequirements: fixture 输出正确的发行版列表（含边界形态）', () => {
@@ -747,6 +770,106 @@ test('check_env: 无 skill 目录 → deps 仍可探测、guard.skipped（不 th
     }
   } finally {
     rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+// ─── env 文件：三处探测（cwd / SKILL_DIR / 仓库根）与 README 一致 ──
+//
+// README 指引把 `.env.example` 复制到**工作区根目录**，上游 config.py 的查找序为
+// cwd → skill-dir → repo-root → ~/.ppt-master/.env；此前的实现只看 SKILL_DIR，与
+// README 指引矛盾（按 README 配置的用户会被报 absent）。三处任一存在即 true；
+// **始终只 existsSync，绝不读内容**。
+
+/**
+ * 在隔离的 cwd 下跑一次 check_env（cwd 是探测点之一，用 chdir 驱动）。
+ * `cwdEnv` 为 true 时在隔离 cwd 写一个 `.env`。
+ */
+async function checkEnvFromCwd({ cwdEnv = false, withSkillEnv = false } = {}) {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const { root, skill, remove } = makeSkillRoot({ withEnvFile: withSkillEnv });
+  try {
+    if (cwdEnv) writeFileSync(join(cwdRoot, '.env'), 'SECRET=do-not-read\n');
+    process.chdir(cwdRoot);
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        { skillRoots: [root], ...healthyExec() },
+      );
+      return { payload, skill };
+    } finally {
+      removeReq();
+    }
+  } finally {
+    process.chdir(savedCwd);
+    remove();
+    rmSync(cwdRoot, { recursive: true, force: true });
+  }
+}
+
+test('check_env: envFileExists — 仅 cwd 有 .env → true（README 指引：复制到工作区根）', async () => {
+  const { payload } = await checkEnvFromCwd({ cwdEnv: true });
+  assert.equal(payload.envFileExists, true, '工作区根 .env 必须被探测到');
+});
+
+test('check_env: envFileExists — 仅 SKILL_DIR 有 .env → true', async () => {
+  const { payload } = await checkEnvFromCwd({ withSkillEnv: true });
+  assert.equal(payload.envFileExists, true, 'SKILL_DIR/.env 仍须被探测到');
+});
+
+test('check_env: envFileExists — cwd 与 SKILL_DIR 都无 → false', async () => {
+  const { payload } = await checkEnvFromCwd();
+  assert.equal(payload.envFileExists, false);
+});
+
+test('check_env: envFileExists — 三处都无且 SKILL_DIR 有 .env.example → false（example 不算）', async () => {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const { root, skill, remove } = makeSkillRoot();
+  try {
+    // `.env.example` 是模板而非配置：既非 `.env` 名，也不得被当作存在证据。
+    writeFileSync(join(skill, '.env.example'), 'IMAGE_BACKEND=openai\n');
+    process.chdir(cwdRoot);
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        { skillRoots: [root], ...healthyExec() },
+      );
+      assert.equal(payload.envFileExists, false, '.env.example 不得算作 .env 存在');
+    } finally {
+      removeReq();
+    }
+  } finally {
+    process.chdir(savedCwd);
+    remove();
+    rmSync(cwdRoot, { recursive: true, force: true });
+  }
+});
+
+test('check_env: envFileExists — 三处探测仍只做存在性检查（目录占名不 throw）', async () => {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const { root, remove } = makeSkillRoot();
+  try {
+    // 隔离 cwd 里用**目录**占用 `.env` 名：existsSync 为 true，任何读内容的实现翻车。
+    mkdirSync(join(cwdRoot, '.env'));
+    process.chdir(cwdRoot);
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        { skillRoots: [root], ...healthyExec() },
+      );
+      assert.equal(payload.envFileExists, true, 'cwd/.env 目录形态同样只判存在');
+    } finally {
+      removeReq();
+    }
+  } finally {
+    process.chdir(savedCwd);
+    remove();
+    rmSync(cwdRoot, { recursive: true, force: true });
   }
 });
 

@@ -477,16 +477,24 @@ function lastSyncPath(root) {
 /**
  * 读 `.upstream/last-sync.json`（spec §4.1 步骤 2 / 7 / 8 的 ref·sha 锚点）。
  *
- * 无文件、不可读、JSON 损坏、或结构不是 `{ref:string, sha:string, version:string,
- * at:string}` → null（**不 throw**：状态文件是可留存缓存的便利设施，其缺失等价
- * 「首次同步」，不应让调用方崩溃）。
+ * 无文件、不可读、JSON 损坏、或结构不是 `{ref:string, version:string, at:string}`
+ * → null（**不 throw**：状态文件是可留存缓存的便利设施，其缺失等价「首次同步」，
+ * 不应让调用方崩溃）。
+ *
+ * `sha` 为**可选**字段（branch ref 场景不可得——`--ref <branch>` 时 refSha 恒
+ * null，写入侧落 `sha: ''`）。缺失/空串/非字符串 → 保留整条记录、`sha` 字段为
+ * null。此前 sha 与 ref/version/at 同为必填，导致 branch ref 记录**写入即不可读**
+ * ——`--confirm-structural` 对 branch 的「固定上次检出 ref」承诺（spec §4.1 步骤 7）
+ * 静默失效并回落最新 tag。判据因此分两级：`ref`/`version`/`at` 必填且非空，`sha`
+ * 可缺。`sameRefSha` 幂等比对对 null 的处理见编排侧（`previousSync.sha === (refSha
+ * ?? '')` 对 branch 不误判同 ref）。
  *
  * `head` 为**可选**字段（包装层 HEAD 基线——无 @{u} 回退分支的 wrapperPending
  * 锚，T13 fix）：旧记录/首灌前无该字段或为空 → null。`sha` 字段保持**上游**
  * commit sha 语义（缓存键/幂等 ref 比对）——两字段 sha 空间分离，互不作锚。
  *
  * @param {string} [root] 仓库根；缺省 = 本模块所属仓库根（与 cwd 无关）。
- * @returns {{ ref: string, sha: string, version: string, at: string,
+ * @returns {{ ref: string, sha: string | null, version: string, at: string,
  *   head: string | null } | null}
  */
 export function readLastSync(root) {
@@ -501,12 +509,19 @@ export function readLastSync(root) {
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  for (const key of ['ref', 'sha', 'version', 'at']) {
+  for (const key of ['ref', 'version', 'at']) {
     if (typeof parsed[key] !== 'string' || parsed[key] === '') return null;
+  }
+  // sha 可选：缺失/空串 = 「不可得」（branch ref），保留记录并归 null；非空字符串
+  // 原样保留；其余类型（数字/对象等畸形值）仍判无效——那不是「不可得」而是损坏。
+  let sha = null;
+  if (parsed.sha !== undefined && parsed.sha !== '') {
+    if (typeof parsed.sha !== 'string') return null;
+    sha = parsed.sha;
   }
   return {
     ref: parsed.ref,
-    sha: parsed.sha,
+    sha,
     version: parsed.version,
     at: parsed.at,
     head: typeof parsed.head === 'string' && parsed.head !== '' ? parsed.head : null,
