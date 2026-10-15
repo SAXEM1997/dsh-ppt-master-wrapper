@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -379,5 +379,110 @@ test('T5⑤: 既有注入通道不回归——{skillRoots} 缺省 venv 走默认
     );
   } finally {
     await cleanup();
+  }
+});
+
+// ─── Task 7 ⑨：apply → 消费方注入边端到端观测（跨 Task 唯一观测例）──
+//
+// 通则 H：跨 Task 观测例写在**最晚转绿**的 Task 7。观测面＝apply 的注入边——
+// `createTools({skillRoots, venv})` 与 `createSkillProvider(roots?, {venv})` 两个消费方
+// 是否拿到同一份 venv 注入值并各自如实反映。载体＝本文件既有 mock ctx（`calls.tools`/
+// `calls.providers` 捕获真实注册对象）＋ tmpdir 真 venv fixture，全程零生产面改动。
+//
+// 三部分：(a) 生产根形态（无 skillRoots）下**两半边**同源——payload `venv.path`＝fixture
+// 绝对路径、入口正文解释器＝`<fixture>/bin/python3`（正文半边 Task 6 已绿，payload 半边
+// 由 Task 7 转绿）；(b) 同一捕获 tool 的多根 per-call 注入下 name-锚定优先，且
+// `info.primarySkillDir` 与入口正文 `SKILL_DIR` 同源（tools 侧两份拷贝收敛为单一共享
+// 判定后的等价面）；(c) 收敛本身由 check_env/setup_deps 既有断言在共享判定上继续全绿
+// 作证——不另立观测例、不新增测试专用工厂缝。
+
+/** 合成入口技能名（provider 私有常量，测试侧按名读回）。 */
+const ENTRY_SKILL_NAME = 'ppt-master-env';
+
+/** 包内 vendor skills/ 根与 ppt-master 本体目录（生产根形态下的唯一 skill 面）。 */
+const packagedSkillsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
+const packagedSkillDir = join(packagedSkillsRoot, 'ppt-master');
+
+/** 真 venv fixture：`pyvenv.cfg` + `bin/python3` + wrapper 所有权标记。 */
+async function makeVenvFixture() {
+  const dir = await mkdtemp(join(tmpdir(), 'apply-venv-'));
+  await mkdir(join(dir, 'bin'), { recursive: true });
+  await writeFile(join(dir, 'pyvenv.cfg'), 'home = /usr/bin\n');
+  await writeFile(join(dir, 'bin', 'python3'), '');
+  await writeFile(
+    join(dir, '.ppt-master-wrapper.json'),
+    `${JSON.stringify({ createdAt: new Date().toISOString(), path: dir }, null, 2)}\n`,
+  );
+  return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+/** 多根 fixture：临时注入根，内含一个**非** `ppt-master` 命名的 skill。 */
+async function makeExtraRoot() {
+  const root = await mkdtemp(join(tmpdir(), 'apply-extra-root-'));
+  await mkdir(join(root, 'alpha'), { recursive: true });
+  await writeFile(
+    join(root, 'alpha', 'SKILL.md'),
+    ['---', 'name: alpha', 'description: extra root fixture skill.', '---', '', '# alpha', ''].join('\n'),
+  );
+  return { root, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+
+test('⑨: apply→消费方注入边端到端（payload 半边＋入口正文半边＋多根 SKILL_DIR 同源）', async () => {
+  const fixture = await makeVenvFixture();
+  const extra = await makeExtraRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    // 生产根形态：不带 skillRoots（决策A 下唯一合成入口技能的形态）。
+    const warnings = captureWarn(() =>
+      apply(ctx, { venv: { enabled: true, path: fixture.dir, oldPathPolicy: 'keep' } }),
+    );
+    assert.deepEqual(warnings, [], '合法 venv 配置：无任何降级日志');
+    const infoTool = calls.tools.find((tool) => tool.name === 'ppt_master_info');
+    assert.ok(infoTool, '注册面捕获到 ppt_master_info');
+
+    // ── (a) 正文半边（Task 6 已绿）：入口正文解释器＝<fixture>/bin/python3 ──
+    const expectedInterpreter = join(fixture.dir, 'bin', 'python3');
+    const entry = await calls.providers[0]().get({ name: ENTRY_SKILL_NAME });
+    assert.ok(entry, '生产根形态捕获到合成入口技能');
+    const bodyInterpreter = /生效解释器：`([^`]+)`/.exec(entry.content)?.[1];
+    assert.equal(
+      bodyInterpreter,
+      expectedInterpreter,
+      `(a) 正文半边：入口解释器＝<fixture>/bin/python3，实际正文：${entry.content}`,
+    );
+    const bodySkillDir = /^SKILL_DIR: (.+)$/m.exec(entry.content)?.[1];
+    assert.ok(bodySkillDir, '入口正文含 SKILL_DIR 行（(b) 的同源基准）');
+
+    // ── (a) payload 半边（本 Task 转绿）：venv.path＝fixture 绝对路径、解释器就绪 ──
+    const payload = await infoTool.execute({}, {});
+    assert.deepEqual(
+      payload.venv,
+      {
+        enabled: true,
+        path: fixture.dir,
+        exists: true,
+        pythonPath: expectedInterpreter,
+      },
+      '(a) payload 半边：venv 注入值抵达 info 且与正文同源',
+    );
+
+    // ── (b) 同一捕获 tool：多根 per-call 注入 → name 锚定优先、SKILL_DIR 与 provider 同源 ──
+    const multi = await infoTool.execute({}, { skillRoots: [packagedSkillsRoot, extra.root] });
+    assert.deepEqual(
+      multi.skillDirs,
+      [packagedSkillDir, join(extra.root, 'alpha')],
+      '(b) 两根确被展开扫描（额外根不含 ppt-master 命名技能）',
+    );
+    assert.equal(multi.primarySkillName, 'ppt-master', '(b) name===ppt-master 锚定压过根顺序/目录序');
+    assert.equal(multi.primaryIsFallback, false, '(b) 锚定命中：非回退');
+    assert.equal(multi.primarySkillDir, packagedSkillDir, '(b) 主目录仍为包内 vendor ppt-master');
+    assert.equal(
+      multi.primarySkillDir,
+      bodySkillDir,
+      '(b) tools 侧 SKILL_DIR 与入口正文 SKILL_DIR 同源（两份拷贝收敛为单一共享判定）',
+    );
+  } finally {
+    await fixture.cleanup();
+    await extra.cleanup();
   }
 });
