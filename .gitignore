@@ -6,3 +6,7 @@ __pycache__/
 .mnemon/
 sync-report.txt
 .superpowers/
+node_modules/
+.DS_Store
+*.log
+*.tmp

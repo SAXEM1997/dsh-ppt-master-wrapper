@@ -10,6 +10,8 @@
 
 前置要求：Node.js ≥ 20；`python3`（上游完整性门与脚本套件运行需要，建议 ≥ 3.10）；`pip3`（`ppt_master_setup_deps` 安装 Python 依赖用）；`git`（同步脚本的 `ls-remote`/commit/tag/push 与凭据解析用）；`tar`（同步脚本解压上游 tarball 用，含 `gzip` 委托——`tar -xzf` 由 tar 调用 gzip 解压）。
 
+推送还需凭据：设置环境变量 `DSH_PPT_GITLAB_PAT`（GitLab PAT），或改用 `git` credential helper 提供凭据；缺失时推送环节以退出码 `6` 失败并在报告中输出配置指引。
+
 方式一——本地路径 link（开发机 / 内网已 clone 场景）：
 
 ```bash
@@ -33,6 +35,8 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
    ```bash
    cp skills/ppt-master/.env.example .env
    ```
+
+   > 请在**你的会话工作目录**（即运行 PPT 生成的 cwd——上游 `.env` 查找顺序的第 1 位）执行该 `cp`；插件根目录下的副本仅被 `check_env` 的包根顺位覆盖，不作为生成期读取来源。
 
    然后按需填写图像后端 API key：设置 `IMAGE_BACKEND`（推荐核心后端 `openai` / `gemini` / `qwen` / `zhipu` / `volcengine`）并取消注释对应提供商的 key/model 行（如 `OPENAI_API_KEY`、`GEMINI_API_KEY` 等）。也可不写 `.env`，直接以进程环境变量提供同样配置。各项含义与全部可用后端见 `.env.example` 内注释。
 

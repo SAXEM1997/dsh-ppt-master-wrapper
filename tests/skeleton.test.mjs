@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -73,7 +74,7 @@ test('cordis.patch.yml: insert 挂载行', () => {
 
 test('.gitignore: 逐项覆盖忽略清单', () => {
   const lines = read('.gitignore').split('\n').filter((l) => l.trim() !== '');
-  for (const entry of [
+  const required = [
     '.env',
     '.upstream/',
     '.skills-staging/',
@@ -82,8 +83,39 @@ test('.gitignore: 逐项覆盖忽略清单', () => {
     '.mnemon/',
     'sync-report.txt',
     '.superpowers/',
-  ]) {
+    'node_modules/',
+    '.DS_Store',
+    '*.log',
+    '*.tmp',
+  ];
+  for (const entry of required) {
     assert.ok(lines.includes(entry), `.gitignore 缺少条目: ${entry}`);
+  }
+  // 忽略必须**真实生效**：每条目取一个代表路径，经 git check-ignore -q 断言命中
+  // （exit 0）。目录类条目取下一级假想路径，glob 类条目取具体文件名。路径无需真实存在。
+  const probes = [
+    ['.env', '.env'],
+    ['.upstream/', '.upstream/last-sync.json'],
+    ['.skills-staging/', '.skills-staging/ppt-master'],
+    ['__pycache__/', '__pycache__/x.pyc'],
+    ['*.pyc', 'foo.pyc'],
+    ['.mnemon/', '.mnemon/x'],
+    ['sync-report.txt', 'sync-report.txt'],
+    ['.superpowers/', '.superpowers/x'],
+    ['node_modules/', 'node_modules/x'],
+    ['.DS_Store', '.DS_Store'],
+    ['*.log', 'debug.log'],
+    ['*.tmp', 'tmp.tmp'],
+  ];
+  for (const [entry, probe] of probes) {
+    const result = spawnSync('git', ['check-ignore', '-q', '--', probe], {
+      cwd: repoRoot,
+    });
+    assert.equal(
+      result.status,
+      0,
+      `.gitignore 条目未生效（git check-ignore 未命中）: ${entry} → ${probe}（exit ${result.status}）`
+    );
   }
 });
 
