@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -369,3 +370,289 @@ test('writeWrapperState: <HOME>/.ppt-master 父路径被文件占用 → 抛 ENO
     restore();
   }
 });
+
+// ─── probeVenvInterpreter：同步存在性探测（入参＝venv 目录） ─────
+//
+// 与 lib/tools.js 的 async 三字段版本探测（{found, version, meetsSkillRequirement}）是
+// 两个接口：本原语只答「<venvDir>/bin/python3 是否可见」，消费方不自带 `bin/python3` 拼接。
+
+/** 在 venv 目录内造 `bin/python3`；`symlinkTo` 给定时建符号链接（可指向不存在的目标）。 */
+function addPythonBinary(venvDir, { symlinkTo = null } = {}) {
+  const binDir = join(venvDir, 'bin');
+  mkdirSync(binDir, { recursive: true });
+  const binPython = join(binDir, 'python3');
+  if (symlinkTo === null) writeFileSync(binPython, '#!/bin/sh\n');
+  else symlinkSync(symlinkTo, binPython);
+  return binPython;
+}
+
+test('probeVenvInterpreter: 入参＝venv 目录、内部拼 bin/python3（有效符号链接→true、悬空→false）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(home);
+    // 形态一：bin/python3 是指向真实文件的符号链接 → found:true（假解释器，只验形态不执行）。
+    const target = join(home, 'real-python3');
+    writeFileSync(target, '#!/bin/sh\n');
+    addPythonBinary(venvDir, { symlinkTo: target });
+
+    const found = venv.probeVenvInterpreter(venvDir);
+    assert.deepEqual(Object.keys(found).sort(), ['found'], '探测结果只承载 found 单键');
+    assert.equal(found.found, true, '有效的 bin/python3 符号链接应 found:true');
+
+    // 形态二：悬空符号链接（lstat 可见、stat 不可见）→ found:false，不得当作可用解释器。
+    const binPython = join(venvDir, 'bin', 'python3');
+    rmSync(binPython, { force: true });
+    symlinkSync(join(venvDir, 'bin', 'python3-absent'), binPython);
+    assert.equal(venv.probeVenvInterpreter(venvDir).found, false, '悬空符号链接应 found:false');
+  } finally {
+    restore();
+  }
+});
+
+test('probeVenvInterpreter: 缺 bin/python3 / 目录不存在 / 非字符串 → found:false 且不抛', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 只有 pyvenv.cfg 的 venv（无 bin/）：不得把「venv 目录存在」当作 found。
+    const bare = makeVenvDir(home, 'bare-venv');
+    assert.equal(venv.probeVenvInterpreter(bare).found, false, '无 bin/python3 应 found:false');
+
+    // 反证拼接口径：venv 根下放同名 python3 仍为 false——探测目标是 bin/python3，不是目录本身。
+    writeFileSync(join(bare, 'python3'), '#!/bin/sh\n');
+    assert.equal(venv.probeVenvInterpreter(bare).found, false, '必须是 bin/python3，venv 根下同名不算');
+
+    assert.equal(
+      venv.probeVenvInterpreter(join(home, 'missing-venv')).found,
+      false,
+      '目录不存在应 found:false'
+    );
+    assert.equal(venv.probeVenvInterpreter(null).found, false, '非字符串入参应 found:false 而非抛错');
+  } finally {
+    restore();
+  }
+});
+
+// ─── effectiveInterpreter 四态矩阵（spec §5.3 逐行） ─────────────
+//
+// path/exists/pythonPath/invalidReason/broken 逐行定值；判定序＝disabled → invalid → on-missing → on-ready。
+
+test('effectiveInterpreter: off（路径合法）—— path 按配置原样、exists=false、不探测', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 反证「disabled 优先于探测」：磁盘上摆一个完全可用的 venv，off 行仍不得探测/上报。
+    const venvDir = makeVenvDir(join(home, '.ppt-master'));
+    addPythonBinary(venvDir);
+
+    const probeCalls = [];
+    const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv', false), {
+      probeVenvInterpreter: (dir) => {
+        probeCalls.push(dir);
+        return { found: true };
+      },
+    });
+
+    // 六字段契约（多一键/少一键都应失败；deepEqual 亦钉死键集，此处仅为可读的字段名清单）。
+    assert.deepEqual(Object.keys(result).sort(), [
+      'broken',
+      'exists',
+      'invalidReason',
+      'path',
+      'pythonPath',
+      'state',
+    ]);
+    assert.deepEqual(result, {
+      state: 'off',
+      path: '~/.ppt-master/venv', // 按配置原样：未做 `~` 展开
+      exists: false, // 定值：不探测
+      pythonPath: null,
+      invalidReason: null,
+      broken: false,
+    });
+    assert.deepEqual(probeCalls, [], 'off 行不得探测解释器');
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: off（invalid×disabled 组合）—— disabled 优先、诊断面 path=null、invalidReason 如实', () => {
+  const { restore } = useTmpHome();
+  try {
+    for (const [badPath, reason] of [
+      ['relative/venv', 'relative-path'],
+      ['', 'unresolvable'],
+    ]) {
+      const result = venv.effectiveInterpreter(cfg(badPath, false), {
+        probeVenvInterpreter: () => assert.fail('off 行不得探测解释器'),
+      });
+      assert.deepEqual(
+        result,
+        {
+          state: 'off',
+          path: null, // 无效如实：不回落「配置原样」
+          exists: false,
+          pythonPath: null,
+          invalidReason: reason,
+          broken: false,
+        },
+        `无效×disabled 组合应落 off 且诊断面如实: ${JSON.stringify(badPath)}`
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: invalid —— enabled 且路径无效（path=null、invalidReason=原因、不探测）', () => {
+  const { restore } = useTmpHome();
+  try {
+    const probe = () => assert.fail('invalid 行不得探测解释器');
+    assert.deepEqual(
+      venv.effectiveInterpreter(cfg('relative/venv'), { probeVenvInterpreter: probe }),
+      {
+        state: 'invalid',
+        path: null,
+        exists: false,
+        pythonPath: null,
+        invalidReason: 'relative-path',
+        broken: false,
+      }
+    );
+    // 同族第二形态：`~` 展开失败（HOME 空串）——enabled 下判 invalid、原因 unresolvable。
+    process.env.HOME = '';
+    assert.deepEqual(
+      venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), { probeVenvInterpreter: probe }),
+      {
+        state: 'invalid',
+        path: null,
+        exists: false,
+        pythonPath: null,
+        invalidReason: 'unresolvable',
+        broken: false,
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: on-missing —— 解析后绝对路径、exists=false、不体检', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const probe = () => assert.fail('on-missing 行不得体检解释器');
+    const resolved = join(home, '.ppt-master', 'venv');
+
+    // 形态一：目标路径整个不存在。
+    assert.deepEqual(
+      venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), { probeVenvInterpreter: probe }),
+      {
+        state: 'on-missing',
+        path: resolved, // 解析后绝对（与 off 行的「配置原样」对照）
+        exists: false,
+        pythonPath: null,
+        invalidReason: null,
+        broken: false,
+      }
+    );
+
+    // 形态二：目录在但不是 venv（缺 pyvenv.cfg）——venvExists 判否，同样落 on-missing。
+    mkdirSync(resolved, { recursive: true });
+    assert.deepEqual(
+      venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), { probeVenvInterpreter: probe }),
+      {
+        state: 'on-missing',
+        path: resolved,
+        exists: false,
+        pythonPath: null,
+        invalidReason: null,
+        broken: false,
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: on-ready —— exists=true、pythonPath=<abs>/bin/python3、探测入参＝同源解析路径', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(join(home, '.ppt-master'));
+    addPythonBinary(venvDir);
+
+    const probeCalls = [];
+    const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), {
+      probeVenvInterpreter: (dir) => {
+        probeCalls.push(dir);
+        return { found: true };
+      },
+    });
+
+    assert.deepEqual(result, {
+      state: 'on-ready',
+      path: venvDir,
+      exists: true,
+      pythonPath: join(venvDir, 'bin', 'python3'),
+      invalidReason: null,
+      broken: false,
+    });
+    // 探测目标与 path 同源：同一次求值产出的解析后绝对路径（消费方不再自带 `bin/python3` 拼接）。
+    assert.deepEqual(probeCalls, [venvDir]);
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: on-ready 子态 exists-but-broken（桩探测 found:false）—— broken:true、pythonPath:null', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(join(home, '.ppt-master'));
+
+    const probeCalls = [];
+    const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), {
+      probeVenvInterpreter: (dir) => {
+        probeCalls.push(dir);
+        return { found: false };
+      },
+    });
+
+    assert.deepEqual(result, {
+      state: 'on-ready', // 子态不新增 state：仍是 on-ready
+      path: venvDir,
+      exists: true,
+      pythonPath: null, // broken 行定值：null（非 <path>/bin/python3）
+      invalidReason: null,
+      broken: true,
+    });
+    assert.deepEqual(probeCalls, [venvDir]);
+    // 推断式可观测（spec §5.3 矩阵注记）：exists=true ∧ pythonPath=null ⇒ exists-but-broken。
+    assert.ok(
+      result.exists === true && result.pythonPath === null,
+      'broken 子态应满足推断式 exists=true ∧ pythonPath=null'
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('effectiveInterpreter: exists-but-broken 自然形态——悬空 bin/python3 经同步原语判定', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(join(home, '.ppt-master'));
+    // 自然注入：bin/python3 是悬空符号链接——目录「看起来是 venv」但没有可用解释器。
+    addPythonBinary(venvDir, { symlinkTo: join(venvDir, 'bin', 'python3-absent') });
+
+    // 注入本模块实测原语（消费方形态），打通「探测 found:false ⇒ broken」全链路。
+    const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), {
+      probeVenvInterpreter: venv.probeVenvInterpreter,
+    });
+    assert.deepEqual(result, {
+      state: 'on-ready',
+      path: venvDir,
+      exists: true,
+      pythonPath: null,
+      invalidReason: null,
+      broken: true,
+    });
+  } finally {
+    restore();
+  }
+});
+
