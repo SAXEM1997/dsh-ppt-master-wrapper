@@ -215,6 +215,12 @@ function stubDeps(overrides = {}) {
       return result;
     };
   }
+  // tar 执行器注入缝（R2 Fix tar 工具链分类）：编排以 deps.extractTarball 调用
+  // 解压——stub 模拟 spawn ENOENT（reject code='ENOENT'）/ 非零退出（无 code 的
+  // 「tar 解压失败」Error）两类失败。
+  if (overrides.extractTarball !== undefined) {
+    deps.extractTarball = overrides.extractTarball;
+  }
   return { deps, calls };
 }
 
@@ -370,6 +376,62 @@ test('git 预检：--version 非零退出不视为工具链缺失（流程照常
     });
     const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
     assert.equal(code, 2, '预检只认 spawn 级失败；非零退出的 git 继续原流程');
+    assert.doesNotMatch(calls.output(), /工具链/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── tar 工具链分类（UltraReview R2 Fix #1）：spawn 级失败 → 退出码 7 ──
+//
+// 此前 tar 二进制缺失（spawn ENOENT）落入步骤 2 通用 catch → 退出码 5 + 原样
+// 回显 `spawn tar ENOENT`。tar 与 git/python3 同属工具链（设计文档退出码 7 行
+// 明列 tar），spawn 级失败应报 7 且不回显裸 spawn 错误；tar 在场但解压非零
+// 退出仍是来源失败（5）。
+
+test('tar 工具链缺失（spawn ENOENT）→ 退出码 7 且输出含「tar」「工具链」，无裸 spawn 错误', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      // spawnCapture 对 spawn 级失败 reject（code=ENOENT）——经 extractTarball
+      // 注入缝模拟 tar 二进制缺失。
+      extractTarball: async () => {
+        const error = new Error('spawn tar ENOENT');
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 7, 'spawn 级 tar 失败 = 工具链缺失 = 解释器级失败族（退出码 7）');
+    assert.match(calls.output(), /tar/);
+    assert.match(calls.output(), /工具链/);
+    assert.doesNotMatch(calls.output(), /ENOENT/, '不回显原始 spawn 错误（无堆栈/裸错误）');
+    assert.doesNotMatch(calls.output(), /\n\s+at\s/, '绝不输出原始堆栈');
+    // 失败清理语义保留：tarball 与半成品解压树均不得残留。
+    assert.equal(calls.fetch.length, 1, '已进入下载（失败发生在解压阶段）');
+    assert.equal(existsSync(s.extractDirOf()), false, '半成品解压树须清理');
+    assert.equal(existsSync(`${s.extractDirOf()}.tar.gz`), false, 'tarball 须回收');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('tar 非零退出（非 spawn 级）→ 维持退出码 5（来源失败）且回显错误', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    const { deps, calls } = stubDeps({
+      tarballPath: s.tarballPath,
+      // tar 在场但解压失败（非零退出 → extractTarball 抛业务 Error，无 spawn
+      // code）→ 仍是来源失败（5），不得误升 7。
+      extractTarball: async () => {
+        throw new Error('tar 解压失败（exit 2）: 坏 tarball\ngzip: stdin: not in gzip format');
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5, 'tar 在场但解压失败 = 来源失败（非工具链缺失）');
+    assert.match(calls.output(), /tar 解压失败/);
+    assert.match(calls.output(), /退出码 5/);
     assert.doesNotMatch(calls.output(), /工具链/);
   } finally {
     s.cleanup();
@@ -949,11 +1011,14 @@ test('规则③保留语义（Fix #1）：--no-push 后开发者提交包装层�
 
 /** Fix #2 场景的 runGit：origin 侧查询 canned、其余委托真实 git；push 记录并成功。 */
 function backPushRunGit(originUrl, pushes, originTagsStdout = '') {
+  // R2 Fix（预判鉴权化）后 ls-remote 预判走推送目标——env PAT 场景为一次性
+  // URL（oauth2:<PAT>@ 注入）。按凭据剥离形态匹配：裸/一次性 URL 均命中。
+  const stripCredentials = (url) => String(url).replace(/^(https?:\/\/)[^/@]+@/, '$1');
   return async (args, opts) => {
     if (args[0] === 'remote' && args[1] === 'get-url') {
       return { code: 0, stdout: `${originUrl}\n`, stderr: '' };
     }
-    if (args[0] === 'ls-remote' && args[2] === originUrl) {
+    if (args[0] === 'ls-remote' && stripCredentials(args[2]) === originUrl) {
       return { code: 0, stdout: originTagsStdout, stderr: '' };
     }
     if (args[0] === 'push') {
@@ -1026,6 +1091,110 @@ test('push 部分失败修复（Fix #2）对照：本地 tag 不存在 / 远端�
       assert.equal(code, 0);
       assert.equal(pushes.length, 0, '远端已有 tag → 不补推');
       assert.doesNotMatch(calls.output(), /补推缺失的发布/);
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── backPush 预判鉴权化（UltraReview R2 Fix #3）：env PAT + 私有 origin ──
+//
+// 此前补推预判用裸 origin URL 跑 `git ls-remote --tags`——env PAT 场景（无
+// credential helper）对私有 GitLab 必然鉴权失败 exit 128 → 静默 return → 补推
+// 永不执行、exit 0 报 already up to date（主 push 路径的鉴权能力没有传导到
+// 预判）。修复：先 resolvePushTarget（env → credential fill 同序），用带凭据
+// 的 push target 跑预判；预判仍不可达 → 输出跳过原因（不再静默）后照常短路。
+// 一次性 URL 的 PAT 安全约束（不落盘/不回显/输出脱敏）对预判同样适用。
+
+test('backPush 预判鉴权化（R2 Fix）：env PAT + 私有 origin——裸 URL 预判 128 不得吞掉补推', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    // 现场：上次运行 main 已推、本地 tag 已建但 tag push 被拒；origin 为私有
+    // GitLab——裸 URL 预判必然 128（无 credential helper），鉴权 URL 预判成功
+    // 且远端无该 tag → 必须触发补推（push 收到 main + tag）。
+    writeLastSync(
+      { ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0', head: headSha(s.root) },
+      s.root,
+    );
+    gitIn(s.root, ['tag', 'v6.8.0']);
+
+    await withEnv('DSH_PPT_GITLAB_PAT', 'glpat-r2auth', async () => {
+      const pushes = [];
+      const oneShot = 'https://oauth2:glpat-r2auth@gitlab.example.com/zyx/dsh-wrapper-test.git';
+      const { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: async (args, opts) => {
+          if (args[0] === 'remote' && args[1] === 'get-url') {
+            return { code: 0, stdout: `${CANNED_ORIGIN_URL}\n`, stderr: '' };
+          }
+          // 裸 URL 预判：私有 origin 无凭据 → 鉴权失败 exit 128（生产现场形态）。
+          if (args[0] === 'ls-remote' && args[2] === CANNED_ORIGIN_URL) {
+            return { code: 128, stdout: '', stderr: 'fatal: Authentication failed for https://gitlab.example.com/zyx/dsh-wrapper-test.git' };
+          }
+          // 鉴权 URL（one-shot）预判：成功，远端无 tag（待补推）。
+          if (args[0] === 'ls-remote' && args[2] === oneShot) {
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          if (args[0] === 'push') {
+            pushes.push(args);
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          return realGitResult(args, opts);
+        },
+      });
+      const code = await main({ root: s.root, repo: s.repoUrl }, deps);
+      assert.equal(code, 0, '补推成功后照常短路 exit 0');
+      assert.equal(pushes.length, 2, '裸 URL 预判失败后须以鉴权 URL 预判 → 触发补推（main + tag）');
+      assert.deepEqual(pushes[0], ['push', oneShot, 'main'], '先推 main（鉴权 URL）');
+      assert.deepEqual(pushes[1], ['push', oneShot, 'refs/tags/v6.8.0'], '再推 tag（鉴权 URL）');
+      assert.match(calls.output(), /补推缺失的发布/);
+      assert.match(calls.output(), /already up to date/);
+    });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('backPush 预判鉴权化（R2 Fix）：鉴权预判仍不可达 → 警告含原因 + 照常短路 exit 0（非静默、不回显 PAT）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
+  try {
+    writeLastSync(
+      { ref: 'refs/tags/v6.8.0', sha: s.tagShas['v6.8.0'], version: '6.8.0', head: headSha(s.root) },
+      s.root,
+    );
+    gitIn(s.root, ['tag', 'v6.8.0']);
+
+    await withEnv('DSH_PPT_GITLAB_PAT', 'glpat-r2probe', async () => {
+      const pushes = [];
+      const oneShot = 'https://oauth2:glpat-r2probe@gitlab.example.com/zyx/dsh-wrapper-test.git';
+      const { deps, calls } = stubDeps({
+        tarballPath: s.tarballPath,
+        runGit: async (args, opts) => {
+          if (args[0] === 'remote' && args[1] === 'get-url') {
+            return { code: 0, stdout: `${CANNED_ORIGIN_URL}\n`, stderr: '' };
+          }
+          if (args[0] === 'ls-remote' && args[2] === CANNED_ORIGIN_URL) {
+            return { code: 128, stdout: '', stderr: 'fatal: Authentication failed' };
+          }
+          // 鉴权 URL 预判也失败（网络不可达）——git 错误输出回显含 PAT 的 URL，
+          // 恰为脱敏约束的对象。
+          if (args[0] === 'ls-remote' && args[2] === oneShot) {
+            return { code: 128, stdout: '', stderr: `fatal: unable to access '${oneShot}': Could not resolve host: gitlab.example.com` };
+          }
+          if (args[0] === 'push') {
+            pushes.push(args);
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          return realGitResult(args, opts);
+        },
+      });
+      const code = await main({ root: s.root, repo: s.repoUrl }, deps);
+      assert.equal(code, 0, '预判不可达不阻断——照常短路 exit 0');
+      assert.equal(pushes.length, 0, '预判不可达 → 不补推');
+      assert.match(calls.output(), /补推预判通道不可达/, '不再静默：输出跳过原因');
+      assert.match(calls.output(), /exit 128/, '警告含具体失败码');
+      assert.match(calls.output(), /already up to date/);
+      assert.doesNotMatch(calls.output(), /glpat-r2probe/, 'PAT 绝不回显（一次性 URL 安全约束对预判同样适用）');
     });
   } finally {
     s.cleanup();

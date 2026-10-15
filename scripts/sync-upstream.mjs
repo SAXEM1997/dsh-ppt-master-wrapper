@@ -1242,9 +1242,10 @@ const PAT_ENV = 'DSH_PPT_GITLAB_PAT';
 const INTERPRETER_ERROR_PATTERN = /SyntaxError|IndentationError|TabError/;
 
 /**
- * git spawn 级失败码族（ENOENT/EACCES/EPERM/ENOTDIR/EISDIR）——与 lib/tools.js
- * 的 SPAWN_FAILURE_CODES 同源同族：这些码意味着子进程**从未启动**（工具链缺
- * 失，退出码 7），而非命令运行业务失败。
+ * 子进程 spawn 级失败码族（ENOENT/EACCES/EPERM/ENOTDIR/EISDIR）——与 lib/tools.js
+ * 的 SPAWN_FAILURE_CODES 同源同族：这些码意味着子进程**从未启动**（工具链缺失，
+ * 退出码 7），而非命令运行业务失败。git 工具链预检与 tar 解压的失败分类共用
+ * （R2 Fix：tar spawn ENOENT 同属工具链缺失族）。
  */
 const GIT_SPAWN_FAILURE_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'EISDIR']);
 
@@ -1457,6 +1458,16 @@ function buildOneShotUrl(originUrl, pat) {
 }
 
 /**
+ * git 输出脱敏（PAT 安全约束）：一次性 URL 可能回显于 git 的 stdout/stderr——
+ * 以 PAT 全量切分替换为 ***，PAT 绝不出现在日志。pat 为 null（credential 路径）
+ * 时原样返回。主 push 失败回显与补推预判/push 失败回显共用。
+ */
+function sanitizedGitOutput(pat, result) {
+  const raw = `${result.stdout}\n${result.stderr}`;
+  return pat !== null ? raw.split(pat).join('***') : raw;
+}
+
+/**
  * 发布推送 refspec 序列（Step F Fix #2 裁决扩展）：main 先行 + tag——只推 tag
  * 会让远端出现指向未上 main 的 commit 的 tag（Step 5 观察项④）。主 push 与
  * 幂等短路前的补推共用同一序列，保证两处发布语义一致。
@@ -1480,8 +1491,9 @@ const releasePushRefspecs = (tagName) => ['main', `refs/tags/${tagName}`];
  *
  * @param {object} options parseArgs 产物或等价显式对象（测试可另传 `root` 覆盖
  *   仓库根，缺省 = 本模块所属仓库根）。
- * @param {object} deps_ 可注入依赖 `{ fetchTarball, runGit, runPython, now,
- *   log, logError, runVerify, freeSpace }`（全部缺省为真实实现；runVerify 缺省经
+ * @param {object} deps_ 可注入依赖 `{ fetchTarball, extractTarball, runGit,
+ *   runPython, now, log, logError, runVerify, freeSpace }`（全部缺省为真实实现；
+ *   extractTarball 缺省即本模块 tar 解压（spawn 级失败 reject）；runVerify 缺省经
  *   动态 import 注入 verify-plugin——编排不静态 import 它；log/logError 缺省
  *   console——测试注入收集器捕获输出断言）。
  * @returns {Promise<number>} 退出码 0/1/2/3/4/5/6/7。
@@ -1497,6 +1509,7 @@ export async function main(options, deps_) {
 
   const deps = {
     fetchTarball: deps_?.fetchTarball ?? defaultFetchTarball,
+    extractTarball: deps_?.extractTarball ?? extractTarball,
     runGit: deps_?.runGit ?? defaultRunGit,
     runPython: deps_?.runPython ?? defaultRunPython,
     now: deps_?.now ?? (() => new Date()),
@@ -1660,10 +1673,16 @@ export async function main(options, deps_) {
       return 5;
     }
     try {
-      await extractTarball(download.bytesPath, cacheDir);
+      await deps.extractTarball(download.bytesPath, cacheDir);
     } catch (error) {
       rmSync(tarballPath, { force: true });
       rmSync(cacheDir, { recursive: true, force: true });
+      // tar spawn 级失败（ENOENT 码族）= 工具链缺失（与 git/python3 同族，→7），
+      // 不回显裸 spawn 错误；其余（tar 在场但非零退出）仍为来源失败（→5）。
+      if (GIT_SPAWN_FAILURE_CODES.has(error?.code)) {
+        logFail('tar 不可用（工具链缺失，退出码 7）。');
+        return 7;
+      }
       logFail(`${error.message}（来源失败，退出码 5）。`);
       return 5;
     }
@@ -1815,11 +1834,17 @@ export async function main(options, deps_) {
    * UltraReview Fix #2：push 部分失败（main 已推、tag 被拒 exit 6）后重跑会被
    * 幂等短路吞掉——本地已就绪的发布 tag 永不发布。短路 return 前补推：本地
    * last-sync 版本对应 tag 存在（rev-parse -q --verify）且 origin ls-remote
-   * 结果无该 tag → 补推；本地无 / 远端已有 / 预判或凭据不可用 → 照常短路
+   * 结果无该 tag → 补推；本地无 / 远端已有 / 凭据不可用 → 照常短路
    * （补推不改变短路 exit 0——失败下次运行重试）。
    * Step F 裁决扩展：补推 refspec 由 [tag] 扩为 [main, tag]（releasePushRefspecs
    * 共用）——恢复完整发布语义，tag 不再指向未上 main 的 commit。main 已在远端
    * 时该 refspec 推送为幂等 no-op（Everything up-to-date）。
+   * R2 Fix（预判鉴权化）：**先** resolvePushTarget（env PAT → credential fill，
+   * 与主 push 路径同序同据），再用推送目标（env → 一次性 URL；credential →
+   * origin）跑 ls-remote 预判——此前裸 origin URL 预判在 env PAT + 私有 origin
+   * 场景（无 credential helper）必然鉴权失败 128 → 静默短路，补推永不执行。
+   * 凭据不可用 / 预判不可达 → 输出跳过原因（不再静默）后照常短路；一次性
+   * URL 的脱敏约束（PAT 不落盘/不回显）对预判输出同样适用。
    */
   const backPushMissingReleaseTag = async () => {
     const tagName = `v${currentVersion}`;
@@ -1828,23 +1853,28 @@ export async function main(options, deps_) {
     const originUrlResult = await git(['remote', 'get-url', 'origin']);
     if (originUrlResult.code !== 0) return;
     const originUrl = originUrlResult.stdout.trim();
-    const remoteTags = await git(['ls-remote', '--tags', originUrl]);
-    if (remoteTags.code !== 0) return; // 预判通道不可达（网络等）不阻断——照常短路
-    const remoteTagNames = new Set(parseLsRemote(remoteTags.stdout).map((entry) => entry.tagName));
-    if (remoteTagNames.has(tagName) || remoteTagNames.has(currentVersion)) return; // 远端已有 → 已发布
     const pushPlan = await resolvePushTarget(originUrl);
     if (pushPlan === null) {
       logInfo(`⚠ 发布 tag ${tagName} 本地已就绪且远端缺失，但推送凭据不可用——本次未补推（下次运行重试）。`);
       return;
     }
+    const remoteTags = await git(['ls-remote', '--tags', pushPlan.target]);
+    if (remoteTags.code !== 0) {
+      // 预判通道不可达（网络等）不阻断——照常短路，但不再静默：回显跳过原因
+      //（一次性 URL 可能回显于 git 输出——先行脱敏，PAT 绝不出现在日志）。
+      logInfo(
+        `⚠ 补推预判通道不可达（git ls-remote --tags exit ${remoteTags.code}），`
+          + `本次未补推（下次运行重试）:\n${sanitizedGitOutput(pushPlan.pat, remoteTags).trim()}`,
+      );
+      return;
+    }
+    const remoteTagNames = new Set(parseLsRemote(remoteTags.stdout).map((entry) => entry.tagName));
+    if (remoteTagNames.has(tagName) || remoteTagNames.has(currentVersion)) return; // 远端已有 → 已发布
     for (const refspec of releasePushRefspecs(tagName)) {
       const push = await git(['push', pushPlan.target, refspec]);
       if (push.code !== 0) {
         // 一次性 URL 可能回显于 git 输出——先行脱敏（PAT 绝不出现在日志）。
-        const sanitized = pushPlan.pat !== null
-          ? `${push.stdout}\n${push.stderr}`.split(pushPlan.pat).join('***')
-          : `${push.stdout}\n${push.stderr}`;
-        logInfo(`⚠ 补推 ${refspec} 失败（下次运行重试）:\n${sanitized.trim()}`);
+        logInfo(`⚠ 补推 ${refspec} 失败（下次运行重试）:\n${sanitizedGitOutput(pushPlan.pat, push).trim()}`);
         return;
       }
     }
