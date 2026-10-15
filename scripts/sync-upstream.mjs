@@ -925,6 +925,8 @@ function auxDirNames(upstreamRoot) {
  * `skills/` 一级当前辅助目录 vs **上次同步的记录** `.upstream/last-aux-dirs.json`
  * （路径可由第五参数 `auxStatePath` 覆盖）。本函数**负责读写该记录**：分类后把
  * 当前清单落盘。记录缺失（首灌）→ 当前全部辅助目录列为新增（🟡 知悉）。
+ * `opts.dryRun === true`（Step F #10）时分类照常返回，但**不写**该记录——
+ * dry-run 不得消费 🟡 一次性知悉信号（exit-2/幂等路径的非 dry-run 写盘保留）。
  *
  * 所有分类项均以 `vendorDiff` 汇总——不做「红/黄项不置 diff」的短路，因为规则①
  * 的「上游版本变 + 有 diff」与规则④的「无 diff」正是靠本字段区分。
@@ -933,10 +935,11 @@ function auxDirNames(upstreamRoot) {
  * @param {string} stagingRoot staging 根（`stageSkills` 产物）。
  * @param {string} upstreamRoot 上游解压树根（aux-dir 数据源）。
  * @param {string} [auxStatePath] aux-dir 状态文件路径（缺省由 vendorSkillsRoot 推导）。
+ * @param {{ dryRun?: boolean }} [opts] 可选行为开关（缺省行为与旧签名完全一致）。
  * @returns {{ red: Array<{kind: string, detail: string}>,
  *   yellow: Array<{kind: string, detail: string}>, green: boolean, vendorDiff: boolean }}
  */
-export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, auxStatePath) {
+export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, auxStatePath, opts) {
   const red = [];
   const yellow = [];
   let green = false;
@@ -1066,7 +1069,9 @@ export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, aux
   for (const name of removedAux) {
     yellow.push({ kind: 'aux-dir', detail: `上游 skills/ 一级辅助目录删除: ${name}（staging 丢弃对象，仅知悉）` });
   }
-  if (addedAux.length > 0 || removedAux.length > 0 || previousAuxDirs === null) {
+  // Step F #10：dry-run 时 aux 状态不落盘——🟡 一次性知悉信号不得被计划跑消费
+  //（dry-run 后正式跑须能再次报出同一信号）。
+  if ((addedAux.length > 0 || removedAux.length > 0 || previousAuxDirs === null) && opts?.dryRun !== true) {
     writeAuxDirs(auxFile, currentAuxDirs);
   }
 
@@ -1452,6 +1457,16 @@ function buildOneShotUrl(originUrl, pat) {
 }
 
 /**
+ * 发布推送 refspec 序列（Step F Fix #2 裁决扩展）：main 先行 + tag——只推 tag
+ * 会让远端出现指向未上 main 的 commit 的 tag（Step 5 观察项④）。主 push 与
+ * 幂等短路前的补推共用同一序列，保证两处发布语义一致。
+ *
+ * @param {string} tagName 形如 `v6.8.0` 的 tag 名。
+ * @returns {string[]} refspec 列表（`['main', 'refs/tags/<tag>']`）。
+ */
+const releasePushRefspecs = (tagName) => ['main', `refs/tags/${tagName}`];
+
+/**
  * 同步主编排（spec §4.1 步骤 1-8 + 退出码单表）。
  *
  * 序列：usage 检查（→1）→ 启动磁盘预检（→5）→ git 工具链预检（spawn 级失败
@@ -1503,7 +1518,7 @@ export async function main(options, deps_) {
 
   // ── usage 错误 → 退出码 1（含 --skip-guard 未与 --no-push/--dry-run 联用）──
   if (opts.usageError === true) {
-    logFail(USAGE_TEXT, '\n用法错误：参数组合非法（如 --skip-guard 必须与 --no-push 或 --dry-run 联用）。退出码 1。');
+    logFail(USAGE_TEXT, '\n用法错误：参数组合非法（如 --skip-guard 须至少与 --no-push 或 --dry-run 之一联用）。退出码 1。');
     return 1;
   }
 
@@ -1660,11 +1675,16 @@ export async function main(options, deps_) {
   // ref 有值可取。version 保持当前值（bump 后于 wrapper commit 完成点更新）、
   // head 保持既有包装层基线（仅 wrapper commit 后更新——exit 2 无 wrapper commit
   // 不写，见自动路径）。
+  // --dry-run（Step F #10）：计划跑不落盘——无条件写会污染幂等比对基准
+  //（dry-run 后正式跑 sameRefSha 已被写成 true）。锚点语义不受影响：dry-run
+  // 不产生任何同步效果，previousSync 留待正式跑写入。
   const currentVersion = readPackageVersion(root) ?? previousSync?.version ?? '0.0.0';
-  writeLastSync(
-    { ref: normalizedRef, sha: refSha ?? '', version: currentVersion, head: previousSync?.head ?? undefined },
-    root,
-  );
+  if (opts.dryRun !== true) {
+    writeLastSync(
+      { ref: normalizedRef, sha: refSha ?? '', version: currentVersion, head: previousSync?.head ?? undefined },
+      root,
+    );
+  }
 
   // ── 步骤 3：staging + marketplace 一致性校验 ─────────────────────
   let stagedSkills;
@@ -1684,7 +1704,14 @@ export async function main(options, deps_) {
     marketplace.ok === true && !marketplace.note.includes('豁免') ? null : marketplace.note;
 
   // ── 步骤 5（数据预计算）：结构分类（幂等判定与结构检测共用同一份结果）──
-  const changes = classifyChanges(vendorSkillsRoot, stagingRoot, cacheDir);
+  // dryRun 透传（Step F #10）：aux 🟡 照常分类输出，但状态记录不落盘。
+  const changes = classifyChanges(
+    vendorSkillsRoot,
+    stagingRoot,
+    cacheDir,
+    undefined,
+    { dryRun: opts.dryRun === true },
+  );
 
   // ── 包装层待发布状态（幂等禁用两触发 + wrapperPending，探测一次共用）──
   // 禁用①：工作区相对 HEAD 的包装层 diff——含**未提交的新文件**（spec §4.1 步骤 8
@@ -1790,6 +1817,9 @@ export async function main(options, deps_) {
    * last-sync 版本对应 tag 存在（rev-parse -q --verify）且 origin ls-remote
    * 结果无该 tag → 补推；本地无 / 远端已有 / 预判或凭据不可用 → 照常短路
    * （补推不改变短路 exit 0——失败下次运行重试）。
+   * Step F 裁决扩展：补推 refspec 由 [tag] 扩为 [main, tag]（releasePushRefspecs
+   * 共用）——恢复完整发布语义，tag 不再指向未上 main 的 commit。main 已在远端
+   * 时该 refspec 推送为幂等 no-op（Everything up-to-date）。
    */
   const backPushMissingReleaseTag = async () => {
     const tagName = `v${currentVersion}`;
@@ -1807,16 +1837,18 @@ export async function main(options, deps_) {
       logInfo(`⚠ 发布 tag ${tagName} 本地已就绪且远端缺失，但推送凭据不可用——本次未补推（下次运行重试）。`);
       return;
     }
-    const pushTag = await git(['push', pushPlan.target, `refs/tags/${tagName}`]);
-    if (pushTag.code === 0) {
-      logInfo(`补推缺失的发布 tag: ${tagName}（上次推送部分失败的遗留）。`);
-      return;
+    for (const refspec of releasePushRefspecs(tagName)) {
+      const push = await git(['push', pushPlan.target, refspec]);
+      if (push.code !== 0) {
+        // 一次性 URL 可能回显于 git 输出——先行脱敏（PAT 绝不出现在日志）。
+        const sanitized = pushPlan.pat !== null
+          ? `${push.stdout}\n${push.stderr}`.split(pushPlan.pat).join('***')
+          : `${push.stdout}\n${push.stderr}`;
+        logInfo(`⚠ 补推 ${refspec} 失败（下次运行重试）:\n${sanitized.trim()}`);
+        return;
+      }
     }
-    // 一次性 URL 可能回显于 git 输出——先行脱敏（PAT 绝不出现在日志）。
-    const sanitized = pushPlan.pat !== null
-      ? `${pushTag.stdout}\n${pushTag.stderr}`.split(pushPlan.pat).join('***')
-      : `${pushTag.stdout}\n${pushTag.stderr}`;
-    logInfo(`⚠ 补推 ${tagName} 失败（下次运行重试）:\n${sanitized.trim()}`);
+    logInfo(`补推缺失的发布: main + ${tagName}（上次推送部分失败的遗留）。`);
   };
 
   const sameRefSha =
@@ -1848,6 +1880,8 @@ export async function main(options, deps_) {
         })();
 
   // ── --dry-run：完成幂等检查 + 结构检测后输出将发生的变化，无任何落盘动作 ──
+  // （状态写已在上游门控——fetch 时点 writeLastSync 与 classifyChanges 的 aux
+  // 记录均以 opts.dryRun 跳过；.upstream tarball 缓存不受影响。）
   if (opts.dryRun === true) {
     const plan = [
       '--dry-run：以下为将发生的变化（未执行替换/commit/tag/push）。',
@@ -2090,7 +2124,7 @@ export async function main(options, deps_) {
   }
 
   const pushTarget = pushMode === 'env' ? oneShotUrl : 'origin';
-  const pushRefspecs = ['main', `refs/tags/${tagName}`];
+  const pushRefspecs = releasePushRefspecs(tagName);
   for (const refspec of pushRefspecs) {
     const push = await git(['push', pushTarget, refspec]);
     if (push.code !== 0) {

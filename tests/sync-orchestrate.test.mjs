@@ -300,8 +300,13 @@ test('usage：--skip-guard 默认推送 → 退出码 1（Review Focus #5）', a
     const { deps, calls } = stubDeps({ tarballPath: 'unused' });
     const code = await main({ ...parseArgs(['--skip-guard']), root: tmpRoot }, deps);
     assert.equal(code, 1);
-    // UltraReview #26：USAGE_TEXT 的联用措辞为「须至少与…之一联用」。
+    // UltraReview #26：联用措辞为「须至少与…之一联用」——USAGE_TEXT 与动态
+    // usageError 消息两处一致（Step F 残余：动态消息同步对齐，避免两处措辞漂移）。
     assert.match(calls.output(), /须至少与 --no-push 或 --dry-run 之一联用/);
+    assert.match(
+      calls.output(),
+      /用法错误：参数组合非法（如 --skip-guard 须至少与 --no-push 或 --dry-run 之一联用）。退出码 1。/,
+    );
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -938,7 +943,9 @@ test('规则③保留语义（Fix #1）：--no-push 后开发者提交包装层�
 // push 两段（main + tag）中 main 成功、tag 被拒（exit 6）后重跑：sameRefSha +
 // vendorDiff=false + wrapperPending=false 全中 → 被幂等短路吞掉，本地已就绪的
 // tag 永不发布。修复：短路 return 前——本地 tag 存在且 origin ls-remote 无该
-// tag → 补推该 tag 后再短路；本地 tag 不存在 / 远端已有 → 照常短路。
+// tag → 补推 main + tag 后再短路；本地 tag 不存在 / 远端已有 → 照常短路。
+// Step F 裁决扩展：补推 refspec 由 [tag] 扩为 [main, tag]——只补推 tag 会让
+// 远端出现指向未上 main 的 commit 的 tag（Step 5 观察项④），恢复完整发布语义。
 
 /** Fix #2 场景的 runGit：origin 侧查询 canned、其余委托真实 git；push 记录并成功。 */
 function backPushRunGit(originUrl, pushes, originTagsStdout = '') {
@@ -957,7 +964,7 @@ function backPushRunGit(originUrl, pushes, originTagsStdout = '') {
   };
 }
 
-test('push 部分失败修复（Fix #2）：main 已推 tag 未推 → 重跑幂等短路前补推缺失 tag → exit 0', async () => {
+test('push 部分失败修复（Fix #2）：main 已推 tag 未推 → 重跑幂等短路前补推 main+tag → exit 0', async () => {
   const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.8.0', origin: false });
   try {
     // 现场：上次运行 main 已推、本地 tag 已建但 tag push 被拒（远端无该 tag）。
@@ -975,14 +982,12 @@ test('push 部分失败修复（Fix #2）：main 已推 tag 未推 → 重跑幂
       });
       const code = await main({ root: s.root, repo: s.repoUrl }, deps);
       assert.equal(code, 0, '补推成功后照常短路 exit 0');
-      assert.match(calls.output(), /补推缺失的发布 tag/);
-      assert.equal(pushes.length, 1, '只补推 tag（main 已推，不重复推）');
-      assert.equal(pushes[0][0], 'push');
-      assert.ok(
-        pushes[0].includes('refs/tags/v6.8.0'),
-        `stub push 应收到 tag refspec: ${JSON.stringify(pushes[0])}`,
-      );
-      assert.equal(pushes[0][1], `https://oauth2:glpat-backpush@gitlab.example.com/zyx/dsh-wrapper-test.git`);
+      assert.match(calls.output(), /补推缺失的发布/);
+      // 裁决扩展：补推一并推送 main + tag（tag 不得指向未上 main 的 commit）。
+      assert.equal(pushes.length, 2, '补推 main + tag 两个 refspec');
+      const oneShot = `https://oauth2:glpat-backpush@gitlab.example.com/zyx/dsh-wrapper-test.git`;
+      assert.deepEqual(pushes[0], ['push', oneShot, 'main'], '先推 main');
+      assert.deepEqual(pushes[1], ['push', oneShot, 'refs/tags/v6.8.0'], '再推 tag');
       assert.match(calls.output(), /already up to date/);
     });
   } finally {
@@ -1008,7 +1013,7 @@ test('push 部分失败修复（Fix #2）对照：本地 tag 不存在 / 远端�
       assert.equal(code, 0);
       assert.equal(pushes.length, 0, '本地 tag 不存在 → 不补推');
       assert.match(calls.output(), /already up to date/);
-      assert.doesNotMatch(calls.output(), /补推缺失的发布 tag/);
+      assert.doesNotMatch(calls.output(), /补推缺失的发布/);
 
       // ② 本地 tag 存在但远端已有该 tag → 已发布，无需补推。
       gitIn(s.root, ['tag', 'v6.8.0']);
@@ -1020,7 +1025,7 @@ test('push 部分失败修复（Fix #2）对照：本地 tag 不存在 / 远端�
       code = await main({ root: s.root, repo: s.repoUrl }, deps);
       assert.equal(code, 0);
       assert.equal(pushes.length, 0, '远端已有 tag → 不补推');
-      assert.doesNotMatch(calls.output(), /补推缺失的发布 tag/);
+      assert.doesNotMatch(calls.output(), /补推缺失的发布/);
     });
   } finally {
     s.cleanup();
@@ -1334,6 +1339,78 @@ test('--dry-run → 只报告将发生的变化，无替换/commit/tag/push', as
       assert.equal(commitCount(s.root), 1);
       assert.deepEqual(tagList(s.root), []);
       assert.equal(calls.verify.length, 0, 'dry-run 不进入自动路径（verify 不跑）');
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── --dry-run 状态写门控（UltraReview Step F #10，已批 P2）─────────
+//
+// 修复前：writeLastSync（fetch 时点）与 classifyChanges 内 writeAuxDirs 均在
+// dry-run 分支之前无条件执行——dry-run 污染幂等比对基准（dry-run 后正式跑
+// sameRefSha 已被写成 true）并消费 aux 🟡 一次性知悉信号。修复：dry-run 时
+// 两处状态写均不落盘（.upstream tarball 缓存不受影响）；非 dry-run 的 exit-2/
+// 幂等路径 aux 写盘保留（🟡 一次性知悉语义，已裁可接受残余）。
+
+test('--dry-run 状态写门控（#10）：last-sync.json 与 last-aux-dirs.json 内容不变', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    // 预置两份状态：旧 ref 记录（本次运行本会改写为 v6.8.0）+ 空 aux 清单
+    //（当前上游含 .claude-plugin → 分类本会写回并报 🟡）。
+    writeLastSync(
+      { ref: 'refs/tags/v6.7.0', sha: 'b'.repeat(40), version: '6.7.0', head: headSha(s.root) },
+      s.root,
+    );
+    const auxPath = join(s.root, '.upstream', 'last-aux-dirs.json');
+    writeFileSync(auxPath, `${JSON.stringify({ auxDirs: [] }, null, 2)}\n`);
+    const lastSyncBefore = readFileSync(join(s.root, '.upstream', 'last-sync.json'), 'utf8');
+    const auxBefore = readFileSync(auxPath, 'utf8');
+
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, dryRun: true }, deps);
+    assert.equal(code, 0);
+    // 分类仍完整执行：dry-run 计划可见 aux 🟡（计划不受门控影响）。
+    assert.match(calls.output(), /辅助目录新增: \.claude-plugin/, 'dry-run 计划含 aux 🟡');
+    // 两处状态写均未落盘——writeLastSync 会重写 at 时间戳，任何重写都被
+    // 逐字节内容比对捕获。
+    assert.equal(
+      readFileSync(join(s.root, '.upstream', 'last-sync.json'), 'utf8'),
+      lastSyncBefore,
+      'dry-run 不得写 last-sync.json（幂等比对基准不得被计划跑污染）',
+    );
+    assert.equal(
+      readFileSync(auxPath, 'utf8'),
+      auxBefore,
+      'dry-run 不得写 last-aux-dirs.json（aux 🟡 信号不得被消费）',
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('--dry-run 状态写门控（#10）：dry-run 后正式跑 aux 🟡 再次出现（信号未被消费）', async () => {
+  const s = makeScenario({ vendorFrom: VENDOR_SKILLS });
+  try {
+    // 空 aux 清单 → .claude-plugin 属待知悉信号。
+    mkdirSync(join(s.root, '.upstream'), { recursive: true });
+    writeFileSync(
+      join(s.root, '.upstream', 'last-aux-dirs.json'),
+      `${JSON.stringify({ auxDirs: [] }, null, 2)}\n`,
+    );
+    let { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    let code = await main({ root: s.root, repo: s.repoUrl, dryRun: true }, deps);
+    assert.equal(code, 0);
+    assert.match(calls.output(), /辅助目录新增: \.claude-plugin/, 'dry-run 计划含 aux 🟡');
+
+    // 正式跑（--confirm-structural 过结构门；--no-push 免推送依赖）。
+    ({ deps, calls } = stubDeps({ tarballPath: s.tarballPath }));
+    code = await main({ root: s.root, repo: s.repoUrl, confirmStructural: true, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.match(
+      calls.output(),
+      /辅助目录新增: \.claude-plugin/,
+      'dry-run 未消费信号——正式跑 aux 🟡 再次出现',
+    );
   } finally {
     s.cleanup();
   }
