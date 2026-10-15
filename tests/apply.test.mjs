@@ -197,8 +197,8 @@ test('apply: 省略 opts → 透传 undefined，由 provider 自取包内 skills
   const listed = await calls.providers[0]().list();
   assert.deepEqual(
     listed.map((candidate) => candidate.name),
-    ['ppt-master'],
-    '省略 opts 时扫描根确为包内 skills/（vendor 单 skill 面）',
+    ['ppt-master', 'ppt-master-env'],
+    '省略 opts 时扫描根确为包内 skills/（vendor 单 skill + 合成入口，字节序升序）',
   );
 });
 

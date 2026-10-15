@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -449,4 +449,218 @@ test('provider: list()/get() 尊重 options.signal.throwIfAborted', async () => 
   } finally {
     await cleanup();
   }
+});
+
+// ─── 合成入口 skill `ppt-master-env`（Task 6）──────────────────────
+//
+// 决策A（brief Produces）：入口技能**仅当 provider 以参数缺省创建**（生产包内根）时
+// 追加；任何**显式 roots**——包括等于包内 `skills/` 者——一律不追加。合成候选是**内存
+// 对象**：不带 `resourceBase`（宿主 `@deepseek-ai/dsh-skill` 对该字段条件透传、可选），
+// 不落盘、不进 verify-plugin 字节比对面。正文在**实例注册期**按 `opts.venv` 经
+// `effectiveInterpreter` 的判定渲染一次（四态；broken 是 `on-ready` 子态，落「开但
+// 未就绪」文案——不另立第五态）。
+//
+// 生产根断言以包内 `skills/ppt-master` 已首灌（T14）为前提。
+
+const packagedSkillsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
+const packagedSkillDir = join(packagedSkillsRoot, 'ppt-master');
+const ENTRY_SKILL_NAME = 'ppt-master-env';
+
+/** 生产根形态：参数缺省（无显式 roots）+ opts.venv——决策A 下唯一追加入口技能的形态。 */
+const productionProvider = (venv) => createSkillProvider(undefined, { venv });
+
+/** 去引用普通值形态的 venv 配置（与 Task 5 注入袋下传形态一致）。 */
+const venvConfig = (dir, enabled = true) => ({ enabled, path: dir, oldPathPolicy: 'keep' });
+
+/** 假 venv 目录：`pyvenv.cfg` 恒在，`bin/python3` 存在与否决定 on-ready / broken。 */
+async function makeFakeVenv({ interpreter = true } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'skill-provider-venv-'));
+  await writeFile(join(dir, 'pyvenv.cfg'), 'home = /usr\n');
+  if (interpreter) {
+    await mkdir(join(dir, 'bin'), { recursive: true });
+    await writeFile(join(dir, 'bin', 'python3'), '');
+  }
+  return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+/** 生产根形态读回入口技能定义（缺失时为 undefined）。 */
+const entryDefinition = (venv) => productionProvider(venv).get({ name: ENTRY_SKILL_NAME });
+
+/** 入口技能正文；未合成时为 `''`（便于逐字符串断言直接命中差异）。 */
+const entryContent = async (venv) => (await entryDefinition(venv))?.content ?? '';
+
+/** 包内 skills/ 全量相对路径快照：任何新增写入（含新目录）都会改变该列表。 */
+const treeListing = (root) => readdirSync(root, { recursive: true }).sort();
+
+test('入口 skill: 决策A——参数缺省（生产包内根）列表 = vendor N + 1，字节序升序', async () => {
+  assert.ok(existsSync(join(packagedSkillDir, 'SKILL.md')), '前置：包内 skills/ppt-master 已随首灌落地');
+  const vendorNames = (await createSkillProvider([packagedSkillsRoot]).list()).map((c) => c.name);
+  const listed = await productionProvider(venvConfig('~/.ppt-master/venv', false)).list();
+  const names = listed.map((candidate) => candidate.name);
+
+  assert.equal(names.length, vendorNames.length + 1, '生产根列表 = vendor N + 入口 1');
+  assert.deepEqual(names, [...vendorNames, ENTRY_SKILL_NAME].sort(), '入口候选按 name 字节序并入，无重复无遗漏');
+  assert.equal(names[0], 'ppt-master', "'ppt-master' 仍在首位（'ppt-master' < 'ppt-master-env'）");
+});
+
+test('入口 skill: 决策A 反向——注入 fixture 根 → 列表不含入口技能', async () => {
+  const { root, cleanup } = await makeRoot({ exclude: ['broken'] });
+  try {
+    // 生产根形态确有入口技能（对照面成立），本根不得有——零改动保护归因即此条。
+    const productionNames = (await productionProvider(venvConfig('~/.ppt-master/venv', false)).list()).map(
+      (candidate) => candidate.name,
+    );
+    assert.ok(productionNames.includes(ENTRY_SKILL_NAME), '前置对照：生产根形态确实追加');
+    const names = (await createSkillProvider([root]).list()).map((candidate) => candidate.name);
+    assert.deepEqual(names, ['alpha', 'hidden-skill']);
+    assert.ok(!names.includes(ENTRY_SKILL_NAME), 'fixture 根不得追加合成入口');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('入口 skill: 决策A 最强判别——显式 roots＝包内 skills/ → 同样不追加', async () => {
+  const names = (await createSkillProvider([packagedSkillsRoot]).list()).map((c) => c.name);
+  assert.ok(names.includes('ppt-master'), '前置：显式包内根确实扫到 vendor 技能');
+  assert.ok(!names.includes(ENTRY_SKILL_NAME), '显式 roots 一律不追加，即使等于包内 skills/');
+});
+
+test('入口 skill: 候选形态——不带 resourceBase/path/locator（无文件绑定字段）', async () => {
+  const candidate = (await productionProvider(venvConfig('~/.ppt-master/venv', false)).list()).find(
+    (entry) => entry.name === ENTRY_SKILL_NAME,
+  );
+  assert.ok(candidate, '生产根列表应含入口候选');
+
+  assert.ok(!('resourceBase' in candidate), '宿主对 resourceBase 条件透传、可选：合成候选钉死不携带');
+  assert.ok(!('path' in candidate), '磁盘上无该文件，path 不得伪造');
+  assert.ok(!('locator' in candidate), '磁盘上无该文件，locator 不得伪造');
+  assert.ok(!('content' in candidate), 'content 只在 get() 的定义面出现');
+
+  assert.deepEqual(Object.keys(candidate).sort(), [
+    'description',
+    'invocation',
+    'name',
+    'provider',
+    'rank',
+    'source',
+  ]);
+  assert.equal(candidate.provider, 'dsh-ppt-master-wrapper');
+  assert.equal(candidate.source, 'custom');
+  assert.equal(candidate.rank, SKILL_RANK);
+  assert.deepEqual(candidate.invocation, { modelInvocable: true, userInvocable: true });
+});
+
+test('入口 skill: description 中英双语，声明「任何 ppt-master 路由前必须先读本入口」', async () => {
+  const definition = await entryDefinition(venvConfig('~/.ppt-master/venv', false));
+  assert.ok(definition, '入口技能须可按名读回');
+  assert.match(definition.description, /任何 ppt-master 路由前必须先读本入口/);
+  assert.match(definition.description, /Read this entry before any ppt-master routing/);
+});
+
+test('入口 skill: 态1（venv 开+已建）——绝对解释器路径替换字面 python3（含 attribution_guard）', async () => {
+  const { dir, cleanup } = await makeFakeVenv();
+  try {
+    const content = await entryContent(venvConfig(dir));
+    assert.ok(
+      content.includes(`生效解释器：\`${join(dir, 'bin', 'python3')}\``),
+      `态1 须给出 <解析后绝对路径>/bin/python3，实际正文：${content}`,
+    );
+    assert.ok(content.includes('替换字面 `python3`'), '态1 须要求以该绝对路径替换字面 python3');
+    assert.ok(content.includes('attribution_guard'), '态1 须点名 SKILL.md 第 2 步 attribution_guard');
+    assert.ok(!content.includes('venv 未启用'));
+    assert.ok(!content.includes('配置无效'));
+    assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test('入口 skill: 态2（venv 开+未建）——先 setup_deps、之前不得跑系统 python3', async () => {
+  const missing = join(tmpdir(), 'skill-provider-venv-not-created');
+  assert.ok(!existsSync(missing), '前置：该 venv 路径确实不存在');
+  const content = await entryContent(venvConfig(missing));
+  assert.ok(content.includes('先调用 `ppt_master_setup_deps` 准备环境'), '态2 须前置路由到 setup_deps');
+  assert.ok(
+    content.includes('不要以系统 `python3` 运行任何上游业务脚本'),
+    '态2 须禁止在准备前以系统 python3 跑业务脚本',
+  );
+  assert.ok(!content.includes('替换字面 `python3`'), '态2 无可用解释器，不得给出态1 契约');
+  assert.ok(!content.includes('venv 未启用'));
+  assert.ok(!content.includes('配置无效'));
+});
+
+test('入口 skill: 态2 同文案承载 broken 子态——broken 与 on-missing 正文逐字节相同', async () => {
+  const { dir, cleanup } = await makeFakeVenv({ interpreter: false });
+  try {
+    const broken = await entryContent(venvConfig(dir)); // exists（pyvenv.cfg 在）但 bin/python3 缺失
+    await rm(join(dir, 'pyvenv.cfg'));
+    const missing = await entryContent(venvConfig(dir)); // 同一路径，venv 目录不存在 → on-missing
+
+    assert.ok(broken.includes('先调用 `ppt_master_setup_deps` 准备环境'), 'broken 落「开但未就绪」文案');
+    assert.ok(!broken.includes(`\`${join(dir, 'bin', 'python3')}\``), 'broken 无解析成功解释器，不得给路径');
+    assert.equal(broken, missing, 'broken 是 on-ready 子态，取四态文案之一，不另立第五态');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('入口 skill: 态3（venv 关）——系统 python3；disabled×invalid 同落此态', async () => {
+  const off = await entryContent(venvConfig('~/.ppt-master/venv', false));
+  assert.ok(off.includes('venv 未启用：使用系统 `python3`（现状系统模式）。'));
+  assert.ok(!off.includes('配置无效'), 'disabled 优先：路径合法与否都不落态4');
+  assert.ok(!off.includes('替换字面 `python3`'));
+  assert.ok(!off.includes('先调用 `ppt_master_setup_deps` 准备环境'));
+
+  // disabled×invalid（enabled:false + 相对路径）按 effectiveInterpreter 落 off → 逐字节同文案。
+  const disabledInvalid = await entryContent(venvConfig('relative/venv', false));
+  assert.equal(disabledInvalid, off);
+});
+
+test('入口 skill: 态4（配置无效）——修正指引 + 按系统模式继续', async () => {
+  const content = await entryContent(venvConfig('relative/venv'));
+  assert.ok(content.includes('配置无效'), '态4 须显式声明配置无效');
+  assert.ok(content.includes('绝对路径'), '态4 须给出修正方向（绝对路径 / ~/ 前缀）');
+  assert.ok(content.includes('按系统模式继续'), '态4 须按系统模式继续');
+  assert.ok(content.includes('系统 `python3`'));
+  assert.ok(!content.includes('venv 未启用'), 'invalid≠off：态4 与态3 文案必须可区分');
+  assert.ok(!content.includes('替换字面 `python3`'));
+  assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'));
+});
+
+test('入口 skill: 正文含 SKILL_DIR（provider 侧元数据锚定）、读毕路由与固定脚注', async () => {
+  const content = await entryContent(venvConfig('~/.ppt-master/venv', false));
+  assert.ok(
+    content.includes(`SKILL_DIR: ${packagedSkillDir}`),
+    `SKILL_DIR 须由 provider 自身已加载的元数据锚定（name==='ppt-master' 优先），实际正文：${content}`,
+  );
+  assert.ok(content.includes(`\`${packagedSkillDir}/SKILL.md\``), '须指明读哪个 SKILL.md');
+  assert.ok(content.includes('路由 `ppt-master`'), '读毕须路由到 ppt-master');
+  assert.ok(content.includes('ppt_master_info'));
+  assert.ok(content.includes('ppt_master_check_env'), '固定脚注须指向实时查询工具');
+  assert.ok(content.includes('快照'), '脚注须声明正文为实例注册期快照');
+});
+
+test('入口 skill: get() 按名读回，content 非空且为已渲染正文', async () => {
+  const definition = await entryDefinition(venvConfig('~/.ppt-master/venv', false));
+  assert.ok(definition, 'get() 须可按名读回入口候选');
+  assert.equal(definition.name, ENTRY_SKILL_NAME);
+  assert.equal(typeof definition.content, 'string');
+  assert.ok(definition.content.length > 200, '正文须为完整渲染体而非空串');
+  assert.ok(!('resourceBase' in definition), '定义面同样不携带 resourceBase');
+});
+
+test('入口 skill: 不落盘——创建/list/get 前后包内 skills/ 树逐项不变', async () => {
+  const before = treeListing(packagedSkillsRoot);
+  const { dir, cleanup } = await makeFakeVenv();
+  try {
+    const provider = productionProvider(venvConfig(dir));
+    const candidates = await provider.list();
+    const candidate = candidates.find((entry) => entry.name === ENTRY_SKILL_NAME);
+    const definition = await provider.get(candidate);
+    assert.ok(definition.content.includes(`\`${join(dir, 'bin', 'python3')}\``));
+  } finally {
+    await cleanup();
+  }
+  assert.deepEqual(treeListing(packagedSkillsRoot), before, '入口技能为内存合成，不得新增任何文件');
+  assert.ok(!existsSync(join(packagedSkillsRoot, ENTRY_SKILL_NAME)), '入口技能目录绝不出现在磁盘上');
 });
