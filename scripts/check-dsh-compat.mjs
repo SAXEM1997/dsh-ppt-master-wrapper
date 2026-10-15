@@ -27,7 +27,10 @@
  *  4. SkillRegistry 挂载：apply(ctx, { skillRoots }) 驱动**本插件根 index.js**
  *     （PLUGIN_ENTRY，显式断言非参考实现的 lib/index.js），经同一注入通道
  *     （T14 前包内 skills/ 不存在，须注入 fixture 正例子集）读回候选：
- *     ctx.skills.list() 非空 + 逐名 get() 读回 content/resourceBase。**入口装载形态**：
+ *     ctx.skills.list() 非空 + 逐名 get() 读回 content/resourceBase。**合成入口豁免**：
+ *     参数缺省（生产包内根）时 provider 追加内存合成的 `ppt-master-env`，它无文件、
+ *     按设计不带 `resourceBase`，故按**名字**豁免 directory 判定（Task 6）；其余候选
+ *     维持严格判定。**入口装载形态**：
  *     定位成功后动态 `import(PLUGIN_ENTRY)`（顶层静态 import 会让插件装载期的
  *     schemastery fail-loud 抢在 CLI 解析之前，见下方 import 区注释与 Task 5 报告）。
  *  5. rank 相对关系：SKILL_RANK（可注入期望值，缺省取 lib/skill-provider.js 真值）
@@ -75,6 +78,13 @@ export const PLUGIN_ENTRY = fileURLToPath(new URL('../index.js', import.meta.url
 
 /** CLI `--skill-roots` 缺省值：包内 skills/（T14 首灌前不存在，smoke 须注入）。 */
 const PACKAGED_SKILLS_ROOT = fileURLToPath(new URL('../skills/', import.meta.url));
+
+/**
+ * 合成入口技能名（Task 6，spec §5.2）：内存合成、不落盘，宿主对候选的
+ * `resourceBase` 条件透传而 provider 不捏造该字段，故第 4 步的 directory 判定按
+ * **此名**豁免；其余候选（vendor）一律维持严格判定。
+ */
+const ENTRY_SKILL_NAME = 'ppt-master-env';
 
 /** 动态导入的 SDK 包（顺序即挂载顺序：systemPrompt 是 ToolRuntime 的构造依赖）。 */
 const SDK_PACKAGES = [
@@ -405,7 +415,9 @@ export async function runCompatCheck(options = {}) {
             || typeof loaded.content !== 'string' || loaded.content.trim() === ''
           ) {
             broken.push(summary.name);
-          } else if (loaded.resourceBase?.kind !== 'directory') {
+          } else if (summary.name !== ENTRY_SKILL_NAME && loaded.resourceBase?.kind !== 'directory') {
+            // 判据钉死为**名字**：只有内存合成的入口技能（无文件、无 resourceBase）豁免；
+            // 任何其他候选缺 directory resourceBase 仍是 problem（判定不弱化）。
             broken.push(`${summary.name}（resourceBase.kind 非 directory）`);
           }
         }
