@@ -490,6 +490,38 @@ test('check_env: 缺 requirementsPath → 回落 SKILL_DIR/requirements.txt（<3
   }
 });
 
+test('check_env: python --version stdout 为空串 → 回退解析 stderr（version/found 不丢）', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        {
+          skillRoots: [root],
+          run: async (command, args) => {
+            if (command !== 'python3') throw enoentError(command);
+            // stdout 为**空串**（非 undefined）：?? 不会回退到 stderr，版本信息
+            // 只出现在 stderr（如某些构建/管道场景下的真实 spawn 形态）。
+            if (args.includes('--version')) return { stdout: '', stderr: 'Python 3.11.2\n', exitCode: 0 };
+            if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
+            return { stdout: '1.0.0\n', stderr: '', exitCode: 0 };
+          },
+        },
+      );
+      assert.deepEqual(payload.python, {
+        found: true,
+        version: '3.11.2',
+        meetsSkillRequirement: true,
+      }, '空串 stdout 必须回退 stderr 解析版本');
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
 // ─── 诊断对象：三类退出码边界（stub exec） ───────────────────────
 
 test('check_env: python 退出码 1 + stderr PackageNotFoundError → installed:false、source:metadata', async () => {
@@ -577,6 +609,226 @@ test('check_env: python 退出码 0 但 stdout 为空 → UNKNOWN、source:unkno
         importName: 'yaml',
         installed: 'UNKNOWN',
         source: 'unknown',
+      });
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
+// ─── import 辅助探测（元数据 UNKNOWN 时的第二意见，spec §3.5） ────
+//
+// spec §3.5：import 探测仅作**辅助**，且必须经 dist→import 映射表转换后执行；
+// 映射缺失时该项标记 UNKNOWN（非 FAIL）。触发时机=元数据查询 python 级失败
+// （非 PNFE 非零退出）且 python.found 且映射存在；退出码语义与元数据通道对齐：
+// 0 → true；1+ModuleNotFoundError → false；其他 → 维持 UNKNOWN。
+
+/**
+ * 「元数据 python 级失败」的 exec stub：`--version` 成功（python.found=true）、
+ * guard 正常退出、元数据查询一律 ImportError 形态的非零退出（exit 2）。
+ *
+ * 辅助探测（`python3 -c "import <mod>"`）的返回由 `importAnswer()` 决定；
+ * 每次调用按序记入 `calls`（`metadata:<dist>` / `import:<script>`），供调用序断言。
+ */
+function metadataBrokenExec({ importAnswer, calls } = {}) {
+  return stubExec(async (command, args) => {
+    if (command !== 'python3') throw enoentError(command);
+    if (args.includes('--version')) return { stdout: 'Python 3.11.2\n', stderr: '', exitCode: 0 };
+    if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
+    const script = String(args[1] ?? '');
+    if (script.includes('importlib.metadata')) {
+      calls?.push(`metadata:${args.at(-1)}`);
+      return { stdout: '', stderr: 'ImportError: cannot import name importlib\n', exitCode: 2 };
+    }
+    calls?.push(`import:${script}`);
+    return importAnswer?.() ?? { stdout: '', stderr: '', exitCode: 0 };
+  });
+}
+
+test('check_env: 元数据 python 级失败 + 映射存在 + import 成功 → installed:true、source:import（调用序 metadata→import）', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const calls = [];
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        {
+          skillRoots: [root],
+          ...metadataBrokenExec({
+            importAnswer: () => ({ stdout: '', stderr: '', exitCode: 0 }),
+            calls,
+          }),
+        },
+      );
+      assert.deepEqual(
+        calls,
+        ['metadata:pyyaml', 'import:import yaml'],
+        '先元数据查询、UNKNOWN 后追加 import 辅助探测（经映射表转换，非 dist 名）',
+      );
+      assert.deepEqual(payload.deps[0], {
+        dist: 'pyyaml',
+        importName: 'yaml',
+        installed: true,
+        source: 'import',
+      });
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
+test('check_env: import 辅助探测退出码 1 + stderr ModuleNotFoundError → installed:false、source:import', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        {
+          skillRoots: [root],
+          ...metadataBrokenExec({
+            importAnswer: () => ({
+              stdout: '',
+              stderr: "Traceback (most recent call last):\nModuleNotFoundError: No module named 'yaml'\n",
+              exitCode: 1,
+            }),
+          }),
+        },
+      );
+      assert.deepEqual(payload.deps[0], {
+        dist: 'pyyaml',
+        importName: 'yaml',
+        installed: false,
+        source: 'import',
+      });
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
+test('check_env: import 辅助探测其他结局（exit 2 / exit 1 无 MNFE）→ 维持 UNKNOWN、source:unknown', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    for (const answer of [
+      { stdout: '', stderr: 'SyntaxError: invalid syntax\n', exitCode: 2 },
+      { stdout: '', stderr: 'Traceback (most recent call last):\nRuntimeError\n', exitCode: 1 },
+    ]) {
+      const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+      try {
+        const calls = [];
+        const payload = await toolNamed('ppt_master_check_env').execute(
+          { requirementsPath: file },
+          {
+            skillRoots: [root],
+            ...metadataBrokenExec({ importAnswer: () => answer, calls }),
+          },
+        );
+        assert.equal(calls.length, 2, 'import 探测确实发生（探测失败≠未探测）');
+        assert.deepEqual(
+          payload.deps[0],
+          { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+          `import 侧无定论 → UNKNOWN：stderr=${answer.stderr.split('\n')[0]}`,
+        );
+      } finally {
+        removeReq();
+      }
+    }
+  } finally {
+    remove();
+  }
+});
+
+test('check_env: 元数据失败但映射缺失（flask）→ UNKNOWN 且不追加 import 探测（仅一次调用）', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['flask']);
+    try {
+      const calls = [];
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        { skillRoots: [root], ...metadataBrokenExec({ calls }) },
+      );
+      assert.deepEqual(calls, ['metadata:flask'], '映射缺失绝不猜测 import 名（spec §3.5）');
+      assert.deepEqual(payload.deps[0], {
+        dist: 'flask',
+        importName: 'UNKNOWN',
+        installed: 'UNKNOWN',
+        source: 'unknown',
+      });
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
+test('check_env: python.found=false → deps 全 UNKNOWN，绝不发起任何 import 探测', async () => {
+  const { root, remove } = makeSkillRoot({ withGuard: true });
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'python-pptx']);
+    try {
+      const probedScripts = [];
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        {
+          skillRoots: [root],
+          run: async (command, args) => {
+            if (args?.[0] === '-c') probedScripts.push(String(args[1]));
+            throw enoentError(command);
+          },
+        },
+      );
+      assert.equal(payload.python.found, false);
+      assert.deepEqual(
+        payload.deps,
+        [
+          { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+          { dist: 'python-pptx', importName: 'pptx', installed: 'UNKNOWN', source: 'unknown' },
+        ],
+      );
+      assert.deepEqual(probedScripts, [], '无 python3 时不发起任何 -c 查询（含 import 辅助探测）');
+    } finally {
+      removeReq();
+    }
+  } finally {
+    remove();
+  }
+});
+
+test('check_env: PNFE（元数据已定论）→ installed:false、source:metadata，不追加 import 探测', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+    try {
+      const probedScripts = [];
+      const payload = await toolNamed('ppt_master_check_env').execute(
+        { requirementsPath: file },
+        {
+          skillRoots: [root],
+          ...healthyExec({
+            metadataAnswer: (dist) => (dist === 'pyyaml' ? { found: false } : { found: true }),
+            onCall: (command, args) => {
+              if (command === 'python3' && args[0] === '-c') probedScripts.push(String(args[1]));
+            },
+          }),
+        },
+      );
+      assert.equal(probedScripts.length, 1, 'PNFE 后不再追加 import 辅助探测');
+      assert.match(probedScripts[0], /importlib\.metadata/);
+      assert.deepEqual(payload.deps[0], {
+        dist: 'pyyaml',
+        importName: 'yaml',
+        installed: false,
+        source: 'metadata',
       });
     } finally {
       removeReq();

@@ -15,6 +15,9 @@ test('package.json: 身份与入口字段', () => {
   // T14 首灌定版后 version 镜像上游（vendor SKILL.md metadata.version），不再占位。
   const skillMd = read('skills/ppt-master/SKILL.md');
   const upstreamVersion = skillMd.match(/^\s+version:\s*"?([^"\s]+)"?\s*$/m)?.[1];
+  // 前置防御：版本行缺失/变形时 upstreamVersion 为 undefined，下方 slice 会先抛
+  // TypeError 而非给出可读断言——先锁「可解析为字符串」。
+  assert.equal(typeof upstreamVersion, 'string', 'vendor SKILL.md metadata.version 应可解析');
   assert.ok(
     pkg.version === upstreamVersion || /^-r\d+$/.test(pkg.version.slice(upstreamVersion.length)),
     `version 镜像上游版本（可带 -rN 后缀）：pkg=${pkg.version} upstream=${upstreamVersion}`
