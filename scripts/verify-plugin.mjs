@@ -13,7 +13,7 @@
  *     存在性（恰一次）。
  *  ③ 归属文件存在（LICENSE/SPONSORS.md/SPONSORS_CN.md，清单解析自 guard）。
  *  ④ 9 个门文件存在（清单解析自 guard `_REQUIRED_GATE_FILES`）。
- *  ⑤ SKILL.md 门标记计数==1（标记解析自 guard `_SKILL_GATE_MARKER`；蕴含⑧存在性）。
+ *  ⑤ SKILL.md 门标记计数==1（标记解析自 guard `_SKILL_GATE_MARKER`）。
  *  ⑥ 全量逐字节比对——**方向性 skill 面比对**：以被验树（vendor 或 staging）的
  *     每个 skill 目录为基准，与 upstream 解压树中对应同名 skill 目录
  *     （`<upstream>/skills/<同名>`）逐文件比对；upstream 根文件与 `skills/` 一级
@@ -21,7 +21,8 @@
  *     提示「需提供 --upstream 比对树」，不静默跳过。
  *  ⑦ SKILL.md 相对链接：子树内死链 → problems；越出被验 skill 子树 → warnings
  *     （上游结构使然，豁免语义）。
- *  ⑧ 门标记存在（由⑤计数==1 蕴含）。
+ *  ⑧ 门标记存在：SKILL.md 全文含 `${SKILL_DIR}`（硬编码独立判据；**不**由⑤计数传递
+ *     蕴含——上游 `_SKILL_GATE_MARKER` 改形态后该保护须仍在）。
  *  ⑨ mock ctx 驱动真实 index.js（`apply(ctx, {skillRoots:[root]})` 同一注入通道）：
  *     provider list/get 往返一致 + 3 工具注册且各 output.schema 为 object-rooted
  *     JSON Schema（显式字段 + additionalProperties:false，禁 type:'json'）。
@@ -59,6 +60,15 @@ const KEBAB_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** ⑨ 期望注册的三个生命周期工具（本插件自身契约，非上游值）。 */
 const EXPECTED_TOOLS = ['ppt_master_info', 'ppt_master_check_env', 'ppt_master_setup_deps'];
+
+/**
+ * ⑧ 门标记的独立存在性判据：SKILL.md 全文须含 `${SKILL_DIR}` 展开位。
+ *
+ * 硬编码而非从 guard `_SKILL_GATE_MARKER` 解析——`${SKILL_DIR}` 是 spec §6 的
+ * 独立检查项；若期望值也从 guard 解析，上游把常量改成不含 `${SKILL_DIR}` 的形态时
+ * 判据会随之漂移并静默消失（该缺陷即由⑤计数传递蕴含所致，不可重蹈）。
+ */
+const SKILL_DIR_TEMPLATE = '${SKILL_DIR}';
 
 /** 插件自身的 skills 根（CLI `--root` 缺省值；T14 首灌后存在）。 */
 const PACKAGED_SKILLS_ROOT = fileURLToPath(new URL('../skills/', import.meta.url));
@@ -522,6 +532,15 @@ function checkSkillDirectory(skillDir, problems, warnings) {
     if (count !== 1) {
       problems.push(`[${skillName}] SKILL.md 门标记计数 ${count} ≠ 1（标记: ${marker}）`);
     }
+  }
+
+  // ⑧ 门标记存在：SKILL.md 全文须含 `${SKILL_DIR}` 展开位（独立判据，不依赖⑤计数）
+  if (skillText === null) {
+    problems.push(`[${skillName}] SKILL.md 不可读/非法 UTF-8/BOM，门标记存在性无法执行`);
+  } else if (!skillText.includes(SKILL_DIR_TEMPLATE)) {
+    problems.push(
+      `[${skillName}] SKILL.md 全文缺失 \${SKILL_DIR} 门标记（独立存在性判据；⑤计数判据不代替——上游 _SKILL_GATE_MARKER 改形态后此处须自证）`,
+    );
   }
 
   // ⑦ 相对链接：子树内死链→problems；越界→warnings

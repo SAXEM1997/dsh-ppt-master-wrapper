@@ -17,9 +17,10 @@ import { apply } from '../index.js';
  * 检查清单①-⑨逐项对应——
  * ① LICENSE 归一化摘要（期望值解析自被验树 guard）② frontmatter 三键逐字精确值
  * （SKILL.md 当前值与 guard `_EXACT_METADATA_VALUES` 互证）③ 归属文件存在
- * ④ 9 门文件存在 ⑤ 门标记计数==1（蕴含⑧存在性）⑥ 方向性 skill 面全量逐字节比对
+ * ④ 9 门文件存在 ⑤ 门标记计数==1 ⑥ 方向性 skill 面全量逐字节比对
  * （upstream 多余内容豁免；缺省 upstream fail-loud）⑦ SKILL.md 相对链接
- * （子树内死链→problems；越界→warnings）⑨ mock ctx 驱动真实 index.js：3 工具注册
+ * （子树内死链→problems；越界→warnings）⑧ 门标记存在（`${SKILL_DIR}` 独立判据，
+ * 不依赖⑤计数）⑨ mock ctx 驱动真实 index.js：3 工具注册
  * 且各 output.schema 为 object-rooted + additionalProperties:false。
  *
  * 另：frontmatter 两级判据（name≠目录名→warnings；name 缺失/非 kebab、
@@ -430,6 +431,25 @@ test('runVerify: SKILL.md 门标记被移除 → problems 含计数项（⑤计�
     await pair.mirror('SKILL.md', (text) => text.split(GATE_MARKER).join('python3 "attribution_guard.py"'));
     const result = await runVerify(pair.root, { upstream: pair.upstream });
     assert.equal(someProblem(result, /门标记计数 0/), true);
+  } finally {
+    await pair.cleanup();
+  }
+});
+
+test('runVerify: SKILL.md 全文无 ${SKILL_DIR} → problems 含独立存在性项（⑧不依赖⑤计数）', async () => {
+  const pair = await makePair();
+  try {
+    // 计数标记常量仍可被 guard 正则解析，且⑤计数仍==1（仅字面量换成不含 ${SKILL_DIR} 的
+    // 等长语义替代）——独立判据必须自行发现存在性缺失，不得由⑤传递蕴含。
+    await pair.mirror('scripts/attribution_guard.py', (text) =>
+      text.replace(/_SKILL_GATE_MARKER\s*=\s*'[^']*'/, "_SKILL_GATE_MARKER = 'python3 \\\"attribution_guard.py\\\"'"),
+    );
+    await pair.mirror('SKILL.md', (text) =>
+      text.split(GATE_MARKER).join('python3 "attribution_guard.py"'),
+    );
+    const result = await runVerify(pair.root, { upstream: pair.upstream });
+    assert.equal(someProblem(result, /门标记计数 1/), false, '⑤计数仍为 1，不得记计数项');
+    assert.equal(someProblem(result, /\$\{SKILL_DIR\}.*缺失|缺失.*\$\{SKILL_DIR\}/), true);
   } finally {
     await pair.cleanup();
   }
