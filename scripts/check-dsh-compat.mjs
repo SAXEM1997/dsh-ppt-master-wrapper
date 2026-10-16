@@ -528,8 +528,26 @@ export function checkClientHalf({ clientEntry = PLUGIN_CLIENT_ENTRY } = {}) {
   }
 
   // ── 驱动 apply：假 ctx 记录四个注册面（inject/effect/locale.register/slots.*）──
-  const calls = { injects: [], localeRegisters: [], slotInjects: [], slotRegisters: [] };
+  const calls = { injects: [], localeRegisters: [], slotInjects: [], slotRegisters: [], formsGet: [] };
+  // 最小 form：只满足 `readSnapshot` 的形状要求（`getSnapshot` 取到 loading、`subscribe` 可退订）。
+  // `mutate` 在场使"写路由存在"可被后续判据消费；本检查不驱动写。
+  const stubForm = {
+    getSnapshot: () => ({ status: 'loading' }),
+    subscribe: () => () => {},
+    mutate: () => Promise.resolve(true),
+  };
+  const stubConfigForms = {
+    get: (ns) => {
+      calls.formsGet.push(ns);
+      return stubForm;
+    },
+    describe: () => ({ getSnapshot: () => ({ status: 'ready', view: { namespaces: [] } }) }),
+  };
   const ctx = {
+    // `configForms` 与 `slots`/`locale` 一样是 **ctx 上的服务**（可选能力，见插件面 inject 判据）：
+    // 在场才能驱动 `ctx.inject(['configForms'], cb)` 的**回调体**——否则该接入体是死代码，
+    // 其内部异常（standalone S4 指出的"接入体 throw 仍 exit 0"）无从暴露。
+    configForms: stubConfigForms,
     inject: (deps, cb) => {
       calls.injects.push(deps);
       cb?.(ctx);
@@ -595,13 +613,24 @@ export function checkClientHalf({ clientEntry = PLUGIN_CLIENT_ENTRY } = {}) {
     return fail(`槽位 options.locale 非 ${CLIENT_LOCALE_NS}（实读 ${String(options.locale)}）`);
   }
 
-  // 全通过：note 逐字四个证据串（供用例 1 的三标记断言证明非空跑）。
+  // ── ⑤ 接入体**被真实驱动**：`configForms.get(ns)` 实际被调用 ──
+  // 仅"看到 ctx.inject(['configForms'], cb)"不足以证明接入体可跑（S4）：接入体内部若抛错，
+  // 或缺 `forms.get` 守卫，注册面照旧成立而该路径是死代码。故要求 `get` 被调用**恰一次**。
+  if (calls.formsGet.length !== 1) {
+    return fail(
+      `configForms.get 应恰调用一次（实际 ${calls.formsGet.length}）`
+        + '——接入体未被驱动时其内部异常与守卫均无从暴露（死代码）',
+    );
+  }
+
+  // 全通过：note 逐字五个证据串（供用例 1 的三标记断言证明非空跑）。
   return {
     problems,
     note:
       `§7.7⑥ 客户端半边: stub window 装载 ${clientEntry} 成功；loader id=${payload.id}、`
       + `槽位 ${options.name}（key=${options.key}）、locale ns=${options.locale}、`
-      + `可选能力 configForms 经 ctx.inject 回调式接入（未入硬 inject）`,
+      + `可选能力 configForms 经 ctx.inject 回调式接入（未入硬 inject）、`
+      + `接入体已驱动（configForms.get(${calls.formsGet[0]}) 恰一次）`,
   };
 }
 
