@@ -218,7 +218,7 @@ A **structural change 🔴** (skill directory added/removed, skill renamed, miss
 
 **Push credentials**: set the `DSH_PPT_GITLAB_PAT` environment variable (self-hosted GitLab mirror) or use a `git` credential helper; when absent, the push step fails with exit code `6` and prints configuration guidance in the report.
 
-**Version policy**: the `package.json` version mirrors the upstream version (e.g. `6.7.0`); wrapper-only changes or re-syncing the same version append an `-rN` suffix.
+**Version policy**: the `package.json` version mirrors the upstream version (e.g. `6.7.1`); wrapper-only changes or re-syncing the same version append an `-rN` suffix.
 
 Exit codes: `0` success / already up to date; `1` usage error; `2` structural change awaiting a human; `3` integrity gate failed; `4` verify-plugin failed (the vendored tree was not touched); `5` network/source failure; `6` push failure / tag conflict; `7` missing toolchain (python3/git/tar unavailable, or the guard script cannot run).
 
@@ -252,7 +252,7 @@ dsh-ppt-master-wrapper/
 ```bash
 # Integrity + provider/tool-surface checks (--root defaults to the packaged skills/;
 # --upstream is required and takes the .upstream/ cache directory name <ref>@<sha>)
-node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@<sha>
+node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.1@aabf2a0541d9d3b0bdb9e8564a0217f0eaff7815
 
 # Contract checks against the installed DSH SDK (real SkillRegistry mount + tools.register
 # + rank + the §7.7 six-item design-feasibility pre-checks: Config volatile / apply second
@@ -289,6 +289,7 @@ node --test tests/*.test.mjs
 | `v6.7.0-r1` | Wrapper revision (the first automatic rule-③ bump): Gate 3 review fixes — `mapDistToImport` prototype-key hardening, branch-ref last-sync readability, three `envFileExists` probes, spec §4.3 rule-③ actor revision (automatic semantics) |
 | `v6.7.0-r2` | Wrapper revision (rule ③): two rounds of independent UltraReview fixes — rule-③ self-trigger anchoring exclusion, tag re-push after partial push failure (auth pre-check), branch sha caching, git/tar toolchain absence mapped to exit 7, marketplace version-check layer correction, the 4th `env` probe location (`~/.ppt-master/.env`), dependency mapping 19/19, an independent `${SKILL_DIR}` criterion, `.gitignore` hygiene entries, dry-run state-write gating, four documentation corrections |
 | `v6.7.0-r3` | Wrapper revision: **venv interpreter isolation** (`venv.enabled` / `venv.path` / `venv.oldPathPolicy` + the `ppt-master-env` entry skill + four-condition safe deletion) and the **Plugins-page configuration card** (client half: bilingual, version block, volatile fast-path saves without restart), plus the card's visual alignment with the host design vocabulary; this release also completes the GitHub publishing surface (bilingual README / NOTICE / logo / package metadata) |
+| `v6.7.1` | Upstream sync (rule ①: the upstream version changed ⇒ base 6.7.1, the `-r` suffix resets to zero): vendored upstream v6.7.1 byte-for-byte, integrity gate passed; the previous three wrapper revisions (r1–r3) applied to the 6.7.0 base |
 
 > Version rule: the `base` mirrors the upstream release; wrapper revisions append `-rN` (no suffix means r0).
 

@@ -222,7 +222,7 @@ node scripts/sync-upstream.mjs [选项]
 
 **推送凭据**：设置环境变量 `DSH_PPT_GITLAB_PAT`（自建 GitLab 镜像）或改用 `git` credential helper；缺失时推送环节以退出码 `6` 失败并在报告中输出配置指引。
 
-**版本策略**：`package.json` version 镜像上游版本（如 `6.7.0`）；仅包装层自身变更或同版本重同步时追加 `-rN` 后缀。
+**版本策略**：`package.json` version 镜像上游版本（如 `6.7.1`）；仅包装层自身变更或同版本重同步时追加 `-rN` 后缀。
 
 退出码速查：`0` 成功/已是最新；`1` 用法错误；`2` 结构变化待人工；`3` 完整性门失败；`4` verify-plugin 校验失败（vendor 树未触碰）；`5` 网络/来源失败；`6` 推送失败/tag 冲突；`7` 工具链缺失（python3/git/tar 不可用，或无法运行 guard 脚本）。
 
@@ -256,7 +256,7 @@ dsh-ppt-master-wrapper/
 ```bash
 # 完整性+provider/工具面校验（--root 缺省即包内 skills/；--upstream 必须显式传，
 # 取 .upstream/ 缓存目录名 <ref>@<sha>）
-node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@<sha>
+node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.1@aabf2a0541d9d3b0bdb9e8564a0217f0eaff7815
 
 # 对照已安装 DSH SDK 的契约检查（真实 SkillRegistry 挂载 + tools.register + rank
 # + spec §7.7 六项设计成立性前置检查：Config volatile / apply 第二参 / bundle insert
@@ -291,6 +291,7 @@ node --test tests/*.test.mjs
 | `v6.7.0-r1` | 包装层修订（规则③自动 bump 首跑）：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、spec §4.3 规则③执行主体修订（自动语义） |
 | `v6.7.0-r2` | 包装层修订（规则③）：UltraReview 独立复审两轮修复——规则③自触发锚定排除、push 部分失败 tag 补推（鉴权预判）、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置（`~/.ppt-master/.env`）、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生条目、dry-run 状态写门控、文档四处机制补记 |
 | `v6.7.0-r3` | 包装层修订：**venv 解释器隔离**（`venv.enabled` / `venv.path` / `venv.oldPathPolicy` + 入口技能 `ppt-master-env` + 安全删除四条件）+ **插件页配置卡片**（客户端半边，中英双语、版本信息块、volatile 快路径免重启保存）+ 配置卡片外观对齐宿主设计语汇；本次同时补齐 GitHub 发布面（双语 README / NOTICE / logo / 包元数据） |
+| `v6.7.1` | 上游同步（规则①：上游版本变化 ⇒ base 6.7.1、`-r` 归零）：vendor 上游 v6.7.1（逐字节，完整性门通过）；包装层此前 3 次修订（r1–r3）针对的是 6.7.0 base |
 
 > 版本规则：`base` 镜像上游 release；包装层修订追加 `-rN`（无后缀视为 r0）。
 
