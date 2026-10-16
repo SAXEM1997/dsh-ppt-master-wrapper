@@ -66,7 +66,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 - **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。**落点具名**（`lib/venv.js`）：`snapshotVenvConfig(raw) → { enabled, path, oldPathPolicy }`（逐叶去引用快照）＋组合纯函数 `assembleInjectionBag(raw) → { skillRoots, venv }`（`skillRoots` 原样透传、`venv` 经前者快照，**缺省补默认在此完成**——三默认值 `enabled:false` / `path:'~/.ppt-master/venv'` / `oldPathPolicy:'keep'`）；`apply` 只调该组合函数后下传。
 - **引入通道**：Config schema 依赖的 schemastery 经"宿主 node_modules 定位 + 受控解析（createRequire 等价通道）"获取，禁 ESM 裸导入（符号链接插件路径下必然 ERR_MODULE_NOT_FOUND）；插件零 npm 依赖声明保持（解析失败的 fail-loud 语义见 §6.1⓪）。
 - **`~` 展开基准**：按 DSH 宿主进程 HOME 展开（Node `os.homedir()` 实测语义：**HOME 为空串时返回空串、不回退**——该输入下 `~` 展开判无效走 §6 配置无效降级；仅 HOME **未设置**才回退 passwd 目录/getpwuid）；"与上游 config.py 的 `Path.home()/.ppt-master` 同一基准"仅 HOME 非空时成立（空串边界 Node/Python 行为分叉：Python `Path.home()`→`'/'`）；降级分支在解析结果非法（空/相对/空串 HOME）时触发（走 §6 配置无效降级）；本机容器 HOME=/root → 默认路径解析为 `/root/.ppt-master/venv`。
-- **默认路径理由**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6 exists-but-broken 行）。
+- **默认路径理由**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6「venv 存在但体检不通过」行）。
 - **发现通道**：不调用 `ctx.settings.configure()`，沿用宿主 auto 出页默认策略——被发现的配置项按默认策略处置。
 - **编辑期校验闭环**：路径形状约束（绝对或 `~` 前缀）不在 schema 层声明（schemastery 无法表达路径谓词），接受"可保存非法值"；可见反馈通道=入口 skill"配置无效"态 + check_env 的 `venv.path=null` 提示（不依赖宿主控制台 warn），warn 仅作日志补充。
 
@@ -76,11 +76,11 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 - name：`ppt-master-env`；description：中英双语，声明"任何 ppt-master 路由前必须先读本入口：它给出当前生效解释器与准备状态"。
 - body 四态（实例注册期按 config + 文件系统快照渲染。新鲜度定案：provider 工厂仅在注册期调用一次、技能数组注册期冻结——源码事实；故正文=插件实例生命周期的实例注册期快照，配置变更经热重载重建实例→正文随之换代；文件系统变化（如 venv 被外部删除）后正文可能陈旧→正文固定脚注指向 `ppt_master_info`/`ppt_master_check_env` 实时查询，`setup_deps` 执行后以工具输出为准）：
-   1. venv 开+已建**且解释器可用**（`<解析后绝对路径>/bin/python3` 存在）：解释器 = 该绝对路径，一切上游脚本调用一律以它替换字面 `python3`；给出 SKILL_DIR；读毕即路由 `ppt-master`。
+   1. venv 开+已建**且就绪**（就绪＝解释器 `<path>/bin/python3` 与安装路径 `<path>/bin/pip3` **两者都可用**，与 §5.4 收编体检同一两问判据；`<path>`＝解析后绝对路径）：解释器 = 该绝对路径，一切上游脚本调用一律以它替换字面 `python3`；给出 SKILL_DIR；读毕即路由 `ppt-master`。
    2. venv 开+未建：先调用 `ppt_master_setup_deps` 准备环境；在此之前不以系统 python3 跑业务脚本。
    3. venv 关：系统 `python3`（现状）。
    4. 配置无效（相对路径）：指明修正方式，按系统模式继续。
-- 四态说明：第四态（配置无效）为 §6 无效配置降级在入口 skill 面的对应文案——超出澄清时的三态，但同源于已确认的错误处理决策；invalid×disabled 组合落态 3（disabled 优先，见 §5.3 组合细则）。**破损子态归属（`on-ready` + `broken`，即目录在而解释器不可用）**：本四态未单列该子态，正文按**态 2** 渲染（无可用解释器路径可替换，故不适用态 1 的替换契约；`ppt_master_setup_deps` 会以"手动删除该目录后重跑"的恢复指引 fail-loud，§6 exists-but-broken 行）。
+- 四态说明：第四态（配置无效）为 §6 无效配置降级在入口 skill 面的对应文案——超出澄清时的三态，但同源于已确认的错误处理决策；invalid×disabled 组合落态 3（disabled 优先，见 §5.3 组合细则）。**破损子态归属（`on-ready` + `broken`，即目录在而就绪判据不成立——解释器不可用，或为有 `bin/python3` 而缺 `bin/pip3` 的半成品，同一两问判据见 §5.3）**：本四态未单列该子态，正文按**态 2** 渲染（无可用解释器路径可替换，故不适用态 1 的替换契约；`ppt_master_setup_deps` 会以"手动删除该目录后重跑"的恢复指引 fail-loud，§6「venv 存在但体检不通过」行）。
 - 注册形态：provider 技能列表 = vendor N + 入口 1；入口不落盘，不进 verify-plugin 字节比对面。**前提（决策A 收窄）**：入口**仅当 provider 以参数缺省创建**（无显式 scanRoots）时追加；任何**显式 roots**（含等于包内 `skills/` 者）一律不追加——零改动保护面（fixture 根不追加）据此成立。生产调用点经 `createSkillProvider(roots?, opts?)` 的**第二参** `opts = { venv }`（方案甲：roots 保持首参数组）传入已去引用的 venv 普通值。
 
 ### 5.3 工具 payload 增量（全部 additive；现有字段与系统模式语义不动）

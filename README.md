@@ -66,7 +66,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 - **禁用后手动清理**：`venv.enabled=false` **不删除任何目录**（禁用后清理纯手动）：`rm -rf <原 venv.path>`。旧路径同理——`oldPathPolicy=keep`（默认）时旧 venv 保留待手动清理，`delete` 也仅删「带所有权标记且满足删除四条件」的旧目录。
 - **容器挂载卷建议**：容器用户宜把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`），不要留在容器 rootfs。
 
-> **默认路径理由（spec §5.1 逐字转录）**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6 exists-but-broken 行）。
+> **默认路径理由（spec §5.1 逐字转录）**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6「venv 存在但体检不通过」行）。
 
 ### 挂载卷 / 镜像不变边界
 
