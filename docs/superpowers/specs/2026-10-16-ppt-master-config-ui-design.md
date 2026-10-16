@@ -2,7 +2,7 @@
 
 > 承接 2026-10-15 的 venv 特性。**触发**：验收期实测发现「纯宿主插件不出配置页」——宿主侧 volatile 投影与 settings 命名空间均已就绪，但插件页槽位无渲染者（见 `docs/superpowers/specs/2026-10-15-ppt-master-venv-config-design.md` §5.1 勘误 ㉗）。
 > 澄清真相源：`docs/superpowers/clarifications/2026-10-16-ppt-master-config-ui.md`。
-> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后**：M13＝按官方 practice **不 require 任何 Harness 客户端包**（含 `ui-primitives`/`SettingsFormModel`）⇒ 控件自绘；M1/M14＝依赖边语义与 `external` 声明更正；M3＝`configForms` 回调式接入；M5＝volatile 快路径（不 remount）；M6＝保存失败**按可观测量分两类** + memory 模式提示 + 重置语义；M4＝版本断言拆分。（4）**M2 重审（用户 2026-10-16）**：因 `SettingsFormModel` 恰在禁 require 的 `ui-primitives` 内、其"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持**嵌套 volatile 路径** ⇒ **维持既有嵌套 schema**，改为"卡片自持暂存态 + 手写嵌套 `path` 的 ops"；上一特性交付的键名/测试/文档**零改动**，profile 条目无需迁移（详见 §5.5）。
+> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后**：M13＝按官方 practice **不 require 任何 Harness 客户端包**（含 `ui-primitives`/`SettingsFormModel`）⇒ 控件自绘；M1/M14＝依赖边语义与 `external` 声明更正；M3＝`configForms` 回调式接入；M5＝volatile 快路径（不 remount）；M6＝保存失败**按可观测量分两类** + memory 模式提示 + 重置语义；M4＝版本断言拆分。（4）**M2 重审（用户 2026-10-16）**：因 `SettingsFormModel` 恰在禁 require 的 `ui-primitives` 内、其"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持**嵌套 volatile 路径** ⇒ **维持既有嵌套 schema**，改为"卡片自持暂存态 + 手写嵌套 `path` 的 ops"；上一特性交付的键名/测试/文档**零改动**，profile 条目无需迁移（详见 §5.5）。（5）**计划期勘误 V5′（2026-10-16）**：实测确认 `react` 系为平台种子词；监督者裁决**保留** `external: ["react"]` 声明（§5.1/§8）。另：计划期发现 `tests/skeleton.test.mjs` 的 exports 键集断言与 `exports["./client"]` 数学互斥，监督者批准其"四条目化（只增不删）"为"既有测试零改动"不变量的**唯一例外**（登记于计划 Global Constraints 与裁决记录）。
 
 ## 1. 概述与动机
 
@@ -98,7 +98,7 @@
 ```
 
 - **`dsh.client.inject` 的真实语义（Gate 0 R2 更正）**：官方定义为"informational package-name dependencies, **not** Cordis service injection"，**只用于装载排序**；宿主对图内不存在的名字**静默跳过**并照常装载本行（`dsh-client-modules/lib/client.js:656-660`）；强校验只作用于 `dsh.client.external`。⇒ **"依赖边缺失 ⇒ 本半边不被装载、且宿主不报 warn"是错的**，真实后果只是"无排序保证 + 宿主页可能缺席 ⇒ 槽位无人声明 ⇒ 卡片不出现"。保留 `plugin-manager` 这条边的理由＝与官方配置页同形 + 顺序保证（不再声称有"代价"）。
-- **`external` 必须声明 `react`**：`require` 非基线模块需由 `external` 授权，否则到达被跳过、报 `missed the module table…` 并**冒泡出页**（`client.js:705`）。`react` 是否已在种子表由实现期实测确认；若实测为基线，则本条随之删除并在 §8 登记结论（V5）。
+- **`external` 必须声明 `react`**：`require` 非基线模块需由 `external` 授权，否则到达被跳过、报 `missed the module table…` 并**冒泡出页**（`client.js:705`）。`react` 是否已在种子表由实现期实测确认；若实测为基线，则本条随之删除并在 §8 登记结论（V5）。〔勘误 V5′（2026-10-16 计划期实测＋监督者裁决）：本机六个已装客户端插件（dsh-context / dsh-mnemon / dshmarket / dsh-better-sidebar / dsh-mcp-connector / dsh-cherry-bridge）无一声明 `external`，而 `dsh-context`/`dsh-mnemon` 的 bundle 内确有 `require('react')` 系且正常装载 ⇒ `react` 系为平台种子词（基线）。裁决＝**保留 `external: ["react"]` 声明**（对种子词为无害显式冗余，兼防未来宿主种子表收缩；§7.2 的"声明存在"断言维持），本条"必须"降级为"防御性保留"。〕
 - **不 require 任何 Harness 客户端包**：官方 `practices.md:35` 明令 *"Do not `require('@deepseek-ai/dsh-client-ui-primitives')` or load any other Harness Client package as a module"*（理由：无类型检查、随时变更、组件抛错清空整个槽位）。⇒ 控件**自绘**，只使用 `--dsw-alias-*` CSS token 与自带样式。`configForms` 等服务经 **Cordis 服务**接入（不是 require）。
 
 ### 5.2 客户端文件契约（`lib/client.js`）
@@ -208,7 +208,7 @@
 | V2 | `inject` 是否需列 `ui-slots`/`ui-primitives` | **已闭**：二者为前端静态种子模块，且按官方 practice **不得 require**（§5.1） |
 | V3 | 保存是否热生效 | **已静态结案**：volatile 快路径，不 remount；volatile 引用原地换代 |
 | V4 | 手写半边能否被真实 Loader 接受 | 先 stub 断言（§7.1/§7.3），再真实页面装载验证（§9 步骤 1） |
-| V5 | `react` 是否已在种子表（决定 `external` 是否必需） | 实现期实测；结论登记回 §5.1 |
+| V5 | `react` 是否已在种子表（决定 `external` 是否必需） | 已实测＝**基线**（种子词）；裁决**保留声明**（见 §5.1 勘误 V5′） |
 | R1 | 老宿主无该槽位 | G5 安静降级 + README 说明；**宿主下限**：客户端半边依赖 rc.2 契约，`dsh.engines.dsh` 仍写 `>=0.1.1-rc.1` ⇒ 由 §9 验收步骤 5 登记"实测通过版本＝0.2.0-rc.2" |
 | R2 | 双语字典漂移 | 单测断言键集合相等 |
 | R3 | 卡片影响插件页稳定性 | 守卫 + 单点 try/catch + 不注册优先；注意 `SlotAssemblyError` 会冒泡（§7.4） |
