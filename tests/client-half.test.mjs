@@ -37,9 +37,6 @@ function readUpstreamVersion() {
   return version;
 }
 
-/** escapeRe 的正则**字面量**转义（与夹具 `escapeRe` 同判据，供 `new RegExp` 拼接）。 */
-const escapeReLiteral = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 // ─── 装载 ─────────────────────────────────────────────────────────
 
 /**
@@ -749,7 +746,7 @@ function renderApplied(face, ctxOpts) {
   const { ctx, calls } = makeCtx(ctxOpts);
   face.apply(ctx);
   const Card = calls.slotRegisters[0].Component;
-  return { calls, Card, rendered: renderCard(Card) };
+  return { ctx, calls, Card, rendered: renderCard(Card) };
 }
 
 /** 齐备快照（三叶子均为正确类型）的假表单快照值。 */
@@ -766,7 +763,7 @@ test('版本块: 两条配对断言 + 相对尾部 + 不泄漏绝对路径', () 
 
   const pkgVersion = readPkg().version;
   const upstreamVersion = readUpstreamVersion();
-  const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  const { ctx, rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
   const text = rendered.text;
   const tokens = text.match(/\b\d+\.\d+\.\d+(?:-r\d+)?\b/g) ?? [];
 
@@ -785,6 +782,13 @@ test('版本块: 两条配对断言 + 相对尾部 + 不泄漏绝对路径', () 
   // ④ 固定相对尾部逐字（含尖括号占位）；⑤ 不泄漏绝对 SKILL_DIR / 包根。
   assert.ok(text.includes('<包根>/skills/ppt-master'), `版本块缺相对尾部：${text}`);
   assert.equal(text.includes(PACKAGE_ROOT_ABS), false, `卡片泄漏绝对路径：${text}`);
+
+  // ⑥ 相对尾部走**字典键**（T2 审查 Important-1 回归）：硬编码 zh 形态常量会让英文界面
+  // 显示中文占位串、并使 `version.skillDirValue` 成死键——故断言 en 下取到 en 值。
+  ctx.locale.setActiveLocale('en');
+  const en = rendered.text;
+  assert.ok(en.includes('<package root>/skills/ppt-master'), `en 版本块缺相对尾部：${en}`);
+  assert.equal(en.includes('<包根>'), false, `en 下不应残留 zh 占位串：${en}`);
 });
 
 // ─── 用例 18：开关读写面 ──────────────────────────────────────────
