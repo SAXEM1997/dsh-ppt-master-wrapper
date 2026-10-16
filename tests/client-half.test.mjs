@@ -1624,3 +1624,80 @@ test('§7.7⑥ 负向: require Harness 客户端包 / 含 import 语句', () => 
     esmStatement.cleanup();
   }
 });
+
+// ─── 用例 41–45：README 文档契约（Task 5 产物）────────────────────
+//
+// 取文＝仓库根 `README.md` 全文，**逐例体内现读**（不在模块级读取——否则单条
+// `ENOENT` 会使整文件加载期夭折；与 `loadEntry()` 同一纪律）。断言只覆盖 README
+// 的**可断言文本**；卡片的三字段＋版本信息块、双语跟随界面语言属**叙述性内容**，
+// 由 T2 运行时用例（字典键集合相等 / 渲染树文案）守卫，此处不重复断言。
+//
+// **防改前即绿**（写断言时的实测）：现 README 已含"插件」页"（带右引号）与
+// "Python 依赖已安装"等语义无关命中 ⇒ `插件页`/`已安装` 单独都不构成红灯；`重启`
+// （`重启 DSH` 2 处）亦已在。故 ① 的唯一有效红灯承担者＝`免重启生效`，③ 的红灯
+// 承担者＝`dsh.client`/`exports["./client"]` 拼写。
+
+/** 仓库根 `README.md` 全文（逐例体内调用）。 */
+function readReadme() {
+  return readFileSync(join(repoRoot, 'README.md'), 'utf8');
+}
+
+// 用例 41：插件页卡片入口路径（Produces ①）
+test('README: 插件页卡片入口含「已安装」路径与免重启生效', () => {
+  const readme = readReadme();
+  // 复合子串四连：路径三段（插件页 → 已安装 → 包名）＋ volatile 快路径的结论词。
+  // 后两者是**语义相关**命中（现 README 的"已安装"/包名散落在依赖与安装章节）。
+  for (const needle of ['插件页', '已安装', 'dsh-ppt-master-wrapper']) {
+    assert.ok(readme.includes(needle), `README 缺插件页卡片入口串: ${needle}`);
+  }
+  // 唯一有效红灯承担者：本特性新增的"保存免重启"结论。
+  assert.ok(
+    readme.includes('免重启生效'),
+    'README 缺「保存走 volatile 快路径、免重启生效」的结论词「免重启生效」',
+  );
+});
+
+// 用例 42：memory 模式提示（Produces ① 的必读提示）
+test('README: memory 模式提示「本次会话不会写入宿主配置」', () => {
+  assert.ok(
+    readReadme().includes('不会写入宿主配置'),
+    'README 缺 memory 模式提示：远程 GUI 下写永不落盘，静默失效不可接受',
+  );
+});
+
+// 用例 43：重启边界（Produces ②；红灯承担者＝声明面拼写）
+test('README: 重启边界含 dsh.client / exports["./client"] 声明面', () => {
+  const readme = readReadme();
+  // 声明面两种拼写接受其一（README 用双引号；单引号形态亦合法）。
+  assert.match(
+    readme,
+    /exports\["\.\/client"\]|exports\['\.\/client'\]/,
+    'README 缺 exports["./client"] 声明面拼写',
+  );
+  assert.ok(readme.includes('dsh.client'), 'README 缺 dsh.client 声明面拼写');
+  // `重启` 在现 README 已在（`重启 DSH` ×2）——不构成红灯，此处只作边界语义复合断言。
+  assert.ok(readme.includes('重启'), 'README 缺重启边界语义');
+});
+
+// 用例 44：compat 说明行的「六项」（Produces ④）
+test('README: compat 说明为 spec §7.7 六项设计成立性前置检查', () => {
+  const readme = readReadme();
+  assert.ok(readme.includes('§7.7'), 'README 缺 §7.7 字样');
+  assert.ok(readme.includes('六项'), 'README 的 compat 说明行未从「五项」更新为「六项」');
+});
+
+// 用例 45：禁语负向 + profile 手工通道语义保护（Produces ② 的保护面）
+test('README: 无「保存需重启」类禁语，且保留 patch 手工编辑需重启语义', () => {
+  const readme = readReadme();
+  // 负向三式＝GC 禁语的**子串覆盖**（`保存需重启` 覆盖 GC 的"保存需重启才生效"）：
+  // 三叶子全 volatile ⇒ 保存走宿主 volatile 快路径，不 remount、不重跑 apply。
+  for (const forbidden of ['保存后插件实例重建', '保存后需重启', '保存需重启']) {
+    assert.ok(
+      !readme.includes(forbidden),
+      `README 出现被推翻的措辞（禁语）: ${forbidden}`,
+    );
+  }
+  // 保护**另一条通道**的语义：profile `cordis.patch.yml` 手工编辑不热生效、需重启 DSH
+  // ——该结论仍为真，改写时不得连带删除。
+  assert.ok(readme.includes('重启 DSH'), 'README 丢失 patch 手工编辑→重启 DSH 生效语义');
+});
