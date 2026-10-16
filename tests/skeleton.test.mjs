@@ -47,13 +47,16 @@ test('package.json: files 白名单', () => {
   ]);
 });
 
-test('package.json: exports 三条目', () => {
+test('package.json: exports 四条目', () => {
   const pkg = readPkg();
   assert.equal(pkg.exports['.'], './index.js');
   assert.equal(pkg.exports['./cordis.patch.yml'], './cordis.patch.yml');
   assert.equal(pkg.exports['./package.json'], './package.json');
+  // 客户端半边（浏览器半边，config-ui 特性）：宿主按 dsh.client 声明装载该单文件。
+  assert.equal(pkg.exports['./client'], './lib/client.js');
   assert.deepEqual(Object.keys(pkg.exports).sort(), [
     '.',
+    './client',
     './cordis.patch.yml',
     './package.json',
   ]);
