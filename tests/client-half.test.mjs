@@ -1048,3 +1048,422 @@ test('渲染冒烟（设计 §7.4，SlotAssemblyError 触发条件规避）', ()
     'apply 换代后新渲染的卡片应把依赖指向**新** holder 身份（依赖必须跟随 holder）',
   );
 });
+
+// ─── Task 3：卡片写面 ──────────────────────────────────────────────
+//
+// 复用 T1/T2 夹具与读面 DOM 契约（`renderApplied` / `fullSnapshot` / `find` / `textOf`）。
+// **硬规则不变**：`loadEntry()` 一律在各用例体内调用。
+//
+// 写面 DOM 锚（T3 落地）：
+// - 保存/重置：`<button type="button" className="ppt-master-config-button">`，
+//   `props.onClick` **返回 Promise**（可测性契约；React 事件处理器返回值无副作用）；
+// - notice：`<p className="ppt-master-config-notice" role="status">`。
+//
+// 按钮定位采用**结构锚**（动作行内按文案区分、并按 `disabled` 归类），不依赖实现另设 id：
+// 类名 `ppt-master-config-button` 是 T3 Produces 钉死的**唯一** button 锚。
+
+/** 保存按钮的文案＝字典 `action.save`；返回该按钮元素（找不到即 `undefined`）。 */
+function buttonByLabel(tree, label) {
+  return find(
+    tree,
+    (el) =>
+      el.type === 'button' &&
+      el.props?.className === 'ppt-master-config-button' &&
+      textOf(el) === label,
+  );
+}
+
+/** 卡片字典（zh）：apply 一次后从 `localeRegisters` 取，避免测试侧复制文案。 */
+function zhDictOf(face) {
+  const { ctx, calls } = makeCtx();
+  face.apply(ctx);
+  return calls.localeRegisters[0].dicts.zh;
+}
+
+/**
+ * 写面假表单：**记录 `structuredClone(ops)` 与 `revision`**，`mutate` 用**方法形态**
+ * 调用（以 `this` 自校验——宿主控制器是对象方法；若卡片把 `mutate` 解构出来裸调，
+ * `this` 即为 `undefined`，此处立刻抛错，比断言更硬）。
+ *
+ * `outcome` 可为：`true`/`false`（resolve 该字面量）、`Error` 实例（reject）、
+ * Promise（原样返回，供 pending 用例的 deferred）。默认 resolve `true`。
+ */
+function makeWriteForm({ snapshot, outcome = true } = {}) {
+  const calls = { mutates: [], unsubscribed: false };
+  const form = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {
+      calls.unsubscribed = true;
+    },
+    mutate(ops, revision) {
+      if (this !== form) throw new Error('mutate 必须以方法形态调用（this 应为表单对象）');
+      calls.mutates.push({ ops: structuredClone(ops), revision });
+      if (outcome instanceof Error) return Promise.reject(outcome);
+      if (outcome instanceof Promise) return outcome;
+      return Promise.resolve(outcome);
+    },
+  };
+  return { form, calls };
+}
+
+/** 手工可控 deferred（`pending 态` 用例的未决 Promise 锚）。 */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 齐备且**可写**的写面快照（revision 7；三叶子类型齐备）。 */
+function writableSnapshot(overrides = {}) {
+  return {
+    status: 'ready',
+    writable: true,
+    revision: 7,
+    value: { venv: { enabled: false, path: '/base', oldPathPolicy: 'keep' } },
+    ...overrides,
+  };
+}
+
+/** 开关/路径/选择器的定位器（与 T2 用例 22 同形）。 */
+const switchIn = (tree) => find(tree, (el) => el.props?.role === 'switch');
+const pathIn = (tree) => find(tree, (el) => el.props?.id === 'ppt-master-config-path');
+const policyIn = (tree) => find(tree, (el) => el.props?.id === 'ppt-master-config-policy');
+const noticeIn = (tree) => find(tree, (el) => el.props?.className === 'ppt-master-config-notice');
+
+/** 渲染一张可写卡片，返回 { calls, rendered, zh, form }（保存/重置按钮的公共前缀）。 */
+function renderWritable(face, { snapshot, outcome } = {}) {
+  // 字典**先取**：`apply` 会重装 `Card.forwarder`（稳定对象、成员按代取值），若在卡片
+  // 渲染后再 apply 一次，卡片会改读后一个 holder。故字典／渲染严格分两次 apply、字典在前。
+  const zh = zhDictOf(face);
+  const { form, calls } = makeWriteForm({ snapshot: snapshot ?? writableSnapshot(), outcome });
+  const { ctx, calls: ctxCalls } = makeCtx({ form });
+  face.apply(ctx);
+  const Card = ctxCalls.slotRegisters[0].Component;
+  return { form, calls, ctxCalls, zh, rendered: renderCard(Card) };
+}
+// ─── 用例 26：set ops — enabled ───────────────────────────────────
+
+test('写面 set ops: enabled', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { calls, rendered, zh } = renderWritable(face);
+
+  // 点开关（基值 false → 暂存 true）后点保存。
+  switchIn(rendered.tree).props.onClick();
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  assert.ok(save !== undefined, '卡片应渲染保存按钮');
+  assert.equal(save.props.type, 'button');
+  await save.props.onClick();
+  rendered.settle();
+
+  assert.equal(calls.mutates.length, 1, '保存应恰发一次 mutate');
+  assert.deepEqual(calls.mutates[0].ops, [{ op: 'set', path: ['venv', 'enabled'], value: true }]);
+  assert.equal(calls.mutates[0].revision, 7, 'revision 应透传假快照的 7');
+});
+
+// ─── 用例 27：set ops — path ──────────────────────────────────────
+
+test('写面 set ops: path', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { calls, rendered, zh } = renderWritable(face);
+
+  pathIn(rendered.tree).props.onChange({ target: { value: '/srv/venv' } });
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  await save.props.onClick();
+  rendered.settle();
+
+  assert.equal(calls.mutates.length, 1);
+  assert.deepEqual(calls.mutates[0].ops, [{ op: 'set', path: ['venv', 'path'], value: '/srv/venv' }]);
+});
+
+// ─── 用例 28：set ops — oldPathPolicy ─────────────────────────────
+
+test('写面 set ops: oldPathPolicy', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { calls, rendered, zh } = renderWritable(face);
+
+  policyIn(rendered.tree).props.onChange({ target: { value: 'delete' } });
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  await save.props.onClick();
+  rendered.settle();
+
+  assert.equal(calls.mutates.length, 1);
+  assert.deepEqual(calls.mutates[0].ops, [
+    { op: 'set', path: ['venv', 'oldPathPolicy'], value: 'delete' },
+  ]);
+});
+
+// ─── 用例 29：重置 ────────────────────────────────────────────────
+
+test('重置: 一次调用三个 unset、嵌套 path、顺序固定', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { calls, rendered, zh } = renderWritable(face);
+
+  const reset = buttonByLabel(rendered.tree, zh['action.reset']);
+  assert.ok(reset !== undefined, '卡片应渲染重置按钮');
+  assert.equal(reset.props.type, 'button');
+  await reset.props.onClick();
+  rendered.settle();
+
+  assert.equal(calls.mutates.length, 1, '重置应恰一次 mutate（不是三次）');
+  assert.deepEqual(calls.mutates[0].ops, [
+    { op: 'unset', path: ['venv', 'enabled'] },
+    { op: 'unset', path: ['venv', 'path'] },
+    { op: 'unset', path: ['venv', 'oldPathPolicy'] },
+  ]);
+  assert.equal(calls.mutates[0].revision, 7);
+});
+
+// ─── 用例 30：两类可观测量①（resolve false）──────────────────────
+
+test('两类可观测量①: resolve false → rejected 文案、不抛、暂存值保留', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered, zh } = renderWritable(face, { outcome: false });
+
+  pathIn(rendered.tree).props.onChange({ target: { value: '/staged' } });
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  await assert.doesNotReject(() => save.props.onClick(), '保存被否不得抛');
+  const text = rendered.text;
+
+  assert.ok(text.includes(zh['notice.rejected']), `缺 rejected 文案：${text}`);
+  assert.ok(text.includes('更高优先级'), `缺一般化提示子串：${text}`);
+  assert.equal(text.includes(zh['notice.saved']), false, '两类文案不得混用（saved）');
+  assert.equal(pathIn(rendered.settle()).props.value, '/staged', '被否后暂存值应保留');
+});
+
+// ─── 用例 31：两类可观测量②（reject）─────────────────────────────
+
+test('两类可观测量②: reject → transportError 文案携消息、不抛、两类不混用', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered, zh } = renderWritable(face, { outcome: new Error('boom') });
+
+  switchIn(rendered.tree).props.onClick();
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  await assert.doesNotReject(() => save.props.onClick(), '传输失败不得冒泡出卡片');
+  const text = rendered.text;
+
+  assert.ok(text.includes(zh['notice.transportError']), `缺 transportError 文案：${text}`);
+  assert.ok(text.includes('boom'), `传输失败应携错误消息：${text}`);
+  assert.equal(text.includes(zh['notice.rejected']), false, '两类不混用（rejected 不得出现）');
+});
+
+// ─── 用例 32：revision 时效（Review Focus #3）─────────────────────
+
+test('revision 时效: 换代后以最新 revision 透传，且旧记录不被改写', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  // 快照**持有器**：广播即让 `getSnapshot` 返回新对象（rev 7 → 8），模拟宿主换代。
+  const snapshotState = { current: writableSnapshot({ revision: 7 }) };
+  const listeners = [];
+  const { form, calls } = (() => {
+    const inner = makeWriteForm({ snapshot: undefined });
+    inner.form.getSnapshot = () => snapshotState.current;
+    inner.form.subscribe = (listener) => {
+      listeners.push(listener);
+      return () => {
+        const index = listeners.indexOf(listener);
+        if (index >= 0) listeners.splice(index, 1);
+      };
+    };
+    return inner;
+  })();
+
+  // 字典**先取**（apply 会重装 `Card.forwarder`，渲染后再 apply 会让卡片改读后一个 holder）。
+  const zh = zhDictOf(face);
+  const { ctx, calls: ctxCalls } = makeCtx({ form });
+  face.apply(ctx);
+  const rendered = renderCard(ctxCalls.slotRegisters[0].Component);
+
+  // 第一次保存：rev 7。
+  switchIn(rendered.tree).props.onClick();
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+  rendered.settle();
+  assert.equal(calls.mutates.length, 1);
+  assert.equal(calls.mutates[0].revision, 7);
+  const firstOps = calls.mutates[0].ops;
+
+  // 宿主换代：rev 8 且已含上次提交的值 → 广播。
+  snapshotState.current = {
+    status: 'ready',
+    writable: true,
+    revision: 8,
+    value: { venv: { enabled: true, path: '/base', oldPathPolicy: 'keep' } },
+  };
+  for (const listener of [...listeners]) listener();
+  rendered.settle();
+
+  // 第二次保存：改路径 → 必须以**最新** revision 8 透传，不自 bump、不用缓存值。
+  pathIn(rendered.settle()).props.onChange({ target: { value: '/next' } });
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+  rendered.settle();
+
+  assert.equal(calls.mutates.length, 2);
+  assert.equal(calls.mutates[1].revision, 8, '第二次保存应透传换代后的 revision 8');
+  // 每条记录都是 `structuredClone` 快照：第一条不得被后续调用改写（别名回归）。
+  assert.deepEqual(firstOps, [{ op: 'set', path: ['venv', 'enabled'], value: true }]);
+  assert.deepEqual(calls.mutates[0].ops, [{ op: 'set', path: ['venv', 'enabled'], value: true }]);
+  assert.deepEqual(calls.mutates[1].ops, [{ op: 'set', path: ['venv', 'path'], value: '/next' }]);
+});
+
+// ─── 用例 33：无乐观更新 ──────────────────────────────────────────
+
+test('无乐观更新: 保存成功但未回推 → 仍为脏；回推暂存值后才干净', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  const snapshotState = { current: writableSnapshot() };
+  const listeners = [];
+  const { form } = makeWriteForm({ snapshot: undefined });
+  form.getSnapshot = () => snapshotState.current;
+  form.subscribe = (listener) => {
+    listeners.push(listener);
+    return () => listeners.splice(listeners.indexOf(listener), 1);
+  };
+
+  // 字典**先取**（同用例 32：渲染后再 apply 会让卡片改读后一个 holder）。
+  const zh = zhDictOf(face);
+  const { ctx, calls: ctxCalls } = makeCtx({ form });
+  face.apply(ctx);
+  const rendered = renderCard(ctxCalls.slotRegisters[0].Component);
+
+  switchIn(rendered.tree).props.onClick();
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+  const afterSave = rendered.settle();
+  assert.equal(
+    buttonByLabel(afterSave, zh['action.save']).props.disabled,
+    false,
+    '未回推时仍为脏：保存按钮应保持可用（不得乐观清理暂存值/自行改基值）',
+  );
+
+  // 宿主回推新快照（值＝暂存值）→ 脏集变空 → 保存按钮禁用。
+  snapshotState.current = {
+    status: 'ready',
+    writable: true,
+    revision: 8,
+    value: { venv: { enabled: true, path: '/base', oldPathPolicy: 'keep' } },
+  };
+  for (const listener of [...listeners]) listener();
+  assert.equal(
+    buttonByLabel(rendered.settle(), zh['action.save']).props.disabled,
+    true,
+    '宿主回推暂存值后应转为干净（脏判定按当前基值现算）',
+  );
+});
+
+// ─── 用例 34：空脏集与写门（Review Focus #1/#4）──────────────────
+
+test('空脏集与写门', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const zh = zhDictOf(face);
+
+  // ① 未改动即点保存：脏集为空 ⇒ 按钮禁用且点击不发 mutate。
+  {
+    const { calls, rendered } = renderWritable(face);
+    const save = buttonByLabel(rendered.tree, zh['action.save']);
+    assert.equal(save.props.disabled, true, '空脏集时保存按钮应禁用');
+    await assert.doesNotReject(() => save.props.onClick());
+    rendered.settle();
+    assert.equal(calls.mutates.length, 0, '空脏集不得发 mutate');
+  }
+
+  // ② 未就绪 / 只读两行：两按钮均禁用、点击不发 mutate。
+  const gated = [
+    { label: 'loading', snapshot: { status: 'loading' } },
+    { label: 'ready 但 writable=false', snapshot: { status: 'ready', writable: false, revision: 7, value: { venv: { enabled: false, path: '/base', oldPathPolicy: 'keep' } } } },
+  ];
+  for (const item of gated) {
+    const { calls, rendered } = renderWritable(face, { snapshot: item.snapshot });
+    const tree = rendered.tree;
+    for (const label of [zh['action.save'], zh['action.reset']]) {
+      const button = buttonByLabel(tree, label);
+      assert.ok(button !== undefined, `${item.label}：应仍渲染按钮（${label}）`);
+      assert.equal(button.props.disabled, true, `${item.label}：按钮应禁用（${label}）`);
+      await assert.doesNotReject(() => button.props.onClick());
+    }
+    rendered.settle();
+    assert.equal(calls.mutates.length, 0, `${item.label}：写门关闭时不得发 mutate`);
+  }
+
+  // ③ memory 模式（不可用 + 只读）：state.memory 提示在场、两按钮禁用。
+  {
+    const { calls, rendered } = renderWritable(face, {
+      snapshot: { status: 'unavailable', writable: false, mode: 'memory' },
+    });
+    const tree = rendered.tree;
+    assert.ok(textOf(tree).includes(zh['state.memory']), `memory 提示应在场：${textOf(tree)}`);
+    for (const label of [zh['action.save'], zh['action.reset']]) {
+      assert.equal(buttonByLabel(tree, label).props.disabled, true, `memory：按钮应禁用（${label}）`);
+    }
+    assert.equal(calls.mutates.length, 0);
+  }
+
+  // ④ Review Focus #1 的缺失形态：`revision === undefined` ⇒ 渲染不抛、改字段后可保存、
+  //    第二参原样为 `undefined`（**不得**自行补 0/null）。
+  {
+    const { calls, rendered } = renderWritable(face, {
+      snapshot: writableSnapshot({ revision: undefined }),
+    });
+    let tree;
+    assert.doesNotThrow(() => {
+      tree = rendered.settle();
+    }, 'revision:undefined 形态渲染不得抛错');
+    assert.equal(buttonByLabel(tree, zh['action.save']).props.disabled, true, '未改动即禁用');
+    pathIn(tree).props.onChange({ target: { value: '/srv/venv' } });
+    const save = buttonByLabel(rendered.settle(), zh['action.save']);
+    await save.props.onClick();
+    rendered.settle();
+    assert.equal(calls.mutates.length, 1, '改字段后应可保存');
+    assert.equal(calls.mutates[0].revision, undefined, 'revision 缺失形态应原样透传 undefined');
+    assert.deepEqual(calls.mutates[0].ops, [
+      { op: 'set', path: ['venv', 'path'], value: '/srv/venv' },
+    ]);
+  }
+});
+
+// ─── 用例 35：pending 态 ──────────────────────────────────────────
+
+test('pending 态: 未决时显示 saving、resolve 后转 saved', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  const gate = deferred();
+  const { calls, rendered, zh } = renderWritable(face, { outcome: gate.promise });
+
+  switchIn(rendered.tree).props.onClick();
+  // **不 await**：先拿到 onClick 返回的 Promise（可测性契约），让 pending 态停在屏上。
+  const inflight = buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+  assert.ok(inflight instanceof Promise, 'onClick 应返回 Promise（可测性契约）');
+
+  const pendingText = rendered.settle() && rendered.text;
+  assert.ok(pendingText.includes(zh['notice.pending']), `缺 pending 文案：${pendingText}`);
+  assert.equal(pendingText.includes(zh['notice.saved']), false, '未决时不得预告已保存');
+  assert.equal(noticeIn(rendered.settle()).props.role, 'status', 'notice 应为 role="status"');
+
+  gate.resolve(true);
+  await inflight;
+  const savedText = rendered.settle() && rendered.text;
+  assert.ok(savedText.includes(zh['notice.saved']), `resolve true 后应显示 saved：${savedText}`);
+  assert.equal(savedText.includes(zh['notice.pending']), false, '已决后不得残留 pending 文案');
+  assert.equal(calls.mutates.length, 1);
+});
