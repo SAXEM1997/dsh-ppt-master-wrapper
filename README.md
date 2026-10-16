@@ -25,20 +25,23 @@
 ## 架构
 
 ```mermaid
-flowchart LR
-    classDef up fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#7d4e00
-    classDef pkg fill:#ddf4ff,stroke:#0969da,stroke-width:2px,color:#0a3069
-    classDef dsh fill:#f6f8fa,stroke:#8c959f,stroke-width:2px,color:#57606a
-
-    UP["上游 ppt-master（GitHub · MIT）"]:::up
-    SYNC["scripts/sync-upstream.mjs<br/>下载 → 完整性门 → verify → 替换"]:::pkg
-    VENDOR["skills/ppt-master/<br/>逐字节 vendor（零改写）"]:::pkg
-    HOST["index.js<br/>ctx.skills · ctx.tools.register"]:::pkg
-    CARD["lib/client.js（客户端半边）<br/>插件页配置卡片"]:::pkg
-    DSH["DeepSeek Harness<br/>skills: ppt-master · ppt-master-env<br/>tools: info / check_env / setup_deps"]:::dsh
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+    UP["上游 ppt-master<br/>GitHub · MIT"]:::up
+    SYNC["scripts/sync-upstream.mjs<br/>下载 → 完整性门 → 替换"]:::tool
+    VENDOR["skills/ppt-master/<br/>逐字节 vendor（零改写）"]:::artifact
+    HOST["index.js<br/>ctx.skills · ctx.tools.register"]:::code
+    CARD["lib/client.js<br/>插件页配置卡片"]:::code
+    DSH["DeepSeek Harness<br/>2 个技能 · 3 个工具<br/>+ 插件页配置卡片"]:::host
 
     UP --> SYNC --> VENDOR --> HOST --> DSH
     CARD --> DSH
+
+    classDef up fill:#d9a52122,stroke:#b8860b,stroke-width:1.5px,rx:6,ry:6
+    classDef tool fill:#4f6ef722,stroke:#4f6ef7,stroke-width:1.5px,rx:6,ry:6
+    classDef artifact fill:#2f9e7822,stroke:#2f9e78,stroke-width:1.5px,rx:6,ry:6
+    classDef code fill:#4f6ef722,stroke:#4f6ef7,stroke-width:1.5px,rx:6,ry:6
+    classDef host fill:#8c959f22,stroke:#8c959f,stroke-width:1.5px,rx:6,ry:6
 ```
 
 技能面由 `index.js` 经 `ctx.skills` 注册：vendor 的 `ppt-master` 技能＋一个**内存合成、不落盘**的入口技能 `ppt-master-env`（解释器路由入口）。DSH 通过 `resourceBase` 注入技能目录绝对路径，由执行 agent 代入上游约定的 `${SKILL_DIR}`——机制等价满足上游 `SKILL.md` 的硬规则。

@@ -25,20 +25,23 @@ The upstream skill set is a complete AI presentation workflow (generate / recons
 ## Architecture
 
 ```mermaid
-flowchart LR
-    classDef up fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#7d4e00
-    classDef pkg fill:#ddf4ff,stroke:#0969da,stroke-width:2px,color:#0a3069
-    classDef dsh fill:#f6f8fa,stroke:#8c959f,stroke-width:2px,color:#57606a
-
-    UP["Upstream ppt-master (GitHub · MIT)"]:::up
-    SYNC["scripts/sync-upstream.mjs<br/>download → guard → verify → replace"]:::pkg
-    VENDOR["skills/ppt-master/<br/>byte-for-byte vendor"]:::pkg
-    HOST["index.js<br/>ctx.skills · ctx.tools.register"]:::pkg
-    CARD["lib/client.js (client half)<br/>Plugins-page config card"]:::pkg
-    DSH["DeepSeek Harness<br/>skills: ppt-master · ppt-master-env<br/>tools: info / check_env / setup_deps"]:::dsh
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+    UP["Upstream ppt-master<br/>GitHub · MIT"]:::up
+    SYNC["scripts/sync-upstream.mjs<br/>download → integrity gate → replace"]:::tool
+    VENDOR["skills/ppt-master/<br/>byte-for-byte vendor"]:::artifact
+    HOST["index.js<br/>ctx.skills · ctx.tools.register"]:::code
+    CARD["lib/client.js<br/>Plugins-page config card"]:::code
+    DSH["DeepSeek Harness<br/>2 skills · 3 tools<br/>+ Plugins-page config card"]:::host
 
     UP --> SYNC --> VENDOR --> HOST --> DSH
     CARD --> DSH
+
+    classDef up fill:#d9a52122,stroke:#b8860b,stroke-width:1.5px,rx:6,ry:6
+    classDef tool fill:#4f6ef722,stroke:#4f6ef7,stroke-width:1.5px,rx:6,ry:6
+    classDef artifact fill:#2f9e7822,stroke:#2f9e78,stroke-width:1.5px,rx:6,ry:6
+    classDef code fill:#4f6ef722,stroke:#4f6ef7,stroke-width:1.5px,rx:6,ry:6
+    classDef host fill:#8c959f22,stroke:#8c959f,stroke-width:1.5px,rx:6,ry:6
 ```
 
 The skill surface is registered by `index.js` through `ctx.skills`: the vendored `ppt-master` skill plus an **in-memory, never-written-to-disk** entry skill `ppt-master-env` (the interpreter routing entry). DSH injects the skill directory's absolute path via `resourceBase`, which the executing agent substitutes for the upstream `${SKILL_DIR}` convention — mechanically satisfying the hard rules in the upstream `SKILL.md`.
