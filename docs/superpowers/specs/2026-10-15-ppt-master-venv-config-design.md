@@ -11,13 +11,13 @@
 
 **目标**
 - G1 venv 隔离：`venv.enabled/path/oldPathPolicy` 三配置；懒创建（仅 `ppt_master_setup_deps`）；venv 内安装无 PEP 668 拦截。
-- G2 原生配置页：Config schema 注解承载插件版本、上游版本、SKILL_DIR（模块加载期生成）；配置变更经 Loader 热重载即时生效。成立条件：Config 字段声明为 volatile 且宿主 config-editor 编辑通道可用（真实热重载机制见 §4.1/§6.1②）。
+- G2 原生配置页：Config schema 注解承载插件版本、上游版本、SKILL_DIR（模块加载期生成）；配置变更经 Loader 热重载即时生效。成立条件：Config 字段声明为 volatile 且宿主 config-editor 编辑通道可用（真实热重载机制见 §4.1/§6.1②）。**【勘误 ㉗/㉘（2026-10-16 验收期实测）】**：本版 DSH（0.2.0-rc.2 本机部署）对该 Config **不出页**——宿主侧 volatile 投影与 settings 命名空间均就绪，但插件页槽位无渲染者（§5.1 ㉗）；且 profile patch **手工编辑不热生效**（§4.1 ㉘）。⇒ 本特性的配置入口＝profile `cordis.patch.yml` 手工条目 ＋ **重启生效**；GUI 出页属**新特性**（须反转 §2 非目标，另立项）。
 - G3 入口 skill `ppt-master-env`：四态正文给出当前解释器契约（最近快照 + 实时工具指引）；description 声明"使用 ppt-master 前必读"。
 - G4 工具 venv 感知：`info`/`check_env`/`setup_deps` payload 增量字段；`setup_deps` 独占 venv 创建/删除副作用。
 - G5 旧 venv 生命周期：所有权标记 + `wrapper-state.json` 登记上次路径 + `oldPathPolicy`（默认 keep）；删除仅对满足 §5.4 前置（pyvenv.cfg 存在、带标记、路径≠当前且互不**段感知**前缀包含）的目录；条件①②按 **canonical 路径**判定（同一实体与包含关系都按内核语义：先解符号链接、`..` 在已解析的父目录上回退），另以 `dev+ino` 相等作额外正判据。
 
 **非目标**
-- 实时状态面板 / 自研前端页（`dsh.client` 范式明确不采用）。
+- 实时状态面板 / 自研前端页（`dsh.client` 范式明确不采用）。**〔勘误 ㉗（2026-10-16 验收期实测）〕** 实测证明"原生 Config 自动出页"在本版对纯宿主插件**不成立**（§5.1 ㉗）——要把 venv 表单做进 GUI，只能反转本条（引入 `dsh.client` 客户端半边或 companion 客户端包），属**新特性**，另行立项。
 - 修改任何上游文件或 served body（vendor 面字节不变）。
 - venv 真迁移（stdlib venv 不可重定位——迁移≡新建+重装+可选删旧）。
 - venv 内依赖版本锁定；禁用 venv 时的自动删除（纯手动 `rm -rf`）。
@@ -47,7 +47,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 ## 4. 数据流
 
-- **4.1 配置变更**：设置页编辑 → 宿主 config-editor `edit()`（分层 profile patch 写入）→ reconcileProfilePatches → Loader 重建插件实例（配置变更**无条件热生效**，hmr 串行化）→ 入口 skill 正文与工具行为随实例重建换代（免 DSH 整体重启）；热重载失败兜底→下次 DSH 重启生效（§6.1②）。配置页注解随插件升级换代（注解于模块加载期烘焙进 schema description，模块缓存内不重求值——不随热重载换代）。机制修正：设置页 `applies:"live"` 标识为宿主 describe 固定输出，真正的可编辑性由字段 volatile 声明决定（§5.1）。
+- **4.1 配置变更**：设置页编辑 → 宿主 config-editor `edit()`（分层 profile patch 写入）→ reconcileProfilePatches → Loader 重建插件实例（配置变更**无条件热生效**，hmr 串行化）→ 入口 skill 正文与工具行为随实例重建换代（免 DSH 整体重启）；热重载失败兜底→下次 DSH 重启生效（§6.1②）。配置页注解随插件升级换代（注解于模块加载期烘焙进 schema description，模块缓存内不重求值——不随热重载换代）。机制修正：设置页 `applies:"live"` 标识为宿主 describe 固定输出，真正的可编辑性由字段 volatile 声明决定（§5.1）。**〔勘误 ㉘〕** 上述「无条件热生效」只覆盖 **config-editor `edit()`** 通道；本版无设置页渲染者（㉗），实际操作只能是**手工编辑 profile patch**——实测：写入 `id: dsh-ppt-master-wrapper` 条目后 10 分钟以上，live `ppt_master_check_env` 仍报 `venv: enabled=false`、日志无 reload 记录；宿主侧只读重组（`loadProfileDirectory` + `composeEntries`）确认该条目与 config 会被**下一次启动**装载。⇒ 手工通道＝**重启生效**（§6.1② 的兜底即本部署的常规路径）。
 - **4.2 技能路由**：模型见目录中 `ppt-master-env`（description 声明前置）→ 读入口 → 按生效解释器跑上游脚本（含 SKILL.md 第 2 步 attribution_guard 的字面 `python3` 替换）→ 路由至 `ppt-master`。
 - **4.3 环境准备**（`ppt_master_setup_deps`，唯一副作用点）：
    - venv 开：`ensureVenv`（创建/收编/体检前置见 §5.4；缺则 `python3 -m venv <path>` + 写标记；已有则体检通过后收编补标记）→ `<venv>/bin/pip3 install -r ${SKILL_DIR}/requirements.txt` → 成功后 `cleanupOldVenv`（比对 `wrapper-state.json` 登记的上次路径，按 `oldPathPolicy`）→ 更新登记 → 复跑 check_env。
@@ -63,11 +63,11 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 | `venv.path` | string，`'~/.ppt-master/venv'` | `~` 于使用处按 DSH 宿主进程 HOME 展开；须绝对或 `~` 前缀 |
 | `venv.oldPathPolicy` | `'keep' \| 'delete'`，`'keep'` | 路径变更后对旧标记 venv 的处理 |
 
-- **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。**落点具名**（`lib/venv.js`）：`snapshotVenvConfig(raw) → { enabled, path, oldPathPolicy }`（逐叶去引用快照）＋组合纯函数 `assembleInjectionBag(raw) → { skillRoots, venv }`（`skillRoots` 原样透传、`venv` 经前者快照，**缺省补默认在此完成**——三默认值 `enabled:false` / `path:'~/.ppt-master/venv'` / `oldPathPolicy:'keep'`）；`apply` 只调该组合函数后下传。
+- **volatile 前提**：三字段均须以 schemastery `.volatile()`（live-editable）标记——这是设置页可编辑投影的前提；未标 volatile 的叶子字段宿主不出页、写入被拒。**〔勘误 ㉗〕** 本版实测：投影侧成立（`dsh-settings.describe()` 为带 volatile 的 profile 条目产出 `ns = 条目 id`、`applies:"live"` 与 schema），但**没有客户端渲染者**——侧边栏「插件」页（`@deepseek-ai/dsh-client-ui-plugin-manager`）只渲染由插件**自带客户端半边**注册的槽位卡片（`plugins.bundle.config` 键＝包名 / `plugins.row.config` 键＝`<包名>#<行id>`；本机注册者仅 dsh-mnemon / dsh-market / dsh-model-sync / dsh-context 各自的自有卡片），官方条目由 companion 客户端包 `configForms.get(<固定命名空间>)` 渲染；纯宿主插件不带浏览器半边（`dsh-cordis-client-runner` 只服务"动态双半包"），故**不出页**。**引用语义（宿主实测）**：`.volatile()` 同时把解析值包装为须 `.get()` 读取的引用对象（叶子级或对象级标注均如此，直接属性读取拿到包装器/undefined），且不两层叠加标注（钉**叶子级**，宿主惯例如 dsh-agent-loop `maxParallelToolCalls`）；因此 **apply 边界统一去引用**——对三个 volatile 叶子各做一次 `.get()` 快照，组装为普通对象后下传 `createSkillProvider`/`createTools`/`lib/venv.js`（下游接口签名一律按普通值，不感知引用）。**落点具名**（`lib/venv.js`）：`snapshotVenvConfig(raw) → { enabled, path, oldPathPolicy }`（逐叶去引用快照）＋组合纯函数 `assembleInjectionBag(raw) → { skillRoots, venv }`（`skillRoots` 原样透传、`venv` 经前者快照，**缺省补默认在此完成**——三默认值 `enabled:false` / `path:'~/.ppt-master/venv'` / `oldPathPolicy:'keep'`）；`apply` 只调该组合函数后下传。
 - **引入通道**：Config schema 依赖的 schemastery 经"宿主 node_modules 定位 + 受控解析（createRequire 等价通道）"获取，禁 ESM 裸导入（符号链接插件路径下必然 ERR_MODULE_NOT_FOUND）；插件零 npm 依赖声明保持（解析失败的 fail-loud 语义见 §6.1⓪）。
 - **`~` 展开基准**：按 DSH 宿主进程 HOME 展开（Node `os.homedir()` 实测语义：**HOME 为空串时返回空串、不回退**——该输入下 `~` 展开判无效走 §6 配置无效降级；仅 HOME **未设置**才回退 passwd 目录/getpwuid）；"与上游 config.py 的 `Path.home()/.ppt-master` 同一基准"仅 HOME 非空时成立（空串边界 Node/Python 行为分叉：Python `Path.home()`→`'/'`）；降级分支在解析结果非法（空/相对/空串 HOME）时触发（走 §6 配置无效降级）；本机容器 HOME=/root → 默认路径解析为 `/root/.ppt-master/venv`。
 - **默认路径理由**：`~/.ppt-master/venv` 兼顾非容器 DSH 用户的通用性，贴合上游 `~/.ppt-master/.env`（USER_ENV_FILE）目录惯例；容器用户宜显式配置到挂载卷（如 `/dsh-home/.ppt-master/venv`）。**挂载卷边界**：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（venv 内符号链接指向容器内绝对路径）；损坏恢复=删除重建（§6「venv 存在但体检不通过」行）。
-- **发现通道**：不调用 `ctx.settings.configure()`，沿用宿主 auto 出页默认策略——被发现的配置项按默认策略处置。
+- **发现通道**：不调用 `ctx.settings.configure()`，沿用宿主 auto 出页默认策略——被发现的配置项按默认策略处置。**〔勘误 ㉗〕** 该 auto 出页在本版对纯宿主插件**无渲染者**（同上），配置入口以 profile patch 为准。
 - **编辑期校验闭环**：路径形状约束（绝对或 `~` 前缀）不在 schema 层声明（schemastery 无法表达路径谓词），接受"可保存非法值"；可见反馈通道=入口 skill"配置无效"态 + check_env 的 `venv.path=null` 提示（不依赖宿主控制台 warn），warn 仅作日志补充。
 
 配置页版本注解：插件版本（package.json）、上游 skill 版本（skills 扫描 `metadata.version`）、SKILL_DIR——模块加载期求值并烘焙进 Config schema description（模块缓存内不重求值），随插件升级（版本变化→模块重载）换代。
@@ -148,7 +148,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 - ⓪ **schemastery 可解析**（宿主 node_modules 定位 + 受控解析，§3/§5.1）：解析失败=模块加载期故障→整插件不可加载（fail-loud，宿主 loader 记录该故障）——**vendor 技能面连带丢失**（技能 provider 与 Config 同处一个模块，不存在"无 Config 降级"形态）；README 注明诊断（宿主 node_modules 需存在该包）。**装载形态注记**：`scripts/check-dsh-compat.mjs` 对插件入口**不做顶层静态 import**——装载期 fail-loud 会抢先于 CLI 参数解析与 SDK 定位，使"无定位线索""未知参数"两例的断言语义失效；入口改在 **SDK 定位成功后**动态装载（机制见 §7.5）。
 - ① SettingsForms volatile 投影不可用→配置仍可 profile patch 手工编辑。
-- ② 宿主 config-editor 编辑通道：真实机制=`edit()`→reconcileProfilePatches→Loader 重建，配置变更**无条件热生效**（hmr 串行化）；通道不可用或热重载失败→配置变更于下次 DSH 重启时生效（兜底）。
+- ② 宿主 config-editor 编辑通道：真实机制=`edit()`→reconcileProfilePatches→Loader 重建，配置变更**无条件热生效**（hmr 串行化）；通道不可用或热重载失败→配置变更于下次 DSH 重启时生效（兜底）。**〔勘误 ㉘〕**「无条件热生效」限 config-editor `edit()`；**手工 profile patch 编辑在本部署不热生效**（实测：无 watcher 应用、无 reload 日志，live 工具仍报旧值），按本行兜底＝**下次 DSH 重启生效**处理——本版无设置页渲染者（㉗），故这就是常规路径。
 - ③ apply 第二参注入异常→venv 视为关闭 + warn。
 - ④ 合成入口 skill 候选（无文件、按设计**不带 `resourceBase`**）经真实注册面的接受性：**该字段已凭宿主源码实证为条件透传的可选字段**（`@deepseek-ai/dsh-skill/lib/index.js:445`/`:501`，本机装包实测），故"接受性未验证"措辞升级为 **"不带 `resourceBase` 的候选已实证该字段可选，接受性由 compat §7.7⑤ 实跑复核"**；降级：宿主拒绝则入口技能缺失（vendor 技能不受影响），README 诊断。
 
@@ -163,7 +163,7 @@ schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules �
 3. **入口 skill**：四态 body 内容断言（解释器路径、前置路由语、准备指引）；provider 数量 = vendor N + 1；不落盘断言；工具描述解释器提示语断言（venv 开时 `ppt_master_info`/`ppt_master_check_env` 描述含提示语——§5.3 交付项）。
 4. **apply 集成**：Config 默认值；config 注入路径（loader 形态、opts 覆盖、两者共存、venv 缺省默认值）；**volatile 引用→普通值快照断言**（loader 形态下叶子为引用对象，apply 下传前已 `.get()` 去引用）；无效配置降级 warn。
 5. **兼容面**：verify-plugin（入口 skill 不在 vendor 面——负向确认）；sync-upstream 零交互；check-dsh-compat 通过——验证面**扩展为 §7.7 五项全映射**（`ns.Config` volatile 声明 + apply 第二参注入通道 + bundle insert 层静态断言 + schemastery 受控解析通道 + 生产根形态经真实 SkillRegistry 读回入口技能）。**机制注记**：该脚本对插件入口**不做顶层静态 import**（装载期 schemastery fail-loud 会抢先于 CLI 参数解析与 SDK 定位，使"无定位线索""未知参数"两例的断言语义失效），入口改在 **SDK 定位成功后**动态 `import(PLUGIN_ENTRY)`、`apply` 取该动态命名空间的 `ns.apply`（`createTools` 仍为静态导入）。
-6. **真实树 smoke（验收期）**：本机以 `/dsh-home/.ppt-master/venv` 实建 venv + 实装 19 依赖（用户触发；该路径为本机**显式配置值**而非 `~` 展开结果，与默认值 `~/.ppt-master/venv` 构成默认/显式覆盖关系）；热重载验证：本机改配置→观察入口 skill 正文/工具行为换代（依赖 Config volatile 声明与 apply 统一注入通道成立）。
+6. **真实树 smoke（验收期）**：本机以 `/dsh-home/.ppt-master/venv` 实建 venv + 实装 19 依赖（用户触发；该路径为本机**显式配置值**而非 `~` 展开结果，与默认值 `~/.ppt-master/venv` 构成默认/显式覆盖关系）；前置＝profile `cordis.patch.yml` 手工条目（㉗）；**配置生效验证（㉘ 修订）**：本机改 profile patch → **重启 DSH** → 观察入口 skill 正文/工具行为换代（判据：`ppt_master_check_env` 的 `venv.enabled` 由 `false` 转 `true`、`path` 为所配值）。本版**无热重载通道**可验。
 7. **设计成立性前置检查**（可执行验收项）：① Config volatile 声明存在；② apply 第二参注入通道可用；③ profile `cordis.patch.yml` 存在 `id: dsh-ppt-master-wrapper` 条目（**分层**：仅 bundle insert 层可静态断言——本包 `cordis.patch.yml` 的 `insert:` 段；profile 层条目由宿主 config-editor 在首次设置页编辑且 `index<0` 时 `add` 代建，归**验收期人工步骤**，bundle 层静态存在不替代之）；④ schemastery 可解析性（compat 脚本经 §3 同一受控解析通道验证）；⑤ 入口技能经真实注册面接受（compat 脚本经真实 SkillRegistry 读回列表断言在场）。
 
 > 注记：本机 Node v22 下测试命令须用 glob 形态 `node --test tests/*.test.mjs`（目录形式 MODULE_NOT_FOUND）。
@@ -172,14 +172,14 @@ schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules �
 
 README 交付核对表（散点义务合并于此）：
 
-- venv 配置说明：容器挂载卷建议、PEP 668 说明、禁用后手动清理；入口 skill 用法、配置页指引。
+- venv 配置说明：容器挂载卷建议、PEP 668 说明、禁用后手动清理；入口 skill 用法、**配置指引（profile patch 手工条目 + 重启生效，㉗/㉘）**。
 - 挂载卷/镜像不变边界：挂载只保证数据不丢；跨容器重建后 venv 可用性依赖镜像不变（符号链接指向容器内绝对路径）；损坏恢复=删除重建（§5.1/§6）。
 - 标记即授权：已标记 venv 目录内混入的数据会被递归删除（§5.4 残留风险①）。
 - 孤儿处理：未标记孤儿手动处理；有标记无登记（容器重建后登记丢失，§5.4）手动处理。
-- 设置页诊断：不可投影/写入被拒时的 profile patch 手工编辑路径（§6.1①）。
+- 配置页诊断：本版对纯宿主插件**无渲染者**（㉗）——宿主侧 volatile 投影与命名空间就绪，缺的是客户端槽位注册者；配置一律走 profile patch 手工条目（§6.1①）。
 - schemastery 解析失败诊断：宿主 node_modules 需存在该包（§6.1⓪）。
 - 入口技能缺失诊断：宿主注册面拒绝**不带 `resourceBase`** 的合成候选时，vendor 技能不受影响（该字段已实证为条件透传的可选字段，接受性由 compat §7.7⑤ 实跑复核；§6.1④）。
 
 版本历史行随下次 sync 规则③ `-r` 递增发布（本特性为包装层提交，不触碰上游）。
 
-部署前置：首次使用配置页前需在 profile `cordis.patch.yml` 建立 `id: dsh-ppt-master-wrapper` 条目（宿主设置页编辑会代为建立 / 操作者手工建立，README 写明）。config 为整体替换语义：插件升级新增字段后，已存在的 patch 条目需比对补全新字段（否则新字段回落默认值）。
+部署前置（㉗/㉘ 修订）：使用 venv 前需在 profile `cordis.patch.yml` **手工建立** `id: dsh-ppt-master-wrapper` 条目，并**重启 DSH** 生效（本版无设置页渲染者、无 patch 热应用；若宿主版本存在渲染者，设置页保存亦会代建同形条目）。config 为整体替换语义：插件升级新增字段后，已存在的 patch 条目需比对补全新字段（否则新字段回落默认值）。

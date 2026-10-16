@@ -334,9 +334,11 @@ function samePlainRecord(left, right) {
  *
  * **分层重解释（不可越界）**：本包 patch 的顶层是 `- insert:` 列表项，其下才是
  * `- id: <插件 id>` 条目——compat 侧静态断言**只锁 bundle insert 层**。**profile 层**
- * 条目（`$DSH_HOME/profiles/<p>/cordis.patch.yml`）只在**首次设置页编辑且 `index<0`**
- * 时由宿主 config-editor `edit()` 以 `document.add({id,name,config})` 代建，故不写成
- * bundle 面静态断言——其落点是验收期人工步骤（见 README §8 核对表）。
+ * 条目（`$DSH_HOME/profiles/<p>/cordis.patch.yml`）在本版 DSH（0.2.0-rc.2）由操作者
+ * **手工写入**（纯宿主插件无设置页渲染者，见 spec 勘误 ㉗/㉘）；若宿主版本提供设置页，
+ * 则由宿主 config-editor `edit()` 在首次编辑且 `index<0` 时以
+ * `document.add({id,name,config})` 代建——两通道均不写成 bundle 面静态断言，
+ * 其落点是验收期人工步骤（见 README §8 核对表）。
  *
  * 零 npm 依赖、不引入 YAML 解析：以「`insert:` 行之后、下一个同级或更外层键之前」为
  * 段，段内收集 `- id:` 行。
@@ -616,7 +618,7 @@ export async function runCompatCheck(options = {}) {
    *   场景里自相矛盾地报成功）。
    */
   const reportStaticChecks = ({ pluginLoaded }) => {
-    // ③ bundle insert 层（静态源码文本断言；profile 层归宿主 config-editor + 验收期人工步骤）
+    // ③ bundle insert 层（静态源码文本断言；profile 层＝操作者手工条目 or 宿主 config-editor 代建 + 验收期人工步骤）
     const bundle = readBundleInsertIds();
     if (!bundle.ok) {
       problems.push(`§7.7③ bundle insert 层静态断言失败: ${bundle.reason}`);
@@ -633,7 +635,8 @@ export async function runCompatCheck(options = {}) {
       } else {
         notes.push(
           `§7.7③ bundle insert 层: cordis.patch.yml 的 insert 段含 id: ${expectedId}（静态源码文本断言）；`
-            + 'profile 层条目由宿主 config-editor 首次设置页编辑时代建 → 验收期人工步骤，不在 bundle 面静态断言',
+            + 'profile 层条目＝操作者手工写入（本版纯宿主插件无设置页渲染者，spec 勘误 ㉗）'
+            + '或宿主 config-editor 在设置页首次编辑时代建 → 验收期人工步骤，不在 bundle 面静态断言',
         );
       }
     }

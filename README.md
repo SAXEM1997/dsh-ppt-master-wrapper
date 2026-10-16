@@ -24,7 +24,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-ppt-master-wrapper.git
 ```
 
-安装后重启会话，`ppt-master` 技能即对 agent 可见（另有一个**内存合成**的入口技能 `ppt-master-env`——venv 解释器路由入口，不落盘，见下文「venv 隔离与插件配置页」）。DSH 通过 `resourceBase` 注入技能所在目录的绝对路径，由执行 agent 代入上游约定的 `${SKILL_DIR}`——机制等价满足上游 SKILL.md 的硬规则。
+安装后重启会话，`ppt-master` 技能即对 agent 可见（另有一个**内存合成**的入口技能 `ppt-master-env`——venv 解释器路由入口，不落盘，见下文「venv 隔离与配置入口」）。DSH 通过 `resourceBase` 注入技能所在目录的绝对路径，由执行 agent 代入上游约定的 `${SKILL_DIR}`——机制等价满足上游 SKILL.md 的硬规则。
 
 ## 首次使用：环境自检、依赖与 `.env`
 
@@ -54,14 +54,25 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 > 三个工具均为 **venv 感知**：`ppt_master_info` / `ppt_master_check_env` 的 payload 带 `venv` 小节（`enabled`（**配置值**）/`path`/`exists`/`pythonPath` 等）；`ppt_master_setup_deps` 的 payload 带 `venv` / `cleanup` 两节（其中 `enabled` 为**生效态**：配置关闭或无效行均为 `false`），且 venv 的创建/删除只发生在它。`venv.enabled=true` 时 `info`/`check_env` 的工具描述追加解释器提示语（模型未读入口技能时的兜底）。
 
-## venv 隔离与插件配置页（运维核对表）
+## venv 隔离与配置入口（运维核对表）
 
-插件声明原生 cordis Config（`venv.enabled` / `venv.path` / `venv.oldPathPolicy`，三叶子逐个 `.volatile()`），DSH 设置页自动出页；配置变更经宿主 config-editor → Loader 重建插件实例**热生效**（热重载失败兜底＝下次 DSH 重启生效）。**懒创建**：venv 的创建/删除**只**发生在 `ppt_master_setup_deps`，改配置本身零副作用。
+插件声明原生 cordis Config（`venv.enabled` / `venv.path` / `venv.oldPathPolicy`，三叶子逐个 `.volatile()`）。**配置入口实测（DSH 0.2.0-rc.2 本机部署，2026-10-16）**：宿主侧 `dsh-settings.describe()` 会为带 volatile 的 profile 条目投影出 settings 命名空间（`ns = 条目 id`、`applies:"live"`、带自动表单描述），但**本版没有任何客户端渲染者**——侧边栏「插件」页只渲染注册了 `plugins.bundle.config`（键＝包名）/ `plugins.row.config`（键＝`<包名>#<行id>`）槽位的卡片，而这些卡片由**插件自带的客户端半边**提供（本机注册者 dsh-mnemon / dsh-market / dsh-model-sync / dsh-context 各自只渲染自己）；官方条目同样由 companion 客户端包 `configForms.get(<固定命名空间>)` 渲染。「设置」里只有「内置插件」只读清单与市场自身的分区。纯宿主插件不带浏览器半边，故**本版 DSH 不会自动出配置页**。⇒ 配置入口＝**profile `cordis.patch.yml` 手工条目**（见「首次使用前」一节），且实测**该改动不热生效，需重启 DSH**（改 patch 后 live 工具 10 分钟以上仍报旧值、日志无 reload 记录；spec §6.1② 的「无条件热生效」仅适用于 config-editor `edit()` 通道，本版无 UI 到达该通道）。**懒创建**：venv 的创建/删除**只**发生在 `ppt_master_setup_deps`，改配置本身零副作用。
 
 ### venv 配置说明
 
 - **PEP 668 说明**：本机系统 Python 为 PEP 668（EXTERNALLY-MANAGED），裸 `pip3 install` 需 `--break-system-packages`，且装入容器 rootfs、重建即丢。开启 venv 隔离后由 `<venv>/bin/pip3 install -r ...` 安装，不受 PEP 668 拦截、依赖落在 `venv.path`。`user` / `breakSystemPackages` 两个参数**仅系统模式生效**，venv 模式下被忽略并在返回中注明。
-- **配置页指引**：DSH 设置页 → 插件 `dsh-ppt-master-wrapper` → venv 三项。`venv.path` 须为绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开；相对路径判无效 → venv 视为关闭 + 应用期 `console.warn`；可见反馈通道＝入口 skill「配置无效」态与 `ppt_master_check_env` 的 `venv.path=null`——渲染行逐字打印 `venv: enabled=true path=- exists=false python=skipped`）。注意：宿主设置页的 `applies:"live"` 是固定输出，真正的可编辑性来自字段的 volatile 声明。
+- **配置指引（profile patch——本版唯一入口）**：编辑 profile 的 `cordis.patch.yml`（本机 `/dsh-home/profiles/web/cordis.patch.yml`），追加
+
+  ```yaml
+  - id: dsh-ppt-master-wrapper
+    config:
+      venv:
+        enabled: true
+        path: /dsh-home/.ppt-master/venv
+        oldPathPolicy: keep
+  ```
+
+  **三个字段写全**——patch 的 `config` 是整体替换语义（缺字段回落默认值）；保存后**重启 DSH** 生效（本版无设置页可代建，patch 文件亦无 watcher 热应用）。`venv.path` 须为绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开；相对路径判无效 → venv 视为关闭 + 应用期 `console.warn`；可见反馈通道＝入口 skill「配置无效」态与 `ppt_master_check_env` 的 `venv.path=null`——渲染行逐字打印 `venv: enabled=true path=- exists=false python=skipped`）。生效核验：`ppt_master_check_env` 应打印 `venv: enabled=true path=<你的路径> …`。注：宿主设置页 describe 输出的 `applies:"live"` 是固定输出；本版不存在该页面的渲染者（见上节），别按它推断"改了就热生效"。
 - **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开、已建**且就绪**（就绪＝解释器 `<path>/bin/python3` 与安装路径 `<path>/bin/pip3` **两者**都可用，与 `setup_deps` 的收编体检同一判据）→ 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。**未就绪子态**（`on-ready` + `broken`：`bin/python3` 不可用，**或**有 `bin/python3` 但缺 `bin/pip3` 的半成品——`python3 -m venv` 在 ensurepip 阶段失败的残留）不属①：没有可用的解释器路径可替换，正文按②给「先 `setup_deps` 准备环境」的指引（`setup_deps` 会以恢复指引 fail-loud：手动删除该目录后重跑；缺 `bin/pip3` 时另提示"若系统缺 ensurepip，需先安装 `python3-venv`"）。**三面口径一致**：同一形态下 `info` 报 `exists=true ∧ pythonPath=null`、`check_env` 渲染 `python=not found`（deps 全 UNKNOWN、guard `{skipped}`）、入口正文按②——不存在"某面说健康、另一面说未就绪"的分叉。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
 - **禁用后手动清理**：`venv.enabled=false` **不删除任何目录**（禁用后清理纯手动）：`rm -rf <原 venv.path>`。旧路径同理——`oldPathPolicy=keep`（默认）时旧 venv 保留待手动清理，`delete` 也仅删「带所有权标记且满足删除四条件」的旧目录。
 - **容器挂载卷建议**：容器用户宜把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`），不要留在容器 rootfs。
@@ -81,7 +92,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 ### 诊断
 
-- **设置页诊断**：设置页不可投影 / 写入被拒（volatile 未声明或宿主版本不支持）时，插件功能不受影响——配置仍可 profile `cordis.patch.yml` 手工编辑（spec §6.1①）。
+- **配置页诊断**：本版 DSH 对**纯宿主插件**（无客户端半边）**不渲染**自动配置页——缺的是渲染者，不是 volatile 声明：宿主侧命名空间与表单描述已就绪（`dsh-settings.describe()` 为带 volatile 的 profile 条目产出 `ns = 条目 id`、`applies:"live"` 与 schema）。要让 GUI 出现 venv 表单，需给插件补客户端半边（注册 `plugins.bundle.config` / `plugins.row.config` 卡片）或做 companion 客户端包（注册 `plugins.item` 并用 `configForms.get('<条目 id>')`）。在此之前配置一律走 profile `cordis.patch.yml` 手工条目（spec §6.1①；勘误 ㉗/㉘）。
 - **schemastery 解析失败诊断**：插件装载期经「宿主 node_modules 定位 + `createRequire` 受控解析」取 `@deepseek-ai/schemastery`（**禁 ESM 裸导入**）；解析失败＝模块加载期 fail-loud，**整插件不可加载、vendor 技能面连带丢失**。诊断：确认宿主 profile 的 `node_modules` 内存在该包，且 `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME(+DSH_PROFILE)` 指向它（spec §6.1⓪）。
 - **入口技能缺失诊断**：宿主注册面若拒绝**不带 `resourceBase`** 的合成候选，则入口技能缺失，而 **vendor 技能不受影响**（入口不落盘、不进字节比对面）；该字段已被宿主源码实证为条件透传的可选字段，接受性由 `node scripts/check-dsh-compat.mjs` 的 §7.7⑤ 实跑复核（spec §6.1④）。
 - **配置无效行的措辞**：`enabled=true` + 非法路径时工具描述仍按**配置开关**显示 venv 提示语，实际行为按系统模式降级——以 `venv.path=null`（渲染行 `venv: enabled=true path=- exists=false python=skipped`）与入口 skill 第四态为准。
@@ -89,8 +100,8 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 ### 首次使用前：profile `cordis.patch.yml` 条目
 
 - **bundle insert 层**：本包自带 `cordis.patch.yml`（`insert:` 段内 `id: dsh-ppt-master-wrapper`），随插件安装生效——由 `check-dsh-compat` 静态断言。
-- **profile 层条目**：只在**首次于设置页编辑并保存任一 venv 字段**时由宿主 config-editor 代建（`index<0` → `add({id,name,config})`）；此前 profile 层无该条目属正常，bundle 层静态存在**不替代**它。操作者也可手工在 profile `cordis.patch.yml` 写同 id 条目（`config:` 下三个 venv 字段）。
-- **升级补全（config 整体替换语义）**：profile patch 内的 config 是**整体替换**而非深合并——插件升级新增字段后，已存在的 patch 条目须与新字段集比对补全，否则新字段回落默认值（例如升级后旧条目不会自动长出 `enabled`）。建议升级后在设置页重新保存一次，或手工补齐缺失字段。
+- **profile 层条目**：本版**由操作者手工建立**（上文 YAML；bundle 层的 `insert:` 只声明条目 id，不承载 config）。若宿主版本存在设置页渲染者，则首次编辑并保存任一 venv 字段时由宿主 config-editor 代建同形条目（`index<0` → `add({id,name,config})`）——两通道等价，先写者为准。bundle 层静态存在**不替代** profile 层条目。
+- **升级补全（config 整体替换语义）**：profile patch 内的 config 是**整体替换**而非深合并——插件升级新增字段后，已存在的 patch 条目须与新字段集比对补全，否则新字段回落默认值（例如升级后旧条目不会自动长出 `enabled`）。本版无设置页可"重新保存一次"，升级后**手工比对补全**缺失字段。
 
 ### 兼容面负向确认
 
