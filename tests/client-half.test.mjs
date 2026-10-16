@@ -1701,3 +1701,61 @@ test('README: 无「保存需重启」类禁语，且保留 patch 手工编辑�
   // ——该结论仍为真，改写时不得连带删除。
   assert.ok(readme.includes('重启 DSH'), 'README 丢失 patch 手工编辑→重启 DSH 生效语义');
 });
+
+// ─── 用例 46–48：2026-10-15 spec 勘误回写契约（Task 6 产物）────────────────
+// 取文＝2026-10-15 篇 spec 全文，**逐例体内现读**（同用例 41–45 的纪律：模块级读取
+// 遇 `ENOENT` 会使整文件加载期夭折，逐例红不可复现）。三条断言对应设计 §9 的三处
+// 回写：① ㉗ 指针（两处"新特性"行）／② §7.7 五项→六项／③ 机制更正（volatile 快路径）。
+
+/** 2026-10-15 篇 spec 全文（逐例体内调用）。 */
+function readVenvSpec() {
+  return readFileSync(
+    join(repoRoot, 'docs', 'superpowers', 'specs', '2026-10-15-ppt-master-venv-config-design.md'),
+    'utf8',
+  );
+}
+
+// 用例 46：㉗ 指针——含"新特性"的行**每行**都指向本篇 config-ui 设计（Produces ①）
+test('spec 2026-10-15: 含「新特性」的各行均追加指向 2026-10-16 config-ui 设计的指针', () => {
+  const spec = readVenvSpec();
+  const newFeatureLines = spec.split('\n').filter((line) => line.includes('新特性'));
+  assert.ok(newFeatureLines.length >= 2, `含「新特性」的行应至少两处（实际 ${newFeatureLines.length}）`);
+  for (const line of newFeatureLines) {
+    assert.ok(
+      line.includes('2026-10-16-ppt-master-config-ui-design.md'),
+      `「新特性」行缺指向 2026-10-16 config-ui 设计的指针: ${line}`,
+    );
+  }
+});
+
+// 用例 47：§7.7 五项→六项全映射 + 客户端半边（Produces ②）
+test('spec 2026-10-15: 验证面回写为 §7.7 六项全映射且含客户端半边 stub', () => {
+  const spec = readVenvSpec();
+  const line = spec.split('\n').find((l) => l.includes('§7.7 六项全映射'));
+  assert.ok(line !== undefined, 'spec 缺「§7.7 六项全映射」（仍写「五项」即未回写）');
+  assert.ok(
+    line.includes('客户端半边'),
+    '「§7.7 六项全映射」所在行未在括注清单末尾补「客户端半边 stub 装载与注册」',
+  );
+});
+
+// 用例 48：机制更正 ㉙ 按行定位（Produces ③）
+test('spec 2026-10-15: ㉙ 勘误两行（4.1 配置变更 / ② config-editor）＋ volatile 快路径结论', () => {
+  const spec = readVenvSpec();
+  const eLines = spec.split('\n').filter((l) => l.includes('㉙'));
+  assert.equal(eLines.length, 2, `㉙ 勘误行应恰两处（实际 ${eLines.length}）`);
+  // `②` 前缀是必须的：L50 `4.1 配置变更` 行内另有无前缀的「宿主 config-editor」描述，
+  // 裸串会双命中 → 下一条断言（恰一行）永红。
+  assert.equal(
+    eLines.filter((l) => l.includes('4.1 配置变更')).length,
+    1,
+    '㉙ 应恰一行落在「4.1 配置变更」锚点行',
+  );
+  assert.equal(
+    eLines.filter((l) => l.includes('② 宿主 config-editor 编辑通道')).length,
+    1,
+    '㉙ 应恰一行落在「② 宿主 config-editor 编辑通道」锚点行',
+  );
+  assert.ok(spec.includes('volatile 快路径'), 'spec 缺「volatile 快路径」机制更正');
+  assert.ok(spec.includes('不 remount'), 'spec 缺「不 remount」机制更正');
+});

@@ -851,8 +851,8 @@ export async function runCompatCheck(options = {}) {
       } else {
         notes.push(
           `§7.7③ bundle insert 层: cordis.patch.yml 的 insert 段含 id: ${expectedId}（静态源码文本断言）；`
-            + 'profile 层条目＝操作者手工写入（本版纯宿主插件无设置页渲染者，spec 勘误 ㉗）'
-            + '或宿主 config-editor 在设置页首次编辑时代建 → 验收期人工步骤，不在 bundle 面静态断言',
+            + 'profile 层条目＝操作者手工写入或宿主 config-editor 代建；设置页渲染者＝本包客户端半边'
+            + '（2026-10-16特性已交付）→ 验收期人工步骤，不在 bundle 面静态断言',
         );
       }
     }
