@@ -251,10 +251,12 @@ function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } =
       calls.formsGet.push(ns);
       return stubForm;
     },
+    // 真实宿主 `configForms.describe()` 返回 **mirror face**（无顶层 `view`）：ns 列表在
+    // `describe().getSnapshot().view.namespaces`。stub 逐字复刻该形状（standalone S3）。
     describe: () => {
       if (namespaces === 'throw') throw new Error('describe 不可用');
-      if (namespaces === undefined) return { view: {} };
-      return { view: { namespaces } };
+      if (namespaces === undefined) return { getSnapshot: () => ({ status: 'ready' }) };
+      return { getSnapshot: () => ({ status: 'ready', view: { namespaces } }) };
     },
   };
 
@@ -395,8 +397,10 @@ function renderCard(Component, props = { view: 'page' }) {
 /** 假表单快照（供 holder 订阅面驱动）。 */
 function makeFakeForm({ snapshot, subscribe } = {}) {
   const listeners = [];
-  return {
-    getSnapshot: () => snapshot,
+  // `snapshot` 为**可变**成员：宿主第三方推新值＝改此属性后广播（standalone S1 的
+  // "不广播只推进 revision"与"改值后广播"两形态都要能驱动）。既有用例只读它，语义不变。
+  const form = {
+    getSnapshot: () => form.snapshot,
     subscribe: (listener) => {
       listeners.push(listener);
       const off = () => {
@@ -407,8 +411,16 @@ function makeFakeForm({ snapshot, subscribe } = {}) {
       return off;
     },
     listeners,
-    mutate: () => Promise.resolve(true),
+    snapshot,
+    // 记录宿主写（与 `makeCtx` 缺省桩的 `calls.mutates` 同形：`[ops, revision]`）——
+    // 供"未触碰控件不发写 / 保存透传最新 revision"类断言直接在表单侧观测。
+    mutates: [],
+    mutate(ops, revision) {
+      form.mutates.push([ops, revision]);
+      return Promise.resolve(true);
+    },
   };
+  return form;
 }
 
 /** 捕获 `console.warn`，逐字断言后原样还原。 */
@@ -935,6 +947,13 @@ test('readOnly 与 memory 提示', () => {
   assert.equal(readOnlyText.includes(dict['state.memory']), false, '两状态文案不得同时出现');
   const disabledCount = findAll(readOnly.rendered.tree, (el) => el.props?.disabled === true).length;
   assert.ok(disabledCount >= 3, `readOnly 下三控件应禁用（实际 ${disabledCount}）`);
+  // standalone S2：`ready` 是**通道可用**态，不得与 readOnly 行同屏误显"配置通道不可用"。
+  assert.equal(
+    readOnlyText.includes(dict['state.unavailable']),
+    false,
+    `ready 态不得渲染 state.unavailable（通道可用与"通道不可用"互相矛盾）：${readOnlyText}`,
+  );
+  assert.equal(readOnlyText.includes('配置通道不可用'), false, `ready 态误显不可用文案：${readOnlyText}`);
 
   const memory = renderApplied(face, { form: makeFakeForm({ snapshot: { status: 'unavailable', writable: false, mode: 'memory' } }) });
   const memoryText = memory.rendered.text;
@@ -1757,4 +1776,103 @@ test('spec 2026-10-15: ㉙ 勘误两行（4.1 配置变更 / ② config-editor�
   );
   assert.ok(spec.includes('volatile 快路径'), 'spec 缺「volatile 快路径」机制更正');
   assert.ok(spec.includes('不 remount'), 'spec 缺「不 remount」机制更正');
+});
+
+
+// ─── 用例 49：宿主第三方更新不得被暂存态影子化（standalone S1）─────────
+
+test('宿主第三方更新: 未触碰控件时显示跟随新值且脏集为空', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  // 初始 ready 快照（rev 7）＋ 宿主控制器（`subscribe` 记录监听者，供"广播"驱动）。
+  const host = makeFakeForm({
+    snapshot: {
+      status: 'ready',
+      revision: 7,
+      writable: true,
+      value: { venv: { enabled: false, path: '/ORIGINAL', oldPathPolicy: 'keep' } },
+    },
+  });
+  const { ctx, calls } = makeCtx({ form: host });
+  face.apply(ctx);
+  const rendered = renderCard(calls.slotRegisters[0].Component);
+
+  const inputOf = (tree) => find(tree, (el) => el.props?.id === 'ppt-master-config-path');
+  const saveOf = (tree) => findAll(tree, (el) => el.props?.className === 'ppt-master-config-button')
+    .find((el) => textOf(el).includes('保存'));
+  assert.equal(inputOf(rendered.tree).props.value, '/ORIGINAL', '首帧应显示宿主基值');
+
+  // 用户**不碰任何控件**；宿主第三方更新推新值（rev 递增）并广播。
+  host.snapshot = {
+    status: 'ready',
+    revision: 8,
+    writable: true,
+    value: { venv: { enabled: false, path: '/HOST_CHANGED', oldPathPolicy: 'keep' } },
+  };
+  host.listeners.forEach((listener) => listener());
+
+  // ① 显示**跟随**宿主新值（暂存态不得把三叶全量影子化）。
+  assert.equal(
+    inputOf(rendered.tree).props.value,
+    '/HOST_CHANGED',
+    '宿主第三方更新后控件应显示新值（三叶全量种入 staged 会显陈旧）',
+  );
+
+  // ② 脏集为空 ⇒ 保存按钮禁用（不得以新 revision 把三个旧值写回）。
+  const save = saveOf(rendered.tree);
+  assert.ok(save !== undefined, '应有保存按钮');
+  assert.equal(save.props.disabled, true, '未触碰控件时脏集应为空 ⇒ 保存禁用');
+  assert.equal(host.mutates.length, 0, '未触碰控件不得发出任何宿主写');
+
+  // ③ revision 时效：宿主再推进 revision 但**不广播** → 改另一字段保存 → 第二参＝最新 revision。
+  host.snapshot = {
+    status: 'ready',
+    revision: 9,
+    writable: true,
+    value: { venv: { enabled: false, path: '/HOST_CHANGED', oldPathPolicy: 'keep' } },
+  };
+  const toggleOf = (tree) => find(tree, (el) => el.props?.role === 'switch');
+  toggleOf(rendered.settle()).props.onClick();
+  const saveAfter = saveOf(rendered.settle());
+  assert.equal(saveAfter.props.disabled, false, '改字段后应可保存');
+  await saveAfter.props.onClick(); // `commit` 经微任务链发出 `mutate`，须 await 后观测
+  assert.equal(host.mutates.length, 1, '保存应恰发一次宿主写');
+  assert.equal(host.mutates[0][1], 9, 'mutate 第二参应为**最新** revision（不缓存旧值）');
+
+  // S5 覆盖：宿主**原地改写**同一快照对象内的 `value`（snapshot 与 value 两个引用都不换，
+  // 只换内容、revision 也不动）时，卡片仍须跟随。此断言的可证伪性来自**渲染面**：
+  // 归一化快照若原样持有宿主 `value` 引用，`publish` 的两侧会同时看到新值 ⇒ 判等恒真、
+  // React 跳过重渲染；按三叶值比较（且读时取拷贝）则世代变化可见。
+  // 注：**仅**"显示跟随"本身不足以证伪——宿主对象被别名持有时读值也会跟着变；故本用例
+  // 另以 `venv` 读时拷贝的**独立性**断言（见下）承担可证伪性。
+  const inPlace = host.snapshot; // 沿用同一快照对象（不换引用）
+  inPlace.value.venv.path = '/IN_PLACE'; // 同 value 引用、换内容；revision **故意不动**
+  host.listeners.forEach((listener) => listener());
+  assert.equal(inputOf(rendered.tree).props.value, '/IN_PLACE', '原地改写后卡片应跟随');
+
+  // S5 覆盖的**如实边界**：上面的原地改写断言在"引用判等"实现下**同样通过**——因为
+  // `publish` 的 `previous` 与宿主 `value` 是同一对象，渲染重读 `valueOf` 时也会看到新值，
+  // 该路径无法区分两种判等实现。故 S5 的三叶值比较是**无独立可证伪断言**的加固（严格更安全：
+  // 一旦后续改为读写时拷贝/不可变快照，引用判等就会漏判世代）；此处如实登记，不谎称已覆盖。
+
+  // S7 覆盖：`revision` 非 number（敌意类型）⇒ 收窄为 `undefined`，渲染不抛且透传 undefined。
+  const weirdRev = makeFakeForm({
+    snapshot: { status: 'ready', revision: 'not-a-number', writable: true,
+      value: { venv: { enabled: false, path: '/WEIRD', oldPathPolicy: 'keep' } } },
+  });
+  const { ctx: wctx, calls: wcalls } = makeCtx({ form: weirdRev });
+  face.apply(wctx);
+  const weirdRendered = renderCard(wcalls.slotRegisters[0].Component);
+  assert.equal(
+    find(weirdRendered.tree, (el) => el.props?.id === 'ppt-master-config-path').props.value,
+    '/WEIRD',
+    'revision 类型不符时卡片仍须正常渲染',
+  );
+  find(weirdRendered.tree, (el) => el.props?.role === 'switch').props.onClick();
+  await findAll(weirdRendered.settle(), (el) => el.props?.className === 'ppt-master-config-button')[0]
+    .props.onClick();
+  assert.equal(weirdRev.mutates.length, 1, '类型不符 revision 仍应可保存');
+  assert.equal(weirdRev.mutates[0][1], undefined, '非 number revision 应收窄为 undefined 透传');
 });
