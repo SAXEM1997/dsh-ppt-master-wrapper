@@ -14,7 +14,7 @@
 - G2 原生配置页：Config schema 注解承载插件版本、上游版本、SKILL_DIR（模块加载期生成）；配置变更经 Loader 热重载即时生效。成立条件：Config 字段声明为 volatile 且宿主 config-editor 编辑通道可用（真实热重载机制见 §4.1/§6.1②）。
 - G3 入口 skill `ppt-master-env`：四态正文给出当前解释器契约（最近快照 + 实时工具指引）；description 声明"使用 ppt-master 前必读"。
 - G4 工具 venv 感知：`info`/`check_env`/`setup_deps` payload 增量字段；`setup_deps` 独占 venv 创建/删除副作用。
-- G5 旧 venv 生命周期：所有权标记 + `wrapper-state.json` 登记上次路径 + `oldPathPolicy`（默认 keep）；删除仅对满足 §5.4 前置（pyvenv.cfg 存在、带标记、路径≠当前且互不前缀包含）的目录。
+- G5 旧 venv 生命周期：所有权标记 + `wrapper-state.json` 登记上次路径 + `oldPathPolicy`（默认 keep）；删除仅对满足 §5.4 前置（pyvenv.cfg 存在、带标记、路径≠当前且互不前缀包含（含别名/同一实体判定））的目录。
 
 **非目标**
 - 实时状态面板 / 自研前端页（`dsh.client` 范式明确不采用）。
@@ -115,10 +115,10 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
    - **已存在 venv 解释器体检**：损坏（exists-but-broken）→ 不自动删（保守），返回 error 提示"手动删除该 venv 目录后重跑"（恢复指引，§6）。
    - **复用语义**：重新启用 venv 且同路径已存在有效 venv → 直接复用（`venvExists` 判定，缺才建，不重建）。
    - error 直通 §5.3 payload 的 `venv.error`，创建失败呈现以 §6 对应行为准。
-- `cleanupOldVenv(oldPath, policy, currentPath, { remove } = {}) → { action, error? }`（**`remove` 为可选删除注入缝**，缺省即 `rmSync` 递归——测试造删除失败用；删除仅当**前置四条件**：路径≠当前、新旧路径互不前缀包含（方向性判定：任一方以另一方为路径前缀即拒绝，防嵌套配置自毁）、`venvExists`、带标记；`rmSync` 递归）。
+- `cleanupOldVenv(oldPath, policy, currentPath, { remove } = {}) → { action, error? }`（**`remove` 为可选删除注入缝**，缺省即 `rmSync` 递归——测试造删除失败用；删除仅当**前置四条件**：路径≠当前（判定按规范化路径并判同一实体：`resolve` ＋ `realpath`，必要时 `dev+ino`）、新旧路径互不前缀包含（方向性判定：任一方以另一方为路径前缀即拒绝，防嵌套配置自毁）、`venvExists`、带标记；`rmSync` 递归）。
 - **tools 装配面（`lib/tools.js`）**：`createTools(opts)`，`opts = { skillRoots?, venv?, testSeams? }`；其中 `testSeams = { writeMarker?, writeWrapperState?, readWrapperState?, remove? }` 为**测试面专用**桩通道（生产省略、测试注入，替代 fs stub 观测面）。
 
-**删除安全模型**：前置四条件缺一不删。残留风险（显式接受）：① venv 建成后生命周期内混入的用户数据仍被递归删除（标记即授权，README 注明）；② 删除中途失败呈半删态——下轮 setup_deps 重试删除，`pyvenv.cfg` 仍在即仍符合删除条件；③ 孤儿目录（未标记）永不自动删。
+**删除安全模型**：前置四条件缺一不删（含别名/同一实体判定）。残留风险（显式接受）：① venv 建成后生命周期内混入的用户数据仍被递归删除（标记即授权，README 注明）；② 删除中途失败呈半删态——下轮 setup_deps 重试删除，`pyvenv.cfg` 仍在即仍符合删除条件；③ 孤儿目录（未标记）永不自动删。
 
 ## 6. 错误处理
 
@@ -126,7 +126,7 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 |---|---|
 | `python3 -m venv` 非零/spawn 失败（ensureVenv 失败） | 载荷定案：`installCmd` 如实给出、`installExit=-1`、`venv.created=false`、`venv.error`=原因，render 注明未执行；guard=`{skipped}`（无生效解释器，§5.3 口径）；复跑 check_env 按 venv-缺失口径——python 小节保持系统探测，依赖条目全 UNKNOWN 不回退系统探测；不 throw |
 | 目标目录非空且无 `pyvenv.cfg` | ensureVenv fail-loud 拒绝：`venv.created=false`、`venv.error="目标目录非空且非 venv"`，不创建、不写标记，载荷呈现同上行（installCmd 如实 + 注明未执行）；提示用户先处置该目录 |
-| venv 存在但损坏（exists-but-broken） | ensureVenv 体检不通过→不自动删（保守）；setup_deps fail-loud：`venv.error` 提示"手动删除该 venv 目录后重跑"（恢复指引）；check_env 按 §5.3 on-ready 子态口径（venv.python `{found:false,…}`、deps 全 UNKNOWN、guard=`{skipped}`） |
+| venv 存在但体检不通过（解释器不可用 / `bin/pip3` 缺失） | ensureVenv **两问体检**（`bin/python3` 可用 **且** `bin/pip3` 存在）任一不通过→不自动删（保守）；setup_deps fail-loud：`venv.error` 分两文案——解释器不可用＝"venv 解释器不可用（exists-but-broken）——手动删除该目录后重跑"、`bin/pip3` 缺失＝`venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑`（`python3 -m venv` 在 ensurepip **之前**就写好 `pyvenv.cfg`/`bin/python3`，故半成品会被解释器探测放行；收编它等于把 `<absPath>/bin/pip3` ENOENT 永久粘滞）；两文案均只给手动恢复指引；解释器不可用子态下 check_env 按 §5.3 on-ready 子态口径（venv.python `{found:false,…}`、deps 全 UNKNOWN、guard=`{skipped}`） |
 | venv 内 pip 安装失败 | 现行语义：非零记录不抛，复跑诊断 |
 | cleanup 删除失败 | `cleanup.action='failed'` + error 字符串，不抛 |
 | 配置 path 相对/无效（含 `~` 展开后仍非法；HOME 空串时 `~` 展开判无效——实测语义见 §5.1，不落根级路径） | apply 期 console.warn（日志补充；可见反馈通道见 §5.1 编辑期校验闭环），venv 视为关闭，入口 skill 写明修正方式 |
@@ -156,7 +156,7 @@ schemastery 由宿主提供（peer 解析来源：宿主 profile node_modules �
 
 ## 7. 测试策略
 
-1. **lib/venv.js 单测**：路径解析矩阵（`~`/绝对/相对）；exists；effectiveInterpreter 四态判定矩阵（含 exists-but-broken 子态与 invalid×disabled 组合）；ensureVenv（stub run：argv 断言、marker 写入、已存在收编、创建失败、目标目录三态前置——不存在/为空/含 `pyvenv.cfg` 放行、非空非 venv 拒绝、已存在 venv 解释器体检——损坏→拒绝且不删）；cleanup 决策矩阵（policy × 存在 × 标记 × 同/异路径 × 前缀包含（方向性） × 删除失败注入）；wrapper-state 写入（成功更新 lastVenvPath；写失败不更新且不影响安装结果——对齐 §6 写失败行）。
+1. **lib/venv.js 单测**：路径解析矩阵（`~`/绝对/相对）；exists；effectiveInterpreter 四态判定矩阵（含 exists-but-broken 子态与 invalid×disabled 组合）；ensureVenv（stub run：argv 断言、marker 写入、已存在收编、创建失败、目标目录三态前置——不存在/为空/含 `pyvenv.cfg` 放行、非空非 venv 拒绝、已存在 venv 解释器体检——损坏→拒绝且不删）；cleanup 决策矩阵（policy × 存在 × 标记 × 同/异路径 × 前缀包含（方向性） × **路径别名（文本/符号链接同实体）** × 删除失败注入）；wrapper-state 写入（成功更新 lastVenvPath；写失败不更新且不影响安装结果——对齐 §6 写失败行）。
 2. **tools venv 分支**：tmpdir 假 venv（`pyvenv.cfg` + marker）；info/check_env/setup_deps 的 venv 分支与 payload 断言；schema 快照（新增字段）；`installCmd` 形态（venv pip 路径；flags 忽略注明）；系统模式回归——系统模式行为断言保持全绿；既有 schema 形状断言（逐字属性集 deepEqual）随 venv 增量同步修订，修订面限于形状断言，行为断言不改。
 3. **入口 skill**：四态 body 内容断言（解释器路径、前置路由语、准备指引）；provider 数量 = vendor N + 1；不落盘断言；工具描述解释器提示语断言（venv 开时 `ppt_master_info`/`ppt_master_check_env` 描述含提示语——§5.3 交付项）。
 4. **apply 集成**：Config 默认值；config 注入路径（loader 形态、opts 覆盖、两者共存、venv 缺省默认值）；**volatile 引用→普通值快照断言**（loader 形态下叶子为引用对象，apply 下传前已 `.get()` 去引用）；无效配置降级 warn。

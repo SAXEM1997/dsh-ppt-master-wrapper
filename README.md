@@ -70,11 +70,11 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 ### 挂载卷 / 镜像不变边界
 
-挂载只保证**数据不丢**；跨容器重建后 venv 是否可用依赖**镜像不变**（venv 内符号链接指向容器内绝对路径）。镜像换代、或 venv 损坏（exists-but-broken：`venv.exists=true ∧ venv.python.found=false`）时，恢复方式＝**删除重建**：`rm -rf <venv.path>` 后重跑 `ppt_master_setup_deps`（工具不会自动删除损坏 venv，只给出该指引）。
+挂载只保证**数据不丢**；跨容器重建后 venv 是否可用依赖**镜像不变**（venv 内符号链接指向容器内绝对路径）。镜像换代、或 venv 损坏（exists-but-broken：`venv.exists=true ∧ venv.python.found=false`）时，恢复方式＝**删除重建**：`rm -rf <venv.path>` 后重跑 `ppt_master_setup_deps`（工具不会自动删除损坏 venv，只给出该指引）；**或半成品 venv（有 `bin/python3` 无 `bin/pip3`，即 `python3 -m venv` 在 ensurepip 阶段失败的残留）同样＝删除重建（工具不自动删，只给指引）**。
 
 ### 删除安全与孤儿处理
 
-- **标记即授权**：自动删除只对**带所有权标记**（`<venv>/.ppt-master-wrapper.json`）且同时满足四条件（路径≠当前、新旧路径互不前缀包含、`pyvenv.cfg` 存在、带标记）的目录生效。**已标记 venv 目录内混入的用户数据会被递归删除**——不要往 venv 目录里放数据。
+- **标记即授权**：自动删除只对**带所有权标记**（`<venv>/.ppt-master-wrapper.json`）且同时满足四条件（路径≠当前（**按规范化路径与文件系统实体判定**：重复分隔符、`.`/`..`、符号链接别名一律视为同一目录）、新旧路径互不前缀包含、`pyvenv.cfg` 存在、带标记）的目录生效。**已标记 venv 目录内混入的用户数据会被递归删除**——不要往 venv 目录里放数据。
 - **两类孤儿（均手动处理）**：
   1. **未标记孤儿**（目录是 venv 但无标记）：清理永不触碰（安全侧默认），`info` / `check_env` 也不提示——需手动 `rm -rf`。
   2. **有标记无登记孤儿**：登记位置固定为 `<HOME>/.ppt-master/wrapper-state.json`，而 venv 常居持久卷——**层级错配**：容器场景 HOME 易失，容器重建后登记丢失，旧 venv 便成「有标记但无登记」的孤儿；无登记即无清理依据，**永不自动删**，只能手动 `rm -rf`。取舍：登记位置保持 `<HOME>` 单一、不做多位置登记（spec §5.4/§8）。
