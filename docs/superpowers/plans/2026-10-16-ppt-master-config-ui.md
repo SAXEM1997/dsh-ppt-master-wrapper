@@ -22,7 +22,7 @@
 - **版本信息＝客户端常量**（`PLUGIN_VERSION` / `UPSTREAM_VERSION` / `SKILL_DIR_TAIL`），以**两条配对断言**防漂移：① 插件版本常量 ≡ `package.json.version`（`6.7.0-r2`）；② 上游版本常量 ≡ `skills/ppt-master/SKILL.md` 的 `metadata.version`（`6.7.0`）；归一化规则＝插件版本允许 `-rN` 后缀，按"上游版本 + 可选 `-rN`"配对，**不做三值相等**。卡片只显示固定相对尾部 `<包根>/skills/ppt-master`，**不显示绝对 SKILL_DIR**、**不读宿主 schema 注解**（宿主 `volatileForm` 重建 schema 丢弃根 description，注解不可达）。
 - **三叶子全 volatile ⇒ 保存走 volatile 快路径**（只写 `fiber._config` + `_commitVolatile()` → `loader/volatile-update`），**不 remount、不重跑 `apply`**。计划正文、代码注释、README 文案**不得**出现"保存后插件实例重建 / 保存需重启才生效"；重启边界只在**声明面**：改 `dsh.client` / `exports["./client"]` 需重启宿主，仅改 `lib/client.js` 免重启（宿主 stat 轮询热更新）。
 - **测试命令一律 glob 形态**：`node --test tests/*.test.mjs`（目录形态在本机失效）。**基线＝既有 527 用例全绿**；`node scripts/check-dsh-compat.mjs` 与 `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@b4efe3ddf237a97a42880164759162f8e2412f2f` 保持通过。每个 Task Step 4 至少复跑全量一次。
-- **compat 脚本只新增 §7.7⑥**（客户端半边可被 stub 装载并注册）。既有断言（①–⑤、默认值交叉锚定、rank 关系、漂移观测、CLI 五用例、`problems`/`warnings` 空集基线）**零弱化**；`tests/compat.test.mjs` **零改动**（其 `runCompatCheck 基线: stub SDK 全绿` 的 `problems` 空集断言即 §7.7⑥ 的正向集成守卫；机理见 T4"接线验证方式"段）。
+- **compat 脚本只新增 §7.7⑥**（客户端半边可被 stub 装载并注册）（含脚本内三处"五项"→"六项"注释同步改写）。既有断言（①–⑤、默认值交叉锚定、rank 关系、漂移观测、CLI 五用例、`problems`/`warnings` 空集基线）**零弱化**；`tests/compat.test.mjs` **零改动**（其 `runCompatCheck 基线: stub SDK 全绿` 的 `problems` 空集断言即 §7.7⑥ 的正向集成守卫；机理见 T4"接线验证方式"段）。
 - **零新增 npm 依赖、零构建链**：单文件手写、无 TypeScript / JSX / `.d.ts` / 打包器；`lib/client.js` 内**无 `import`/`export` 语句**（含动态 `import(`）；元素构造只用 `createElement`；卡片**只渲染原生元素**（不定义子组件、不用 Fragment、不声明 `children` 插槽）。
 - **卡片只用 `useState` 与 `useEffect` 两种 hook**（调用数上限：`useState` 至多 3 处、`useEffect` 至多 2 处）（无 `useMemo`/`useCallback`/`useRef`/`useSyncExternalStore`）——测试侧最小 hook 运行时即以此为准。
 - **locale 命名空间逐字＝`dsh-ppt-master-config`**；槽位名逐字＝`plugins.bundle.config`；槽位 `key` 逐字＝包名 `dsh-ppt-master-wrapper`（宿主插件页以 `ledger.bundles.has(pkg.name)` 决定是否渲染该 section：`key` 不等于包名⇒卡片根本不出现）；`zh`/`en` 两套字典**键集合必须相等**。
@@ -37,8 +37,8 @@
 | T2 | 卡片**读面**：版本信息块（两条配对常量）、三字段控件（switch/文本/选择器）+ 关闭态 / 路径无效 / 重置三处文案、Escape 回退、readOnly 与 memory 提示、敌意快照容错、渲染冒烟（`SlotAssemblyError` 触发条件规避） | T1 |
 | T3 | 卡片**写面**：暂存态与脏字段计算、嵌套 path 的 `set` ops（三叶子各一条）、重置三 `unset` ops、`revision` 透传、两类可观测量文案、无乐观更新、写门 | T1、T2 |
 | T4 | compat 脚本 §7.7⑥（`checkClientHalf` 客户端半边 stub 装载与注册断言）+ 其正/负用例 | T1（读 `lib/client.js`；**须串行**——T4 与 T2/T3 共用 `tests/client-half.test.mjs` 追加面，不得并行） |
-| T5 | README 配置入口更新（插件页卡片路径 / 重启边界 / memory 提示 / 配置页诊断分层 / compat「六项」字样）+ 文档契约断言 | T1–T4 |
-| T6 | 2026-10-15 spec 勘误回写（㉗ 指针、§7.7「五项→六项」、volatile 快路径机制更正）+ 文档契约断言 + 全量回归收尾 | T1–T5 |
+| T5 | README 配置入口更新（插件页卡片路径 / 重启边界 / memory 提示 / 配置页诊断分层 / compat「六项」字样）+ 文档契约断言 | T1–T4（含 T4 串行序） |
+| T6 | 2026-10-15 spec 勘误回写（㉗ 指针、§7.7「五项→六项」、volatile 快路径机制更正）+ 文档契约断言 + 全量回归收尾 | T1–T5（含 T4 串行序） |
 
 ## Review Focus
 
@@ -120,9 +120,9 @@
   13. `生命周期: dispose 回收两处 disposer；dispose 后再 apply 不抛`：`disposeAll()` 后 `calls.localeRegisters[0].disposed === true` 且 `calls.formUnsubscribed === true`；对新 `makeCtx()` 再 `apply` 不抛且注册面成立。
   14. `样式注入: 无 document 不抛；有 document 恰注入一次且含 token 与插件前缀类名`：最小 document 桩＝`{ head: { appendChild(el){ appended.push(el); } }, createElement: (tag) => ({ tag, id: '', textContent: '' }), getElementById: (id) => appended.find((el) => el.id === id) ?? null }`；同一桩下连续两次 apply（两个 ctx）→ `appended.length === 1`（幂等）；`appended[0].id === 'ppt-master-config-styles'`；`appended[0].textContent` 含 `--dsw-alias-` 与 `.ppt-master-config-`。
   15. `渲染冒烟: 三态壳各渲染一次不抛且文案互不相同`：`installHookRuntime()`；三态（快照 `undefined` / `loading` / `unavailable`）各 `renderCard(Component)` → `textOf` 分别命中对应字典值，三者互不相等；遍历 `tree` 断言每个元素 `typeof type === 'string'`。
-  16. `package.json 声明面`：`exports['./client'] === './lib/client.js'`；`dsh.client.platform === 'web'`；`dsh.client.inject` 深比较 `['@deepseek-ai/dsh-client-locale','@deepseek-ai/dsh-client-ui-plugin-manager']`；`dsh.client.external` 深比较 `['react']`；`files` 覆盖（`files.includes('lib') || files.includes('lib/client.js')`）；既有三条 `exports` 条目仍在。
+  16. `package.json 声明面`：`exports['./client'] === './lib/client.js'`；`dsh.client.platform === 'web'`；`dsh.client.inject` 深比较 `['@deepseek-ai/dsh-client-locale','@deepseek-ai/dsh-client-ui-plugin-manager']`；`dsh.client.external` 深比较 `['react']`；`files` 覆盖（`files.includes('lib') || files.includes('lib/client.js')`）；既有三条 `exports` 条目仍在（**首条断言必须是 `exports['./client']` 且不得重排**——其 `files` 覆盖与"既有三条 `exports` 条目仍在"两条子断言在 Step 2 时刻即绿，用例红灯由 exports 断言承担）。
 
-- [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL（用例 1–15 因 `lib/client.js` 不存在 → `ENOENT` 逐例转红；**用例 16 因 `package.json` 尚未增 `exports["./client"]`/`dsh.client` 而红——非 ENOENT**；合计 16 例红）；`node --test tests/skeleton.test.mjs` → FAIL：仅 `package.json: exports 三条目` 一条红（`'./client'` 缺于期望数组），其余全绿。
+- [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL（用例 1–15 因 `lib/client.js` 不存在 → `ENOENT` 逐例转红；**用例 16 因 `package.json` 尚未增 `exports["./client"]`/`dsh.client` 而红——非 ENOENT**（其 `files`/既有条目两条子断言此时即绿）；合计 16 例红）；`node --test tests/skeleton.test.mjs` → FAIL：仅 `package.json: exports 三条目` 一条红（`'./client'` 缺于期望数组），其余全绿。
 
 - [ ] **Step 3: 实现** — 建 `lib/client.js`（下述骨架为**必须满足的契约**，非逐字全文）：
   ```js
@@ -166,10 +166,10 @@
 - Test: `tests/client-half.test.mjs`（追加）
 
 **Interfaces:**
-- Consumes: T1 的 `loadEntry` / `makeCtx` / `installHookRuntime` / `renderCard` / `textOf` / `find`、`readSnapshot`、`DICT`、`Card`。
+- Consumes: T1 的 `loadEntry` / `makeCtx` / `installHookRuntime` / `renderCard` / `textOf` / `escapeRe` / `find`、`readSnapshot`、`DICT`、`Card`。
 - Produces: `readVenv(snapshot) -> { enabled: boolean|undefined, path: string|undefined, oldPathPolicy: 'keep'|'delete'|undefined }`（**只做类型化读取、不注入默认值**：`value?.venv?.[leaf]` 类型不符即 `undefined`）；常量 `PLUGIN_VERSION = '6.7.0-r2'`、`UPSTREAM_VERSION = '6.7.0'`、`SKILL_DIR_TAIL = '<包根>/skills/ppt-master'`（**逐字含尖括号**的展示串——`<包根>` 是卡片显示的符号占位、非模板变量）；测试侧定义 `PACKAGE_ROOT_ABS = dirname(CLIENT_ENTRY)`（包根绝对路径，供 T2①⑤ 的不泄漏断言）。卡片读面 DOM 契约（**T3 依赖的元素定位锚**）：
   - 根元素 `<div className="ppt-master-config-card">`；
-  - 版本块 `<div className="ppt-master-config-versions">`，内含 `version.plugin` + `PLUGIN_VERSION`、`version.upstream` + `UPSTREAM_VERSION`、`version.skillDir` + `version.skillDirValue`；
+  - 版本块 `<div className="ppt-master-config-versions">`，内含 `version.plugin` + `PLUGIN_VERSION`、`version.upstream` + `UPSTREAM_VERSION`、`version.skillDir` + `version.skillDirValue`；版本块内**不得出现**其它版本类串（如宿主版本 `0.2.0`——T2①③ 的 `every()` 以此为前提）；
   - 开关 `<button type="button" role="switch" aria-checked={enabled === true} className="ppt-master-config-switch">`（可访问名＝`field.enabled.label` 文本；`disabled` 当 `baseline.enabled === undefined`）；
   - 路径 `<label htmlFor="ppt-master-config-path">` + `<input id="ppt-master-config-path" type="text" className="ppt-master-config-input" value={staged.path ?? ''}>`（`onChange` 读 `event?.target?.value`；`onKeyDown` 见 Escape 契约；`disabled` 当 `baseline.path === undefined`）；
   - 策略 `<label htmlFor="ppt-master-config-policy">` + `<select id="ppt-master-config-policy" className="ppt-master-config-select">`，两个 `<option value="keep"|"delete">`（文本＝`option.keep`/`option.delete`；`disabled` 当 `baseline.oldPathPolicy === undefined`）；
@@ -190,7 +190,7 @@
 
 - [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL：追加 9 例红（版本块缺失 → `textOf` 不含版本串；`role="switch"` 不存在；三处文案未渲染；Escape 无效），T1 的 16 例保持绿。
 
-- [ ] **Step 3: 实现** — 在 `Card` 内加读面：`const snapshot = readSnapshot(holder.get())`；三态分支之外的 `ready` 分支渲染版本块 + 三字段 + 提示；`readVenv` 供 T3 复用（本 Task 即落地，字段渲染消费它）；`PLUGIN_VERSION`/`UPSTREAM_VERSION`/`SKILL_DIR_TAIL` 为**手写字面量常量**（与 `package.json`/`SKILL.md` 的一致性由本 Task 的两条配对断言守护）。26 键字典的**键集由 T1⑦ 钉死**；**被后续断言的值子串由 T2③④⑤、T3⑤⑥ 钉死**（DICT 值在 T1 随实现落地后即不可移；本 Task 只渲染与断言），文案须覆盖三项后果——关＝用系统 `python3` 且不删除任何目录（容器用户一眼判定"不需要开"）、路径非法不由 schema 拦（保存照常成功、插件侧按"配置无效"降级）、重置会删宿主 config 键（三字段回落继承层）。
+- [ ] **Step 3: 实现** — 在 `Card` 内加读面：`const snapshot = readSnapshot(holder.get())`；三态壳分支（`unconfigured`/`loading`/`unavailable`）之外的 `ready` 分支渲染版本块 + 三字段 + 提示；`readVenv` 供 T3 复用（本 Task 即落地，字段渲染消费它）；`PLUGIN_VERSION`/`UPSTREAM_VERSION`/`SKILL_DIR_TAIL` 为**手写字面量常量**（与 `package.json`/`SKILL.md` 的一致性由本 Task 的两条配对断言守护）。26 键字典的**键集由 T1⑦ 钉死**；**被后续断言的值子串由 T2③④⑤、T3⑤⑥ 钉死**（DICT 值在 T1 随实现落地后即不可移；本 Task 只渲染与断言），文案须覆盖三项后果——关＝用系统 `python3` 且不删除任何目录（容器用户一眼判定"不需要开"）、路径非法不由 schema 拦（保存照常成功、插件侧按"配置无效"降级）、重置会删宿主 config 键（三字段回落继承层）。
 
 - [ ] **Step 4: 运行确认通过** — `node --test tests/client-half.test.mjs` → PASS（25 例）；`node --test tests/*.test.mjs` → 全量全绿；`node scripts/check-dsh-compat.mjs` → OK。
 
@@ -206,7 +206,7 @@
 
 **Interfaces:**
 - Consumes: T1 的 `holder` / `readSnapshot`、T2 的 `readVenv` 与读面 DOM 契约。
-- Produces: `buildSetOps(baseline, staged) -> Array<{op:'set', path:['venv',string], value:any}>`（**固定叶子顺序** `enabled → path → oldPathPolicy`；仅当 `baseline[leaf] !== undefined && staged[leaf] !== baseline[leaf]` 产出一条）；`RESET_OPS = [{op:'unset',path:['venv','enabled']}, {op:'unset',path:['venv','path']}, {op:'unset',path:['venv','oldPathPolicy']}]`（模块级冻结常量）；卡片动作元素：`<button type="button" className="ppt-master-config-button">`（保存）与同形（重置），保存 `disabled = !(status==='ready' && writable===true) || ops.length === 0`，重置 `disabled = !(status==='ready' && writable===true)`；两按钮 `props.onClick` **返回 Promise**（可测性契约，React 事件处理器返回值无副作用）；notice 元素 `<p className="ppt-master-config-notice" role="status">`，文案＝`notice.pending` / `notice.saved` / `notice.rejected` / `notice.transportError` + 追加的错误消息；hook 计数在 T2 的 2 `useState` / 2 `useEffect` 之上**只增加第 3 个 `useState`（notice）**。
+- Produces: `buildSetOps(baseline, staged) -> Array<{op:'set', path:['venv',string], value:any}>`（**固定叶子顺序** `enabled → path → oldPathPolicy`；仅当 `baseline[leaf] !== undefined && staged[leaf] !== baseline[leaf]` 产出一条）；`baseline` **取自当前快照**（非 `staged` 内冻结值——`staged.baseRevision` 仅用于暂存态初始化，脏判定恒按当前基值现算）；`RESET_OPS = [{op:'unset',path:['venv','enabled']}, {op:'unset',path:['venv','path']}, {op:'unset',path:['venv','oldPathPolicy']}]`（模块级冻结常量）；卡片动作元素：`<button type="button" className="ppt-master-config-button">`（保存）与同形（重置），保存 `disabled = !(status==='ready' && writable===true) || ops.length === 0`，重置 `disabled = !(status==='ready' && writable===true)`；两按钮 `props.onClick` **返回 Promise**（可测性契约，React 事件处理器返回值无副作用）；notice 元素 `<p className="ppt-master-config-notice" role="status">`，文案＝`notice.pending` / `notice.saved` / `notice.rejected` / `notice.transportError` + 追加的错误消息；hook 计数在 T2 的 2 `useState` / 2 `useEffect` 之上**只增加第 3 个 `useState`（notice）**。
 - 写路由契约：`commit(ops)` → `form.mutate(ops, revision)`（**方法形态**调用；`revision` 取**当前**快照的 `revision`，可为 `undefined`）；`outcome === true` → `notice.saved`，否则 `notice.rejected`；`throw` → `notice.transportError` + `String(error?.message ?? error)`；**不改写**任何本地基值、**不**自行 bump revision；`ops.length === 0` 或 `form` 未接入 → 返回 `false` 且**不发** `mutate`。
 
 - [ ] **Step 1: 写失败测试**（Review Focus #3、#4）— 追加（假表单：`mutate` 以 `this` 自校验方法形态、记录 `structuredClone(ops)` 与 `revision`、按用例设定 resolve/reject；`subscribe` 记录退订）：
@@ -218,7 +218,7 @@
   6. `两类可观测量②（reject）`：`mutate` reject `new Error('boom')` → 不抛；`textOf` 含 `notice.transportError` 与 `'boom'`；`assert.equal(text.includes(DICT.zh['notice.rejected']), false)`（两类不混用）。
   7. `revision 时效（Review Focus #3）`：rev 7 保存一次 → 假快照换代 rev 8 并广播 → 再改字段保存 → 第二次 `mutate` 的 `revision === 8`，且第一条 `ops` 记录未被后续调用改写（`structuredClone` 记录的深比较仍成立）。
   8. `无乐观更新`：`mutate` resolve `true` 但**不**广播新快照 → 保存按钮 `disabled === false`（仍为脏）；随后广播新快照（值＝暂存值）→ `settle()` 后保存按钮 `disabled === true`。
-  9. `空脏集与写门（Review Focus #1/#4）`：①未改动即点保存 → `calls.mutates.length === 0` 且按钮 `disabled === true`；②`{status:'loading'}` 与 `{status:'ready', writable:false}` 两行 → 两按钮 `disabled === true`、点击不发 `mutate`；③`{status:'unavailable', writable:false, mode:'memory'}` → `state.memory` 提示在场、两按钮禁用。
+  9. `空脏集与写门（Review Focus #1/#4）`：①未改动即点保存 → `calls.mutates.length === 0` 且按钮 `disabled === true`；②`{status:'loading'}` 与 `{status:'ready', writable:false}` 两行 → 两按钮 `disabled === true`、点击不发 `mutate`；③`{status:'unavailable', writable:false, mode:'memory'}` → `state.memory` 提示在场、两按钮禁用；④`{status:'ready', writable:true, revision:undefined}` → 渲染不抛、改字段后可保存、`mutate` 收到的第二参为 `undefined`（Review Focus #1 的 `revision` 缺失形态，子例形式入 ⑨ 不另计用例数）。
   10. `pending 态`：`mutate` 返回未决 Promise（用手工可控的 deferred）；点击保存**不 await**（拿到该 Promise 存起来）→ `settle()` → `textOf` 含 `notice.pending` 且不含 `notice.saved`；随后 resolve deferred → `await` 该 Promise → `settle()` → 含 `notice.saved`。
 
 - [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL：追加 10 例红（无保存/重置按钮、无 `mutate` 调用），T1/T2 的 25 例保持绿。
@@ -234,7 +234,7 @@
 ### Task 4: compat 脚本 §7.7⑥（客户端半边 stub 装载与注册）
 
 **Files:**
-- Modify: `scripts/check-dsh-compat.mjs`（新增⑥判断体与接线，并**同步改写文件头 §7.7 描述"五项"→"六项"**（Step 3）；既有 ①–⑤ 判据、默认值交叉锚定、rank、漂移、CLI 行为一律不动）
+- Modify: `scripts/check-dsh-compat.mjs`（新增⑥判断体与接线，并**同步改写脚本内三处"五项"→"六项"注释**（:43 文件头、:105 判据锚分节、:603 主流程分节；Step 3）；既有 ①–⑤ 判据、默认值交叉锚定、rank、漂移、CLI 行为一律不动）
 - Test: `tests/client-half.test.mjs`（追加）
 
 **Interfaces:**
@@ -245,38 +245,38 @@
   - 接线：⑥判断体**并入 `reportStaticChecks` 函数体**（落在既有 ③④ 判断之后）；该函数在 `runCompatCheck` 内有**两个调用点**（装载失败路 `pluginNamespace === null` 分支、约 :660；装载成功路、约 :754），各执行一次 ⇒ ⑥ 随之**两路各出现一次**（装载失败路径同样给出⑥结论，与③④同纪律）；**不新增独立调用点**。`clientEntry` 由 `runCompatCheck` 的 deps 透传（测试注入缝，生产缺省＝真实文件）。
 
 - [ ] **Step 1: 写失败测试** — 追加：
-  1. `§7.7⑥: checkClientHalf 对真实 lib/client.js 全绿`：`import { checkClientHalf, PLUGIN_CLIENT_ENTRY } from '../scripts/check-dsh-compat.mjs'`；`assert.equal(PLUGIN_CLIENT_ENTRY.endsWith('/lib/client.js'), true)`；`const r = checkClientHalf()`；`assert.deepEqual(r.problems, [])`；`assert.match(r.note, /^§7\.7⑥ 客户端半边/)`；`note` 同时命中 `dsh-ppt-master-wrapper`、`plugins.bundle.config`、`configForms` 三个标记（证明 ①–④ 四项检查与 note 证据串非空跑）。
+  1. `§7.7⑥: checkClientHalf 对真实 lib/client.js 全绿`：`import { checkClientHalf, PLUGIN_CLIENT_ENTRY } from '../scripts/check-dsh-compat.mjs'`；`assert.equal(PLUGIN_CLIENT_ENTRY.endsWith('/lib/client.js'), true)`；`const r = checkClientHalf()`；`assert.deepEqual(r.problems, [])`；`assert.match(r.note, /^§7\.7⑥ 客户端半边/)`；`note` 同时命中 `dsh-ppt-master-wrapper`、`plugins.bundle.config`、`configForms` 三个标记（证明 ①–④ 四项检查与 note 证据串非空跑）（note 的第 4 串 locale ns 不在用例 1 断言内——由 ①–④ 要素断言覆盖，不重复断言）。
   **负向改写基准＝T1 Step 3 骨架的逐字文本**：先把真实 `lib/client.js` 复制到 tmpdir，再按下列各用例的唯一定位规则做文本替换；若某锚点在实现中出现多次，以 T1 契约指定处为准并在替换前断言唯一匹配。
   2. `§7.7⑥ 负向: inject 缺 locale → problems 指名`：把真实源复制到 tmpdir 并把 `inject: ['slots', 'locale']`（face 返回对象行内）文本替换为 `inject: ['slots']` → `checkClientHalf({clientEntry})` 的 `problems` 有且仅有含 `§7.7⑥` 的条目。
-  3. `§7.7⑥ 负向: loader id 非包名`：把 `id: 'dsh-ppt-master-wrapper'` 替换为 `id: 'other-plugin'`（骨架内恰一处）→ `problems` 含 `§7.7⑥` 且文本含包名与 `other-plugin`。
+  3. `§7.7⑥ 负向: loader id 非包名`：把 `id: 'dsh-ppt-master-wrapper'` 替换为 `id: 'other-plugin'`（以 `id: '` 前缀消歧后唯一——实现文件内包名字符串另有 NS/name 等多处，全局不唯一）→ `problems` 含 `§7.7⑥` 且文本含包名与 `other-plugin`。
   4. `§7.7⑥ 负向: 无 apply / apply 空转`：①删 `apply` 导出＝移除 face 返回对象中的 `apply` 键值对 → `problems` 含 `§7.7⑥`；②`apply` 体置空＝保留签名、体内仅 `/* noop */`（不动其余）→ `problems` 含 `§7.7⑥`（槽位未注册）。
-  5. `§7.7⑥ 负向: require Harness 客户端包 / 含 import 语句`：①把 `require('react')` 替换为 `require('@deepseek-ai/dsh-client-ui-primitives')`（骨架内恰一处 require）→ `problems` 含 `§7.7⑥`（假 require 拒绝并如实转 problems，不抛）；②在文件首行前插入 `import 'x';` → `new Function` 抛 `SyntaxError` → `problems` 含 `§7.7⑥` 且不冒泡。
+  5. `§7.7⑥ 负向: require Harness 客户端包 / 含 import 语句`：①把 `require('react')` 替换为 `require('@deepseek-ai/dsh-client-ui-primitives')`（定位＝`const React = require('react')` 的**字符串字面量**恰一处；仅替换该字面量，**不得触碰** `factory: (require) =>` 形参）→ `problems` 含 `§7.7⑥`（假 require 拒绝并如实转 problems，不抛）；②在文件首行前插入 `import 'x';` → `new Function` 抛 `SyntaxError` → `problems` 含 `§7.7⑥` 且不冒泡。
 
-  **接线验证方式（不写 hermetic 集成用例）**：`runCompatCheck` 在 SDK 定位失败时提前返回、不进入第 7 步报告段，故不能用"缺 `dshModules`"的调用来断言⑥行在场；重建 `tests/compat.test.mjs:399` 起的 `makeStubSdk`（函数体约 :399–:560、约 160 行）代价过高（见偏差登记 10）。故⑥的**全流程行在场**由 Step 4 的两条命令守卫：`node scripts/check-dsh-compat.mjs` 实跑断言 stdout 含 `§7.7⑥ 客户端半边` 行；`node --test tests/compat.test.mjs` 的既有 `runCompatCheck 基线: stub SDK 全绿`（`problems` 空集）与 `CLI: §7.7 五项断言行 … → exit 0` 保持绿（⑥ 若在真实文件上失败，该 `problems` 空集用例即转红）。
+  **接线验证方式（不写 hermetic 集成用例）**：`runCompatCheck` 在 SDK 定位失败时提前返回、不进入第 7 步报告段，故不能用"缺 `dshModules`"的调用来断言⑥行在场；重建 `tests/compat.test.mjs:398` 起的 `makeStubSdk`（函数体约 :398–:541、约 144 行）代价过高（见偏差登记 10）。故⑥的**全流程行在场**由 Step 4 的两条命令守卫：`node scripts/check-dsh-compat.mjs` 实跑断言 stdout 含 `§7.7⑥ 客户端半边` 行；`node --test tests/compat.test.mjs` 的既有 `runCompatCheck 基线: stub SDK 全绿`（`problems` 空集）与 `CLI: §7.7 五项断言行 … → exit 0` 保持绿（⑥ 若在真实文件上失败，该 `problems` 空集用例即转红）。
 
-  **守卫机理与既有用例名登记**：① `problems` 空集用例对⑥的守卫力来自——该桩跑调用形为 `runCompatCheck({ dshModules, env })` **不传 `clientEntry`** ⇒ ⑥ 以缺省真实 `lib/client.js` 运行；且该用例断言 §7.7① 在场 ⇒ 必走装载成功路（`reportStaticChecks` 两调用点之一）⇒ ⑥ 在该用例内于真实文件上执行。② 既有两条用例名含"五项"字样（`runCompatCheck §7.7 五项…` 与 `CLI: §7.7 五项断言行…`）在 stdout 变六行后**名实不符但保持字面不动**（`tests/compat.test.mjs` 零改动约束优先；二者只断言 ①–⑤ 在场、不排斥 ⑥，不会转红）——此名实不符已知并接受，不改名。
+  **守卫机理与既有用例名登记**：① `problems` 空集用例对⑥的守卫力来自——该桩跑调用形为 `runCompatCheck({ dshModules, env })` **不传 `clientEntry`** ⇒ ⑥ 以缺省真实 `lib/client.js` 运行；且该用例断言 `problems` **空集** ⇒ 装载失败路会向 `problems` 压入『§7.7①/②/⑤ 无法判定：插件入口装载失败』⇒ 空集即证该桩跑必走 `:754` 装载成功路（`reportStaticChecks` 两调用点之一）⇒ ⑥ 在该用例内于真实文件上执行。② 既有两条用例名含"五项"字样（`runCompatCheck §7.7 五项…` 与 `CLI: §7.7 五项断言行…`）在 stdout 变六行后**名实不符但保持字面不动**（`tests/compat.test.mjs` 零改动约束优先；二者只断言 ①–⑤ 在场、不排斥 ⑥，不会转红）——此名实不符已知并接受，不改名。
 
 - [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → **整文件加载期失败**：静态 `import { checkClientHalf, PLUGIN_CLIENT_ENTRY } from '../scripts/check-dsh-compat.mjs'` 在两导出尚不存在时于模块加载期抛 `SyntaxError: The requested module … does not provide an export named 'checkClientHalf'`，node --test 报 `# tests 1 / # fail 1`（**单条红＝整文件**；静态 import 属模块级依赖，无法逐例隔离）；T1–T3 的既有例在本步**不可观测**，待 Step 3 落两导出后于 Step 4 复验 40 例全绿。
 
-- [ ] **Step 3: 实现** — 追加 `PLUGIN_CLIENT_ENTRY`、`checkClientHalf`、`reportStaticChecks` 内的接线与 `runCompatCheck` 的 `clientEntry` 透传；文件头第 43–48 行区域的"§7.7 五项"描述改为"六项"并补⑥一行说明（脚本自带文档注释，按代码文本定位）。**不得**改动 ①–⑤ 任何判据、不得放宽 `problems` 判定。
+- [ ] **Step 3: 实现** — 追加 `PLUGIN_CLIENT_ENTRY`、`checkClientHalf`、`reportStaticChecks` 内的接线与 `runCompatCheck` 的 `clientEntry` 透传；脚本内三处"五项"注释（:43 文件头、:105 判据锚分节、:603 主流程分节）改为"六项"，并在 :43 文件头处补⑥一行说明（按代码文本定位）。**不得**改动 ①–⑤ 任何判据、不得放宽 `problems` 判定。
 
 - [ ] **Step 4: 运行确认通过** — `node --test tests/client-half.test.mjs` → PASS（40 例）；`node --test tests/compat.test.mjs` → 全绿（**既有基线不回归**：`problems` 空集用例即⑥的正向集成守卫）；`node --test tests/*.test.mjs` → 全量全绿；**实跑** `node scripts/check-dsh-compat.mjs` → exit 0 且 stdout 出现 `§7.7⑥ 客户端半边` 行，并与 ①–⑤ 五行并存（缺一即未完成）。
 
 - [ ] **Step 5: Refactor（可选）** — `checkClientHalf` 与 `tests/client-half.test.mjs` 的 `loadEntry`/假 `require` 夹具逻辑同形；**不合并**（测试不得依赖被测脚本的测试替身），仅在两处注释中互相指认，避免日后单边漂移。
 
-- [ ] **Step 6: Commit** — `git add scripts/check-dsh-compat.mjs tests/client-half.test.mjs && git commit -m "feat(compat): §7.7⑥ 客户端半边 stub 装载与注册断言（既有五项不弱化）"`
+- [ ] **Step 6: Commit** — `git add scripts/check-dsh-compat.mjs tests/client-half.test.mjs && git commit -m "feat(compat): §7.7⑥ 客户端半边 stub 装载与注册断言（既有①–⑤不弱化）"`
 
 ### Task 5: README 配置入口与诊断更新
 
 **Files:**
-- Modify: `README.md`（「venv 隔离与配置入口（运维核对表）」的「venv 配置说明」段、「诊断」段、以及「本地校验（开发）」的 compat 说明三处；当前约在 57–108 与 141–144 行，**行号仅作定位辅助**，一律按引用文本定位）
+- Modify: `README.md`（「### venv 配置说明」段、「### 诊断」段（含其下"配置页诊断"条目）、「## 本地校验（开发）」的 compat 注释行三处；当前约在 57–108 与 141–144 行，行号仅作定位辅助，一律按引用文本定位）
 - Test: `tests/client-half.test.mjs`（追加文档契约断言）
 
 **Interfaces:**
 - Consumes: T1–T4 的产物（声明面、卡片、compat⑥）。
 - Produces: README 中四段可断言文本：①「插件页卡片（本版可用）」bullet（含"插件页 → 已安装 → `dsh-ppt-master-wrapper`"路径、三字段 + 版本信息块、保存走 volatile 快路径**免重启生效**、中英双语跟随界面语言、**memory 模式提示**"本次会话不会写入宿主配置"）（"三字段＋版本信息块、双语跟随界面语言"为叙述性内容，不入 Step 1 断言——由 T2③ 运行时用例守卫）；②「重启边界」bullet（改 `dsh.client` / `exports["./client"]` 需重启；仅改 `lib/client.js` 免重启，stat 轮询热更新； profile patch 手工编辑仍不热生效、需重启）；③「配置页诊断」改写（卡片不出现时的四层排查：声明面是否生效（改后需重启）→ 宿主页 `dsh-client-ui-plugin-manager` 是否在（槽位无人声明 ⇒ 卡片不出现）→ `configForms` 服务缺失 ⇒ 卡片显示"配置通道不可用" → 老宿主不认 `dsh.client` ⇒ 安静降级、插件功能不受影响；硬服务 `slots`/`locale` 缺失 ⇒ `apply` 不被调用、宿主上报 `pending (waiting for service…)`）；④ compat 说明行"spec §7.7 五项设计成立性前置检查" → "六项"并补"客户端半边 stub 装载与注册"。
 
-- [ ] **Step 1: 写失败测试** — 追加文档契约用例（读 `../README.md` 文本）：①含复合子串 `插件页`、`已安装`、`dsh-ppt-master-wrapper`、`免重启`（**防改前即绿**：现 README 已含"插件」页"措辞 ⇒ `插件页` 单独不构成红灯，本条有效红灯承担者＝`已安装`＋`免重启`）；②含 `不会写入宿主配置`；③含 `dsh.client` 与 `exports\["\.\/client"\]|exports\['\.\/client'\]` 两种拼写之一 + `重启`；④含 `§7.7` 与 `六项`；⑤负向断言（与 GC 禁语一一对应）：不含 `保存后插件实例重建`、`保存后需重启`、`保存需重启` 三类被推翻措辞；**保护另一通道语义**——README 既有"patch 手工编辑→重启 DSH 生效"（现约 L75、加粗形态）属 profile 手工通道、仍然为真，改写时**不得删除**，并加正向断言：README 仍含 `重启 DSH`。
+- [ ] **Step 1: 写失败测试** — 追加文档契约用例（读 `../README.md` 文本）：①含复合子串 `插件页`、`已安装`、`dsh-ppt-master-wrapper`、`免重启生效`（**防改前即绿**：现 README 已含"插件」页"与"Python 依赖已安装"等语义无关命中 ⇒ `插件页`/`已安装` 均不构成红灯，本条唯一有效红灯承担者＝`免重启生效`）；②含 `不会写入宿主配置`；③含 `dsh.client` 与 `exports\["\.\/client"\]|exports\['\.\/client'\]` 两种拼写之一 + `重启`；④含 `§7.7` 与 `六项`；⑤负向断言（与 GC 禁语一一对应）：不含 `保存后插件实例重建`、`保存后需重启`、`保存需重启` 三类被推翻措辞（三类为 GC 禁语的**子串覆盖**——`保存需重启` 覆盖 GC 的"保存需重启才生效"）；**保护另一通道语义**——README 既有"patch 手工编辑→重启 DSH 生效"（现约 L75、加粗形态）属 profile 手工通道、仍然为真，改写时**不得删除**，并加正向断言：README 仍含 `重启 DSH`。
 - [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL（追加 5 条红：README 无卡片路径/无六项字样），T1–T4 用例保持绿。
 - [ ] **Step 3: 实现** — 按 Produces 四段改写 README（**键名与配置写法不变**：`venv.enabled` / `venv.path` / `venv.oldPathPolicy`；不得写"保存后插件实例重建"）。
 - [ ] **Step 4: 运行确认通过** — `node --test tests/client-half.test.mjs` → PASS（45 例）；`node --test tests/*.test.mjs` → 全量全绿；`node scripts/check-dsh-compat.mjs` → OK。
@@ -293,7 +293,7 @@
 - Consumes: T1–T5 全部产物；设计 §9 的回写清单。
 - Produces: 该 spec 内三处可断言文本——① **㉗ 指针**：「GUI 出页属**新特性**（须反转 §2 非目标，另立项）」（现约第 14 行）与「属**新特性**，另行立项」（现约第 20 行）两处各追加同一指针句（指向 `docs/superpowers/specs/2026-10-16-ppt-master-config-ui-design.md`，并注明"已立项交付"）；② **§7.7 六项**：「验证面**扩展为 §7.7 五项全映射**」（现约第 165 行）改为「验证面**扩展为 §7.7 六项全映射**」并在括注清单末尾补 `+ 客户端半边 stub 装载与注册`；③ **机制更正**：`- **4.1 配置变更**：…` 与 `- ② 宿主 config-editor 编辑通道：…` 两行各追加一条 `〔勘误 ㉙（2026-10-16 config-ui 特性回写）〕`：三叶子全 volatile ⇒ config-editor `edit()` 保存走宿主 **volatile 快路径**（只写 `fiber._config` + `_commitVolatile()` → `loader/volatile-update`，**不 remount、不重跑 `apply`**），原「Loader 重建插件实例」措辞对本 Config 不成立；入口 skill 正文/工具行为随 volatile 引用原地换代。**键名与 schema 不动**。
 
-- [ ] **Step 1: 写失败测试** — 追加文档契约用例（读该 spec 文本，令 `spec` 为该文件全文）：① 取 `spec.split('\n').filter((line) => line.includes('新特性'))`，断言该集合非空且每行都含 `2026-10-16-ppt-master-config-ui-design.md`（至少两行，即「须反转 §2 非目标，另立项」与「另行立项」两处）；② `assert.match(spec, /§7\.7 六项全映射/)` 且同一行含 `客户端半边`；③ ㉙**按行定位**：`const eLines = spec.split('\n').filter((l) => l.includes('㉙'))` → `eLines.length >= 2` 且其中恰一行含 `4.1 配置变更`、恰一行含 `宿主 config-editor`（各一处、不得同行）；且 `spec` 含 `volatile 快路径` 与 `不 remount`。
+- [ ] **Step 1: 写失败测试** — 追加文档契约用例（读该 spec 文本，令 `spec` 为该文件全文）：① 取 `spec.split('\n').filter((line) => line.includes('新特性'))`，断言该集合非空且每行都含 `2026-10-16-ppt-master-config-ui-design.md`（至少两行，即「须反转 §2 非目标，另立项」与「另行立项」两处）；② `assert.match(spec, /§7\.7 六项全映射/)` 且同一行含 `客户端半边`；③ ㉙**按行定位**：`const eLines = spec.split('\n').filter((l) => l.includes('㉙'))` → `eLines.length === 2` 且其中恰一行含 `4.1 配置变更`、恰一行含 `② 宿主 config-editor 编辑通道`（**必须带 `②` 前缀**——L50 行内另有无前缀的"宿主 config-editor"描述，裸串会双命中致断言永红；两锚点行各得一条 ㉙，`②` 前缀即用于区别）；且 `spec` 含 `volatile 快路径` 与 `不 remount`。
 - [ ] **Step 2: 运行确认失败** — `node --test tests/client-half.test.mjs` → FAIL（追加 3 条红），T1–T5 用例保持绿。
 - [ ] **Step 3: 实现** — 按 Produces 逐处回写（逐条勾销，缺一即未完成）。此步**不动**任何代码路径。
 - [ ] **Step 4: 运行确认通过（收尾）** — `node --test tests/client-half.test.mjs` → PASS（48 例）；`node --test tests/*.test.mjs` → **全量全绿**（`# tests` 计数＝527＋48＝575，`# fail 0`）；`node scripts/check-dsh-compat.mjs` → exit 0 且 §7.7①–⑥ 六行齐；`node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.0@b4efe3ddf237a97a42880164759162f8e2412f2f` → OK（vendor `skills/` 字节零漂移）；`git status --porcelain` → 仅本特性的五个文件（`lib/client.js`、`package.json`、`tests/skeleton.test.mjs`、`tests/client-half.test.mjs`、`scripts/check-dsh-compat.mjs`）与两个文档（`README.md`、2026-10-15 spec）。
@@ -313,7 +313,7 @@
 7. **Escape 语义**：设计仅要求"保留焦点与 Escape"；本计划钉为"Escape 使该字段暂存值回落基值"。
 8. **写门不读 `mode`**：`mode==='memory'` 走"常显提示"，写门仍严格取 `status==='ready' && writable===true`（与设计"必读 writeable/mode"两字段各自用途一致；实测 memory 持久化下 `status` 恒 `'unavailable'`、`writable` 恒 `false`，按钮自然禁用）。
 9. **卡片只渲染原生元素 / 只用两种 hook（`useState` 至多 3 处、`useEffect` 至多 2 处调用）**：为本特性测试策略（元素树文案断言 + 最小 hook 运行时）所必需的实现约束，非外部契约。
-10. **§7.7⑥ 全流程行在场的验证方式**：不重建 `tests/compat.test.mjs:399` 起的 `makeStubSdk`（函数体约 :399–:560、约 160 行，重复代价过高）；改以"Step 4 实跑命令断言 ⑥ 行出现"＋"既有 `runCompatCheck 基线: stub SDK 全绿`（`problems` 空集）作为正向集成守卫"（守卫机理见 T4"接线验证方式"段）。
+10. **§7.7⑥ 全流程行在场的验证方式**：不重建 `tests/compat.test.mjs:398` 起的 `makeStubSdk`（函数体约 :398–:541、约 144 行，重复代价过高）；改以"Step 4 实跑命令断言 ⑥ 行出现"＋"既有 `runCompatCheck 基线: stub SDK 全绿`（`problems` 空集）作为正向集成守卫"（守卫机理见 T4"接线验证方式"段）。
 
 ## 验收期人工步骤（设计 §9 照搬；用户触发，不入自动化测试面）
 
@@ -341,5 +341,5 @@
 1. **"既有测试零改动"与 `exports["./client"]` 互斥**（最高优先）：`tests/skeleton.test.mjs` 的 `package.json: exports 三条目` 断言 `Object.keys(pkg.exports).sort()` 逐字等于三条目；本特性硬性要求新增 `exports["./client"]` ⇒ 该用例必然转红。计划按"最小形状同步 + 不弱化"处置（追加一条断言、期望数组补一项、用例名改四条目），并已在 Global Constraints 显式登记为唯一例外。**请确认此例外**，否则该特性无法在不改这一条断言的前提下交付。→ **裁决：批准**为唯一例外——设计自身要求的 `exports["./client"]` 新增与该逐字断言数学互斥、"零改动"不变量的立法意图是防弱化防回归，而本处置只增不删（原三条断言原样保留、追加一条、期望数组同步形状），符合意图；设计修订记录（5）同步登记。
 2. **`external: ["react"]` 与实测证据冲突**：设计 §5.1 声明"`external` 必须声明 `react`"，但 V5 又授权"若实测为基线则删除"，而实测证据（六个已装客户端插件无一声明、其中两个在 bundle 内 require react；loader 对 seed 词直接跳过）指向 react 已是种子词。计划按硬事实保留该字段（无害），但设计 §8 V5 的结论文本需相应回写——**是保留并回写"实测为基线但保留声明"，还是按 V5 删除该字段？** → **裁决：保留 `external: ["react"]`**——与设计 §7.2 静态断言一致、对种子词无害且防未来宿主种子表收缩；实测结论已按勘误 V5′ 回写设计（§5.1/§8/修订记录（5））。
 3. **`mode === 'memory'` 的写门**：设计只要求"显式提示"，未说是否禁用按钮。计划让提示常显、写门仍只取 `status`/`writable`（实测 memory 下二者分别恒为 `'unavailable'`/`false`，按钮自然禁用）——若意图是"memory 下仍允许点击并由宿主返回 `{ok:false}` 呈现第一类可观测量"，需明确，因为该路径在实测形态下不可达。→ **裁决：维持计划处置**——提示常显、写门只取 `status`/`writable`，为设计"两字段各自用途"的自然读法；memory 实测形态下按钮自然禁用、第一类可观测量在该形态不可达为既定事实，不为其构造不可达路径的测试。
-4. **§7.7⑥ 的集成验证方式**：计划的⑥全流程行在场只用"实跑命令 + 既有 `problems` 空集基线"守卫（不重建 `makeStubSdk`，避免约 160 行重复）。若要求⑥也拥有 hermetic 的集成用例（stub SDK 全流程），需放宽"`tests/compat.test.mjs` 零改动"以导出其夹具。→ **裁决：维持计划处置**——不重建 `makeStubSdk`（约 160 行重复代价过高）；实跑 CLI 断言 ⑥ 行在场 ＋ 既有 `problems` 空集基线充当⑥的正向集成守卫已足。
+4. **§7.7⑥ 的集成验证方式**：计划的⑥全流程行在场只用"实跑命令 + 既有 `problems` 空集基线"守卫（不重建 `makeStubSdk`，避免约 144 行重复）。若要求⑥也拥有 hermetic 的集成用例（stub SDK 全流程），需放宽"`tests/compat.test.mjs` 零改动"以导出其夹具。→ **裁决：维持计划处置**——不重建 `makeStubSdk`（约 144 行重复代价过高）；实跑 CLI 断言 ⑥ 行在场 ＋ 既有 `problems` 空集基线充当⑥的正向集成守卫已足。
 5. **spec 回写范围**：设计 §9 要求回写 2026-10-15 spec（㉗ 指针、§7.7 六项、volatile 快路径机制更正），本计划落在 T6。该文件属另一特性的规范文档，改动为纯文档、不影响任何代码或断言——若跨特性回写需另走流程，请指示。→ **裁决：T6 直接回写，无需另走流程**——纯文档改动，仓库既有跨文档勘误先例（2026-10-15 篇的 ㉗/㉘ 即跨特性澄清期写入）。
