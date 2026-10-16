@@ -27,8 +27,8 @@ const CLIENT_ENTRY = join(repoRoot, 'lib', 'client.js');
 const readPkg = () => JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
 /**
  * 包根**绝对**路径：供 T2①⑤ 的"不泄漏绝对 SKILL_DIR"断言（卡片只显示相对尾部）。
- * 由 `CLIENT_ENTRY` 派生（`client.js` 在 `<包根>/lib/` 下）——与实现侧
- * `PACKAGE_ROOT_ABS = dirname(CLIENT_ENTRY)` 取同一路径。
+ * 由 `CLIENT_ENTRY` 双层 dirname 派生——`client.js` 在 `<包根>/lib/` 下，故
+ * `dirname(CLIENT_ENTRY)` 得 `lib/` 目录、再上一层才得包根（方向比单层更严）。
  */
 const PACKAGE_ROOT_ABS = dirname(dirname(CLIENT_ENTRY));
 
