@@ -672,6 +672,7 @@ test('effectiveInterpreter: on-ready —— exists=true、pythonPath=<abs>/bin/p
   try {
     const venvDir = makeVenvDir(join(home, '.ppt-master'));
     addPythonBinary(venvDir);
+    addPipBinary(venvDir); // 就绪判据含安装路径：完整 venv 才有 on-ready 正常态（R2 M2）
 
     const probeCalls = [];
     const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), {
@@ -723,6 +724,63 @@ test('effectiveInterpreter: on-ready 子态 exists-but-broken（桩探测 found:
       result.exists === true && result.pythonPath === null,
       'broken 子态应满足推断式 exists=true ∧ pythonPath=null'
     );
+  } finally {
+    restore();
+  }
+});
+
+// ── 就绪判据含安装路径（Gate 3 R2 M2：半成品不得在任何消费面被宣告健康） ──────
+//
+// 事实：`python3 -m venv` 在 ensurepip **之前**就写好 `pyvenv.cfg` 与 `bin/python3`，Debian 缺
+// `python3-venv`（无 ensurepip）时留下"有解释器、无 bin/pip3"的半成品。旧判据只看
+// `probeVenvInterpreter` ⇒ info 报 `exists=true`/`pythonPath` 非空、check_env 渲染 python=<版本>、
+// 入口正文落**态1**（"生效解释器"替换契约），而唯一能修的 `setup_deps` 报 `venv 内 pip3 缺失
+// （安装不完整）` 并拒绝收编 ⇒ 三个消费面共用的就绪判据分叉，模型据态1 去跑上游脚本必然 ImportError。
+// 修法：`effectiveInterpreter` 的就绪判据＝解释器可用 **且** `bin/pip3` 存在（与 ensureVenv 的
+// 收编体检同一判据）；该形态落 on-ready 子态 `broken:true`、`pythonPath:null`，三面据此一致表达
+// "未就绪/需先 setup_deps"。
+
+test('effectiveInterpreter: 半成品（pyvenv.cfg + bin/python3、缺 bin/pip3）→ broken:true、pythonPath:null（M2）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(join(home, '.ppt-master'));
+    addPythonBinary(venvDir); // 解释器可用
+    assert.equal(venv.probeVenvInterpreter(venvDir).found, true, '前置：bin/python3 可用');
+    assert.equal(venv.probeVenvPip(venvDir).found, false, '前置：bin/pip3 缺失（ensurepip 未跑完）');
+
+    const result = venv.effectiveInterpreter(cfg('~/.ppt-master/venv'), {
+      probeVenvInterpreter: venv.probeVenvInterpreter,
+    });
+
+    assert.deepEqual(result, {
+      state: 'on-ready', // 子态不新增 state
+      path: venvDir,
+      exists: true, // 目录确实是 venv
+      pythonPath: null, // 未就绪：不得给出"可用解释器"的路径
+      invalidReason: null,
+      broken: true,
+    });
+    assert.ok(
+      result.exists === true && result.pythonPath === null,
+      '推断式 exists=true ∧ pythonPath=null ⇒ broken（info/check_env 两侧共用同一可观测量）'
+    );
+
+    // 与收编体检同一判据：同一目录 ensureVenv 拒绝收编、不自动删、不置 adopted（共享就绪判据的证）。
+    const outcome = await venv.ensureVenv(
+      async () => {
+        throw new Error('半成品形态不得走到创建/收编的 runner');
+      },
+      venvDir,
+    );
+    assert.equal(
+      outcome.error,
+      'venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑；若系统缺 ensurepip，需先安装 python3-venv',
+      '收编拒绝文案逐字（M7：缺 ensurepip 的 Debian 上须先装 python3-venv，否则删了重建照样失败）',
+    );
+    assert.equal(outcome.created, false);
+    assert.equal(outcome.adopted, false);
+    assert.equal(existsSync(join(venvDir, 'bin', 'python3')), true, '不自动删：目录原样保留');
+    assert.equal(existsSync(join(venvDir, 'bin', 'pip3')), false, '拒绝行不得代写 pip3');
   } finally {
     restore();
   }
@@ -902,6 +960,55 @@ test('ensureVenv: 既有 venv 体检不可用（exists-but-broken）→ 拒绝�
   }
 });
 
+test('ensureVenv: 创建失败 stderr 的 ensurepip 指引行不得被首行截断——apt/python3-venv 必须到达模型（M7）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const target = join(home, 'ensurepip-fail-venv');
+    // 真实 Debian/Ubuntu（缺 python3-venv ⇒ 无 ensurepip）形态：唯一可执行的修复指引在第 2-5 行，
+    // 只留首行会让用户/模型拿不到根因，次轮起被"删除重建"指引误导成必然复现的循环。
+    const stderr = [
+      'The virtual environment was not created successfully because ensurepip is not',
+      'available.  On Debian/Ubuntu systems, you need to install the python3-venv',
+      'package using the following command.',
+      '',
+      '    apt install python3.11-venv',
+      '',
+      'You may need to use sudo with that command.  After installing the python3-venv',
+      'package, recreate your virtual environment.',
+      '',
+      'Failing command: /tmp/v/bin/python3 -m ensurepip --upgrade',
+      '',
+    ].join('\n');
+    const { run } = makeRunStub({ exitCode: 1, stderr });
+
+    const result = await venv.ensureVenv(run, target);
+
+    assert.match(result.error, /退出码 1/, '退出码仍如实');
+    assert.ok(
+      result.error.includes('apt install python3.11-venv'),
+      `唯一可执行的修复指引必须保留（apt 行在第 5 行）：${result.error}`,
+    );
+    assert.ok(result.error.includes('python3-venv'), '点明需要安装的包名');
+    assert.ok(result.error.includes('ensurepip'), '点明根因（ensurepip 不可用）');
+    assert.equal(
+      result.error.includes('package, recreate your virtual environment.'),
+      false,
+      '与指引无关的续行不得回灌（只留有信息量的行）',
+    );
+    assert.ok(result.error.length < 600, `多行形态 error 仍须有界（实长 ${result.error.length}）`);
+
+    // 关键字刷屏同样受硬上限约束：提示行保留通道不是 payload 打爆通道。
+    const { run: spamRun } = makeRunStub({
+      exitCode: 1,
+      stderr: `boom\n${'apt install python3-venv\n'.repeat(500)}`,
+    });
+    const spammed = await venv.ensureVenv(spamRun, target);
+    assert.ok(spammed.error.length < 600, `关键字行同样有界（实长 ${spammed.error.length}）`);
+  } finally {
+    restore();
+  }
+});
+
 test('ensureVenv: 半成品 venv（pyvenv.cfg + bin/python3、缺 bin/pip3）→ 首轮与次轮同一拒绝、不自动删、不写标记（P1）', async () => {
   const { home, restore } = useTmpHome();
   try {
@@ -920,7 +1027,7 @@ test('ensureVenv: 半成品 venv（pyvenv.cfg + bin/python3、缺 bin/pip3）→
     const expected = {
       created: false,
       adopted: false,
-      error: 'venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑',
+      error: 'venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑；若系统缺 ensurepip，需先安装 python3-venv',
     };
     // 粘滞消除：该形态首轮报错后，**次轮起**不得改判成"可收编"（否则 installCmd 指向
     // 不存在的 <abs>/bin/pip3，只留一句 install did not succeed 且无恢复指引）。
@@ -1555,6 +1662,288 @@ test('cleanupOldVenv: 规范化只用于判定——真·不同路径经别名�
     assert.deepEqual(calls, [oldAlias], '删除原语收到的仍是调用方给的原值（删除目标语义不变）');
     assert.equal(existsSync(realOld), false, '别名与真实拼写同一目录，删除确已生效');
     assert.equal(existsSync(currentPath), false, '当前路径本就不存在（仅作对照，未创建）');
+  } finally {
+    restore();
+  }
+});
+
+// ── 条件①②的 canonical 判定（Gate 3 R2 M1：内核语义的包含面与等式面） ──
+//
+// 事实：条件①②曾判 `path.resolve` 的**纯文本**结果，而条件③④与 `remove()` 用 `oldPath` 原值——
+// `join`/`existsSync`/`rmSync` 的 `..` 是**内核语义**（先解符号链接再退父目录）。两个独立缺口：
+// (a) 包含面：父目录为符号链接时文本不判包含、realpath 也不等（`old=<real>` 与
+//     `current=<link>/venv` 是两个不同目录）⇒ 落到③④为真即 `rmSync(recursive)` 删掉**本次在用
+//     的 venv**，连同其所在祖先目录与同层用户数据；
+// (b) 等式面：`<p>/link/../venv`（link→`<q>/sub`）与 `<q>/venv` 在**内核**下同一目录，但
+//     `path.resolve` 两值不等，而 Node `realpathSync` 自己也按**文本**折叠 `..`
+//     （实测：`realpathSync('<p>/link/..') === '<p>'`，`readlink -f` 则给 `<q>`）⇒ 仅靠
+//     `realpathSync` 仍漏判，必须按**原始拼写**逐段解析（`..` 在已解析的前缀上回退）。
+// 修法：条件①②一律判 canonical 形式；`remove()` 仍收调用方原值（既有用例 1541 钉住）。
+
+/** 造符号链接；本机不支持（EPERM/ENOSYS 等）时返回 false，调用方 `t.skip`。 */
+function trySymlink(target, linkPath) {
+  try {
+    symlinkSync(target, linkPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('cleanupOldVenv: 包含面——old 为祖先目录、current 经父目录符号链接抵达（<link>/venv）→ 拒绝且零删除（P0）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const real = makeMarkedVenv(home, 'real'); // 旧路径：合法 venv，同时是在用 venv 的祖先
+    const inUse = makeMarkedVenv(real, 'venv'); // 本次在用的 venv（真实拼写）
+    writeFileSync(join(real, 'user-data.txt'), '同层用户数据\n'); // 祖先目录里的无关数据
+    const link = join(home, 'link');
+    if (!trySymlink(real, link)) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），包含面无法构造');
+      return;
+    }
+    const aliasCurrent = join(link, 'venv'); // 内核语义＝real/venv
+
+    // 前置：文本两说、内核同一——正是文本判定放行的形态。
+    assert.notEqual(resolve(aliasCurrent), resolve(inUse), '前置：<link>/venv 与 <real>/venv 文本不等');
+    assert.equal(realpathSync(aliasCurrent), realpathSync(inUse), '前置：内核下两者同一目录');
+    assert.notEqual(realpathSync(real), realpathSync(aliasCurrent), '前置：old 与 current 不是同一实体');
+    assert.ok(
+      !resolve(aliasCurrent).startsWith(resolve(real) + '/') && !aliasCurrent.startsWith(real),
+      '前置：纯文本下 old 不是 current 的前缀（包含面判定失效点）'
+    );
+
+    const { calls, remove } = makeRemoveStub();
+    const result = venv.cleanupOldVenv(real, 'delete', aliasCurrent, { remove });
+
+    assert.equal(result.action, 'none', '内核语义下 old 包含 current → 必须拒绝删除');
+    assert.match(result.error, /前缀包含/, '原因指向前缀包含（包含面按 canonical 判定）');
+    assert.deepEqual(calls, [], '拒绝即零删除调用');
+    assert.equal(existsSync(inUse), true, '本次在用的 venv 必须原样保留');
+    assert.equal(existsSync(join(inUse, 'pyvenv.cfg')), true, '在用 venv 的内容不得被触碰');
+    assert.equal(existsSync(join(real, 'user-data.txt')), true, '祖先目录内的用户数据不得被递归删除');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 包含面反向——old 经父目录符号链接落在 current（<link>/subvenv、current=<real>）→ 拒绝（P0）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const real = makeMarkedVenv(home, 'real'); // 当前路径：本次在用的 venv
+    const subOld = makeMarkedVenv(real, 'subvenv'); // 旧路径：在用 venv 的**内部**目录
+    const link = join(home, 'link');
+    if (!trySymlink(real, link)) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），包含面无法构造');
+      return;
+    }
+    const aliasOld = join(link, 'subvenv'); // 内核语义＝real/subvenv
+
+    assert.notEqual(resolve(aliasOld), resolve(real), '前置：文本不等');
+    assert.notEqual(realpathSync(aliasOld), realpathSync(real), '前置：非同一实体');
+    assert.ok(
+      !resolve(real).startsWith(resolve(aliasOld) + '/') && !aliasOld.startsWith(real),
+      '前置：文本双向都不判包含'
+    );
+
+    const { calls, remove } = makeRemoveStub();
+    const result = venv.cleanupOldVenv(aliasOld, 'delete', real, { remove });
+
+    assert.equal(result.action, 'none', '反向形态（old 位于 current 之内）同样必须拒绝');
+    assert.match(result.error, /前缀包含/);
+    assert.deepEqual(calls, [], '拒绝即零删除调用');
+    assert.equal(existsSync(subOld), true, '在用 venv 的内部目录不得被删除');
+    assert.equal(existsSync(real), true, '在用 venv 本身原样保留');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 等式面——`..` × 符号链接两向拼写（kernel 同一、text 不等）→ 拒绝且零删除（P0）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const q = join(home, 'q');
+    const current = makeMarkedVenv(q, 'venv'); // 在用 venv：真实拼写
+    mkdirSync(join(q, 'sub'), { recursive: true });
+    const p = join(home, 'p');
+    mkdirSync(p, { recursive: true });
+    const link = join(p, 'link');
+    if (!trySymlink(join(q, 'sub'), link)) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），等式面无法构造');
+      return;
+    }
+    const alias = `${p}/link/../venv`; // 内核语义＝q/venv（`..` 在 link 解析之后回退）
+
+    assert.notEqual(resolve(alias), resolve(current), '前置：path.resolve 文本折叠 → 两值不等');
+    assert.equal(
+      resolve(alias),
+      join(p, 'venv'),
+      '前置：文本把 `link/..` 折叠成 p（Node realpathSync 亦按文本折叠，故逐段解析是唯一可靠通道）'
+    );
+    assert.ok(!existsSync(resolve(alias)), '前置：文本解析结果 p/venv 并不存在（realpath/stat 均不可用）');
+    // `realpathSync` 自己按**文本**折叠 `..`（Node v22 实测 `realpathSync('<p>/link/..') === '<p>'`），
+    // 故它要么抛错、要么给内核真值——绝不能把文本折叠结果当成内核真值。
+    let rawRealpath = null;
+    try {
+      rawRealpath = realpathSync(alias);
+    } catch {
+      rawRealpath = null;
+    }
+    assert.ok(
+      rawRealpath === null || rawRealpath === realpathSync(current),
+      `前置：realpathSync(别名) 只能是抛错或内核真值，实际 ${String(rawRealpath)}`
+    );
+    assert.notEqual(rawRealpath, resolve(alias), '前置：realpathSync 不得返回文本折叠结果');
+
+    const { calls, remove } = makeRemoveStub();
+
+    // 方向一：old 为真实拼写、current 为 `..` 别名拼写。
+    let result = venv.cleanupOldVenv(current, 'delete', alias, { remove });
+    assert.equal(result.action, 'none', 'old=q/venv 与 current=<p>/link/../venv 内核下同一目录 → 拒绝');
+    assert.match(result.error, /同一实体/, '原因应指明同一实体（等式面按 canonical 判定）');
+
+    // 方向二：old 为 `..` 别名拼写、current 为真实拼写（同一判定须双向成立）。
+    result = venv.cleanupOldVenv(alias, 'delete', current, { remove });
+    assert.equal(result.action, 'none', '反向拼写同样拒绝');
+    assert.match(result.error, /同一实体/);
+
+    assert.deepEqual(calls, [], '两向都零删除调用');
+    assert.equal(existsSync(current), true, '在用 venv 原样保留');
+    assert.equal(existsSync(join(current, 'pyvenv.cfg')), true, '在用 venv 内容未被触碰');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 等式面之外的包含面——`..` 别名落在 old 之内（old=q、current=<p>/link/../venv）→ 拒绝（P0）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const q = makeMarkedVenv(home, 'q'); // 旧路径：合法 venv，且是在用 venv 的祖先
+    const inUse = makeMarkedVenv(q, 'venv');
+    mkdirSync(join(q, 'sub'), { recursive: true });
+    const p = join(home, 'p');
+    mkdirSync(p, { recursive: true });
+    if (!trySymlink(join(q, 'sub'), join(p, 'link'))) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），包含面无法构造');
+      return;
+    }
+    const aliasCurrent = `${p}/link/../venv`;
+
+    assert.notEqual(resolve(aliasCurrent), resolve(inUse), '前置：文本折叠后与在用 venv 不等');
+    assert.ok(!existsSync(resolve(aliasCurrent)), '前置：文本折叠结果 p/venv 不存在（realpath/stat 皆不可用）');
+    assert.ok(!resolve(aliasCurrent).startsWith(resolve(q) + '/'), '前置：文本下 old 不包含 current');
+
+    const { calls, remove } = makeRemoveStub();
+    const result = venv.cleanupOldVenv(q, 'delete', aliasCurrent, { remove });
+
+    assert.equal(result.action, 'none', 'canonical 下 q 包含 q/venv → 拒绝');
+    assert.match(result.error, /前缀包含/);
+    assert.deepEqual(calls, [], '零删除调用');
+    assert.equal(existsSync(inUse), true, '在用 venv 必须保留');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 包含面——`..` 别名的**文本折叠结果也存在**时仍按内核语义判定（realpath 快路径不得覆盖 `..`）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const q = makeMarkedVenv(home, 'q'); // 旧路径：合法 venv，同时是在用 venv 的祖先
+    const inUse = makeMarkedVenv(q, 'venv');
+    mkdirSync(join(q, 'sub'), { recursive: true });
+    const p = join(home, 'p');
+    mkdirSync(join(p, 'venv'), { recursive: true }); // 诱饵：文本折叠结果 `<p>/venv` 真实存在
+    writeFileSync(join(p, 'venv', 'decoy.txt'), '诱饵目录\n');
+    if (!trySymlink(join(q, 'sub'), join(p, 'link'))) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），包含面无法构造');
+      return;
+    }
+    const aliasCurrent = `${p}/link/../venv`; // 内核语义＝q/venv；文本折叠＝p/venv（存在）
+
+    // 前置：这正是"先 resolve 再 realpathSync"的快路径会给出 p/venv（文本答案）的陷阱形态。
+    assert.equal(realpathSync(resolve(aliasCurrent)), join(p, 'venv'), '前置：文本折叠结果存在且可 realpath');
+    assert.notEqual(realpathSync(resolve(aliasCurrent)), realpathSync(inUse), '前置：文本答案与内核答案不是同一目录');
+
+    const { calls, remove } = makeRemoveStub();
+    const result = venv.cleanupOldVenv(q, 'delete', aliasCurrent, { remove });
+
+    assert.equal(result.action, 'none', '内核语义下 q 包含 q/venv → 必须拒绝删除');
+    assert.match(result.error, /前缀包含/);
+    assert.deepEqual(calls, [], '拒绝即零删除调用');
+    assert.equal(existsSync(inUse), true, '本次在用的 venv 必须原样保留');
+    assert.equal(existsSync(join(p, 'venv', 'decoy.txt')), true, '文本折叠落点的诱饵目录同样不得被误删');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: canonical 不误拒——真·不同路径（current 为 `..` 别名拼写）仍 deleted、remove 收原值（P0）', (t) => {
+  const { home, restore } = useTmpHome();
+  try {
+    const q = join(home, 'q');
+    const realOld = makeMarkedVenv(q, 'venv-old'); // 旧 venv：真实拼写
+    mkdirSync(join(q, 'sub'), { recursive: true });
+    const p = join(home, 'p');
+    mkdirSync(p, { recursive: true });
+    if (!trySymlink(join(q, 'sub'), join(p, 'link'))) {
+      t.skip('本机不支持符号链接（EPERM/ENOSYS），别名构造不可用');
+      return;
+    }
+    // current 侧一律不读文件系统（条件③④只看 oldPath），故 `..` × 符号链接的别名拼写可以落在
+    // current：内核语义＝q/other-venv（不存在），文本折叠＝p/other-venv——两者都不是 old、也都
+    // 不与 old 互含，判定必须放行。（old 侧带符号链接 `..` 的拼写另有口径：条件③经 `join` 会
+    // 文本折叠，故 old 侧的别名面由既有 1541 用例以非符号链接 `..` 钉住。）
+    const aliasCurrent = `${p}/link/../other-venv`;
+    assert.notEqual(resolve(aliasCurrent), resolve(realOld), '前置：文本两值不等');
+    assert.ok(!existsSync(resolve(aliasCurrent)), '前置：文本折叠结果 p/other-venv 不存在');
+
+    const { calls, remove } = makeRemoveStub();
+    const result = venv.cleanupOldVenv(realOld, 'delete', aliasCurrent, { remove });
+
+    assert.equal(result.action, 'deleted', '四条件齐备 + 真不同路径 → 照常删除（canonical 不得误拒）');
+    assert.deepEqual(calls, [realOld], '删除原语收到的仍是调用方给的原值');
+    assert.equal(existsSync(realOld), false, '旧 venv 删除确已生效');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 段边界——非符号链接的 `..` 别名仍 deleted 且 remove 收原值（canonical 与内核语义同向）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const base = join(home, 'base');
+    const realOld = makeMarkedVenv(base, 'venv-old');
+    mkdirSync(join(base, 'sub'), { recursive: true }); // 真目录（非符号链接）：join/resolve 的文本折叠与内核一致
+    const oldAlias = `${base}/sub/../venv-old`;
+    const currentPath = join(base, 'venv-current');
+    const { calls, remove } = makeRemoveStub();
+
+    assert.equal(venv.venvExists(oldAlias), true, '前置：条件③在真目录 `..` 上为真（文本折叠＝内核语义）');
+    const result = venv.cleanupOldVenv(oldAlias, 'delete', currentPath, { remove });
+
+    assert.equal(result.action, 'deleted', '真目录 `..` 别名不是包含/同一实体 → 照常删除');
+    assert.deepEqual(calls, [oldAlias], 'remove 收到调用方原值而非 canonical 结果');
+    assert.equal(existsSync(realOld), false, '删除确已生效');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 段边界——兄弟目录 `venv` vs `venv-older` 仍 deleted（canonical 前缀不得退化成 startsWith）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    for (const [oldName, currentName] of [['venv', 'venv-older'], ['venv-older', 'venv']]) {
+      const oldPath = makeMarkedVenv(home, oldName);
+      const sentinel = join(home, `${currentName}-keep.txt`);
+      writeFileSync(sentinel, '当前侧哨兵\n');
+      const { calls, remove } = makeRemoveStub();
+
+      const result = venv.cleanupOldVenv(oldPath, 'delete', join(home, currentName), { remove });
+
+      assert.equal(result.action, 'deleted', `${oldName} vs ${currentName}：带 \`-\` 后缀的兄弟目录不是包含关系`);
+      assert.deepEqual(calls, [oldPath], '删除目标恰为旧路径');
+      assert.equal(existsSync(oldPath), false, '旧目录被删');
+      assert.equal(existsSync(sentinel), true, '当前侧文件不得被误删');
+    }
   } finally {
     restore();
   }

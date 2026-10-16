@@ -472,13 +472,17 @@ const productionProvider = (venv) => createSkillProvider(undefined, { venv });
 /** 去引用普通值形态的 venv 配置（与 Task 5 注入袋下传形态一致）。 */
 const venvConfig = (dir, enabled = true) => ({ enabled, path: dir, oldPathPolicy: 'keep' });
 
-/** 假 venv 目录：`pyvenv.cfg` 恒在，`bin/python3` 存在与否决定 on-ready / broken。 */
-async function makeFakeVenv({ interpreter = true } = {}) {
+/**
+ * 假 venv 目录：`pyvenv.cfg` 恒在；`bin/python3` 决定解释器面、`bin/pip3` 决定安装路径面
+ * （缺 pip3 的半成品与缺解释器同样落 on-ready 子态 broken，正文同取「未就绪」文案，R2 M2）。
+ */
+async function makeFakeVenv({ interpreter = true, pip = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'skill-provider-venv-'));
   await writeFile(join(dir, 'pyvenv.cfg'), 'home = /usr\n');
   if (interpreter) {
     await mkdir(join(dir, 'bin'), { recursive: true });
     await writeFile(join(dir, 'bin', 'python3'), '');
+    if (pip) await writeFile(join(dir, 'bin', 'pip3'), '');
   }
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
@@ -599,6 +603,30 @@ test('入口 skill: 态2 同文案承载 broken 子态——broken 与 on-missin
     assert.ok(broken.includes('先调用 `ppt_master_setup_deps` 准备环境'), 'broken 落「开但未就绪」文案');
     assert.ok(!broken.includes(`\`${join(dir, 'bin', 'python3')}\``), 'broken 无解析成功解释器，不得给路径');
     assert.equal(broken, missing, 'broken 是 on-ready 子态，取四态文案之一，不另立第五态');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('入口 skill: 半成品也落「开但未就绪」文案——有 bin/python3 缺 bin/pip3 不得给态1 契约（R2 M2）', async () => {
+  const { dir, cleanup } = await makeFakeVenv({ pip: false }); // ensurepip 未跑完的半成品
+  try {
+    const content = await entryContent(venvConfig(dir));
+
+    assert.ok(
+      content.includes('先调用 `ppt_master_setup_deps` 准备环境'),
+      `半成品须前置路由到 setup_deps（与 info/check_env 同口径），实际正文：${content}`,
+    );
+    assert.ok(
+      !content.includes('替换字面 `python3`'),
+      '半成品不得给出态1 的"生效解释器"替换契约（模型据它跑上游脚本会 ImportError）',
+    );
+    assert.ok(
+      !content.includes(`生效解释器：\`${join(dir, 'bin', 'python3')}\``),
+      '不得把半成品的解释器宣告成生效解释器',
+    );
+    assert.ok(!content.includes('venv 未启用'));
+    assert.ok(!content.includes('配置无效'));
   } finally {
     await cleanup();
   }

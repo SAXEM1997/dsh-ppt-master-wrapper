@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -133,16 +133,18 @@ function infoFor(skillsRoot, venv) {
 
 /**
  * 造一个 stdlib venv fixture：`pyvenv.cfg` 恒在（`venvExists` 判据）；`interpreter`
- * 决定 `bin/python3` 是否存在（缺＝exists-but-broken 子态）；`marker` 决定 wrapper
- * 所有权标记是否写入（`marker: false` 即「未标记」）。
+ * 决定 `bin/python3` 是否存在（缺＝解释器面 broken）；`pip` 决定 `bin/pip3` 是否存在
+ * （缺＝ensurepip 未跑完的半成品，同样落 broken 子态、`pythonPath=null`，R2 M2）；
+ * `marker` 决定 wrapper 所有权标记是否写入（`marker: false` 即「未标记」）。
  */
-function makeVenv(parent, name, { interpreter = true, marker = true } = {}) {
+function makeVenv(parent, name, { interpreter = true, pip = true, marker = true } = {}) {
   const dir = join(parent, name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'pyvenv.cfg'), 'home = /usr/bin\n');
   if (interpreter) {
     mkdirSync(join(dir, 'bin'), { recursive: true });
     writeFileSync(join(dir, 'bin', 'python3'), '');
+    if (pip) writeFileSync(join(dir, 'bin', 'pip3'), '');
   }
   if (marker) {
     writeFileSync(
@@ -531,6 +533,28 @@ test('info.venv: broken 子态——不增字段，按推断式 exists=true ∧ 
     assert.ok(
       info.venv.exists === true && info.venv.pythonPath === null,
       '推断式可观测：exists=true ∧ pythonPath=null ⇒ exists-but-broken',
+    );
+  } finally {
+    box.remove();
+  }
+});
+
+test('info.venv: 半成品（有 bin/python3、缺 bin/pip3）→ 与 broken 同口径 pythonPath=null（R2 M2）', async () => {
+  const box = makeBox();
+  try {
+    // ensurepip 未跑完的半成品：解释器在、安装路径不在。就绪判据（解释器 ∧ 安装路径）不成立，
+    // 故 info 面必须与 setup_deps 的收编拒绝口径一致：exists=true 但 pythonPath=null。
+    const halfDir = makeVenv(box.parent, 'half-built-venv', { pip: false });
+    assert.equal(existsSync(join(halfDir, 'bin', 'python3')), true, '前置：解释器存在');
+    assert.equal(existsSync(join(halfDir, 'bin', 'pip3')), false, '前置：安装路径缺失');
+
+    const info = await infoFor(box.skillsRoot, { enabled: true, path: halfDir, oldPathPolicy: 'keep' });
+
+    assert.deepEqual(Object.keys(info.venv), VENV_FIELDS, '仍恰四字段（不增 broken 等字段）');
+    assert.deepEqual(
+      info.venv,
+      { enabled: true, path: halfDir, exists: true, pythonPath: null },
+      '半成品不得被宣告健康：pythonPath=null，与 broken 同一推断式',
     );
   } finally {
     box.remove();

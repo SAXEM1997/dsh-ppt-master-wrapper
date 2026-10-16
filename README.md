@@ -8,7 +8,7 @@
 
 ## 安装
 
-前置要求：Node.js ≥ 20；`python3`（上游完整性门与脚本套件运行需要，建议 ≥ 3.10）；`pip3`（`ppt_master_setup_deps` 安装 Python 依赖用）；`git`（同步脚本的 `ls-remote`/commit/tag/push 与凭据解析用）；`tar`（同步脚本解压上游 tarball 用，含 `gzip` 委托——`tar -xzf` 由 tar 调用 gzip 解压）。
+前置要求：Node.js ≥ 20；`python3`（上游完整性门与脚本套件运行需要，建议 ≥ 3.10）；`pip3`（`ppt_master_setup_deps` 安装 Python 依赖用；**venv 模式另需 `python3 -m venv` 可用**——Debian/Ubuntu 上该命令依赖 `python3-venv` 包提供的 ensurepip，缺它会留下"有 `bin/python3`、无 `bin/pip3`"的半成品，故需先 `apt install python3-venv`；Alpine 的 python3 自带 ensurepip，无需额外包）；`git`（同步脚本的 `ls-remote`/commit/tag/push 与凭据解析用）；`tar`（同步脚本解压上游 tarball 用，含 `gzip` 委托——`tar -xzf` 由 tar 调用 gzip 解压）。
 
 推送还需凭据：设置环境变量 `DSH_PPT_GITLAB_PAT`（GitLab PAT），或改用 `git` credential helper 提供凭据；缺失时推送环节以退出码 `6` 失败并在报告中输出配置指引。
 
@@ -62,7 +62,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 - **PEP 668 说明**：本机系统 Python 为 PEP 668（EXTERNALLY-MANAGED），裸 `pip3 install` 需 `--break-system-packages`，且装入容器 rootfs、重建即丢。开启 venv 隔离后由 `<venv>/bin/pip3 install -r ...` 安装，不受 PEP 668 拦截、依赖落在 `venv.path`。`user` / `breakSystemPackages` 两个参数**仅系统模式生效**，venv 模式下被忽略并在返回中注明。
 - **配置页指引**：DSH 设置页 → 插件 `dsh-ppt-master-wrapper` → venv 三项。`venv.path` 须为绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开；相对路径判无效 → venv 视为关闭 + 应用期 `console.warn`；可见反馈通道＝入口 skill「配置无效」态与 `ppt_master_check_env` 的 `venv.path=null`——渲染行逐字打印 `venv: enabled=true path=- exists=false python=skipped`）。注意：宿主设置页的 `applies:"live"` 是固定输出，真正的可编辑性来自字段的 volatile 声明。
-- **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开、已建**且解释器可用** → 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。**破损子态**（`pyvenv.cfg` 在、`bin/python3` 不可用，即 `on-ready` + `broken`）不属①：没有可用的解释器路径可替换，正文按②给「先 `setup_deps` 准备环境」的指引（`setup_deps` 会以恢复指引 fail-loud：手动删除该目录后重跑）。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
+- **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开、已建**且就绪**（就绪＝解释器 `<path>/bin/python3` 与安装路径 `<path>/bin/pip3` **两者**都可用，与 `setup_deps` 的收编体检同一判据）→ 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。**未就绪子态**（`on-ready` + `broken`：`bin/python3` 不可用，**或**有 `bin/python3` 但缺 `bin/pip3` 的半成品——`python3 -m venv` 在 ensurepip 阶段失败的残留）不属①：没有可用的解释器路径可替换，正文按②给「先 `setup_deps` 准备环境」的指引（`setup_deps` 会以恢复指引 fail-loud：手动删除该目录后重跑；缺 `bin/pip3` 时另提示"若系统缺 ensurepip，需先安装 `python3-venv`"）。**三面口径一致**：同一形态下 `info` 报 `exists=true ∧ pythonPath=null`、`check_env` 渲染 `python=not found`（deps 全 UNKNOWN、guard `{skipped}`）、入口正文按②——不存在"某面说健康、另一面说未就绪"的分叉。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
 - **禁用后手动清理**：`venv.enabled=false` **不删除任何目录**（禁用后清理纯手动）：`rm -rf <原 venv.path>`。旧路径同理——`oldPathPolicy=keep`（默认）时旧 venv 保留待手动清理，`delete` 也仅删「带所有权标记且满足删除四条件」的旧目录。
 - **容器挂载卷建议**：容器用户宜把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`），不要留在容器 rootfs。
 
@@ -70,11 +70,11 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 ### 挂载卷 / 镜像不变边界
 
-挂载只保证**数据不丢**；跨容器重建后 venv 是否可用依赖**镜像不变**（venv 内符号链接指向容器内绝对路径）。镜像换代、或 venv 损坏（exists-but-broken：`venv.exists=true ∧ venv.python.found=false`）时，恢复方式＝**删除重建**：`rm -rf <venv.path>` 后重跑 `ppt_master_setup_deps`（工具不会自动删除损坏 venv，只给出该指引）；**或半成品 venv（有 `bin/python3` 无 `bin/pip3`，即 `python3 -m venv` 在 ensurepip 阶段失败的残留）同样＝删除重建（工具不自动删，只给指引）**。
+挂载只保证**数据不丢**；跨容器重建后 venv 是否可用依赖**镜像不变**（venv 内符号链接指向容器内绝对路径）。镜像换代、或 venv 损坏（未就绪子态：`venv.exists=true ∧ venv.python.found=false`）时，恢复方式＝**删除重建**：`rm -rf <venv.path>` 后重跑 `ppt_master_setup_deps`（工具不会自动删除损坏 venv，只给出该指引）；**半成品 venv（有 `bin/python3` 无 `bin/pip3`，即 `python3 -m venv` 在 ensurepip 阶段失败的残留）同样＝删除重建（工具不自动删，只给指引；若根因是系统缺 ensurepip，须先 `apt install python3-venv`，否则删了重建照样失败）**。该形态在三个消费面一律按"未就绪"呈现（见上文入口 skill 用法）。
 
 ### 删除安全与孤儿处理
 
-- **标记即授权**：自动删除只对**带所有权标记**（`<venv>/.ppt-master-wrapper.json`）且同时满足四条件（路径≠当前（**按规范化路径与文件系统实体判定**：重复分隔符、`.`/`..`、符号链接别名一律视为同一目录）、新旧路径互不前缀包含、`pyvenv.cfg` 存在、带标记）的目录生效。**已标记 venv 目录内混入的用户数据会被递归删除**——不要往 venv 目录里放数据。
+- **标记即授权**：自动删除只对**带所有权标记**（`<venv>/.ppt-master-wrapper.json`）且同时满足四条件（路径≠当前、新旧路径互不**段感知**前缀包含、`pyvenv.cfg` 存在、带标记）的目录生效。条件①②按**规范化（canonical）路径**判定——重复分隔符、`.`/`..`、符号链接别名、以及 `..` 作用在符号链接上的拼写（`<p>/link/../venv`，link→`<q>/sub`）都按**内核语义**（先解符号链接、再在已解析的父目录上退 `..`）化到同一形态后比较：**同一实体**（canonical 相等；另以 `dev+ino` 相等作额外正判据）与**包含关系**都据此拒绝，"本次在用的 venv"及其祖先/内部目录绝不会落到删除路径上。前缀包含是**段感知**的：`/a/venv` 不包含 `/a/venv-older`（朴素 `startsWith` 会误拒，导致旧 venv 永远清不掉）。删除原语收到的仍是配置里那条路径的**原值**，判定用的规范化结果不会替换删除目标。**退化文件系统注记**：别名判定依赖 `realpath`/`st_ino` 的可靠性——`st_ino`/`st_dev` 为 0 的 FS 上 `dev+ino` 判据自动停用（否则任意两目录都会"相等"，清理被永久锁死），此时只按 canonical 路径比较；这类文件系统上可能**额外拒绝**（拒绝面只会更保守，不会误删）。**已标记 venv 目录内混入的用户数据会被递归删除**——不要往 venv 目录里放数据。
 - **两类孤儿（均手动处理）**：
   1. **未标记孤儿**（目录是 venv 但无标记）：清理永不触碰（安全侧默认），`info` / `check_env` 也不提示——需手动 `rm -rf`。
   2. **有标记无登记孤儿**：登记位置固定为 `<HOME>/.ppt-master/wrapper-state.json`，而 venv 常居持久卷——**层级错配**：容器场景 HOME 易失，容器重建后登记丢失，旧 venv 便成「有标记但无登记」的孤儿；无登记即无清理依据，**永不自动删**，只能手动 `rm -rf`。取舍：登记位置保持 `<HOME>` 单一、不做多位置登记（spec §5.4/§8）。
@@ -143,13 +143,15 @@ node --test tests/*.test.mjs
 > `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME`(+`DSH_PROFILE`) 或宿主 profile 的
 > `node_modules` 可解析（同上面「schemastery 解析失败诊断」）。
 >
-> **同一条前置也覆盖 `tests/compat.test.mjs`，机制不同**：该文件不静态 import 插件入口，但其中
-> 13 处 in-process `runCompatCheck({ … env: {} })` 走的是脚本内**真实**的动态
-> `import(PLUGIN_ENTRY)`（`scripts/check-dsh-compat.mjs` 有意不经可注入的 `importModule` 通道），
+> **同一条前置也覆盖 `tests/compat.test.mjs`，机制不同、**红灯形态也不同**（实测签名）**：该文件不
+> 静态 import 插件入口，但其中 13 处 in-process `runCompatCheck({ … env: {} })` 走的是脚本内**真实**的
+> 动态 `import(PLUGIN_ENTRY)`（`scripts/check-dsh-compat.mjs` 有意不经可注入的 `importModule` 通道），
 > 而 `options.env` 只喂 SDK 定位级、封不住插件侧对 `process.env` 的读取。因此该文件整体依赖宿主
-> `@deepseek-ai/schemastery` 可解析（in-process 真装载）：洁净环境下这些用例**整批转红**，而不是
-> 某几条失败。该文件的 CLI 子进程用例自带 stub 树注入
-> （`DSH_NODE_MODULES=<stub 树>/node_modules`）与 `{env:{}}` 失败态分组，不受此限。
+> `@deepseek-ai/schemastery` 可解析（in-process 真装载）：洁净环境下 **36 例中 7 红 29 绿**（13 处
+> in-process 里 7 红 6 绿），**不是**整批转红。可辨识的红灯形态是 `schemastery 定位失败` 那一串：
+> `apply(ctx, { skillRoots }) 驱动 …index.js 失败: @deepseek-ai/schemastery 未能解析: 定位链四级均未命中`；
+> 其余 29 例（含全部 CLI 子进程用例，它们自带 stub 树注入 `DSH_NODE_MODULES=<stub 树>/node_modules`
+> 与 `{env:{}}` 失败态分组）不受此限，照常绿。
 
 ## 致谢与许可
 

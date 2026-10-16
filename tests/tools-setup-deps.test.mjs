@@ -92,9 +92,33 @@ const STUB_PYTHON_VERSION = 'Python 3.11.2\n';
 const STUB_GUARD_EXIT = 3;
 const STUB_INSTALL_EXIT = 0;
 
-/** `createTools()` 中某个工具定义，按 name 精确查找。 */
+/**
+ * 第 3 探测点（包根 `.env`）的测试锚（R2 M3）：一个任何开发机上都**不存在**的路径——
+ * 本仓库工作区根＝插件根，README:33-39 又鼓励把 `.env` 放在工作区根，故该探测点须显式
+ * 指向 fixture，复跑诊断里的 `envFileExists` 才不随开发机配置翻转。
+ */
+const FIXTURE_REPO_ROOT = join(tmpdir(), 'setup-deps-repo-root-fixture-absent');
+
+/** `createTools()` 中某个工具定义，按 name 精确查找（第 3 探测点锚到 fixture）。 */
 function toolNamed(name) {
-  return createTools().find((tool) => tool.name === name);
+  return createTools({ repoRoot: FIXTURE_REPO_ROOT }).find((tool) => tool.name === name);
+}
+
+/**
+ * 在**隔离 cwd**（空 fixture，无 `.env`）下执行 `body`（R2 M3）：cwd 是 `envFileExists`
+ * 的**第 1 探测点**，套件从工作区根运行时它就是开发机那份 `.env`。cwd 探测点自身的生产
+ * 语义不变。
+ */
+async function withIsolatedCwd(body) {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'setup-deps-cwd-'));
+  try {
+    process.chdir(cwdRoot);
+    return await body();
+  } finally {
+    process.chdir(savedCwd);
+    rmSync(cwdRoot, { recursive: true, force: true });
+  }
 }
 
 // ─── exec stub ───────────────────────────────────────────────────
@@ -374,8 +398,9 @@ test('setup_deps: 返回的 checkEnv 就是 T6 诊断对象（与 check_env 工�
   try {
     const { exec } = recordingExec();
     const shared = { skillRoots: [root], ...exec };
-    const payload = await toolNamed('ppt_master_setup_deps').execute({}, shared);
-    const diagnostic = await toolNamed('ppt_master_check_env').execute({}, shared);
+    // 隔离 cwd：本用例断言无 .env（第 1 探测点是 cwd，R2 M3）；两工具同锚同 cwd 比较。
+    const payload = await withIsolatedCwd(() => toolNamed('ppt_master_setup_deps').execute({}, shared));
+    const diagnostic = await withIsolatedCwd(() => toolNamed('ppt_master_check_env').execute({}, shared));
 
     assert.deepEqual(Object.keys(payload.checkEnv), DIAGNOSTIC_FIELDS);
     assert.deepEqual(payload.checkEnv.python, {
@@ -702,9 +727,11 @@ function installCalls(calls) {
   return calls.filter((call) => call.command === 'pip3' || call.command.endsWith('/bin/pip3'));
 }
 
-/** `createTools(options)` 里的 setup_deps 定义（venv / testSeams 注入口）。 */
+/**
+ * `createTools(options)` 里的 setup_deps 定义（venv / testSeams 注入口；第 3 探测点同锚 fixture）。
+ */
 function setupDepsToolWith({ roots, venv, seams } = {}) {
-  return createTools({ skillRoots: roots, venv, testSeams: seams })
+  return createTools({ skillRoots: roots, venv, testSeams: seams, repoRoot: FIXTURE_REPO_ROOT })
     .find((tool) => tool.name === 'ppt_master_setup_deps');
 }
 
@@ -994,6 +1021,45 @@ test('setup_deps venv: exists-but-broken → venv.error 含恢复指引、不自
     assert.ok(payload.checkEnv.deps.every((dep) => dep.installed === 'UNKNOWN'));
     assert.deepEqual(payload.checkEnv.guard, { skipped: true });
     assert.ok(tool.output.render({}, payload)[0].text.includes('未执行'));
+  } finally {
+    remove();
+    restore();
+  }
+});
+
+test('setup_deps venv: 半成品（有 bin/python3、缺 bin/pip3）→ 同一拒绝口径 + 复跑与 info/入口同判「未就绪」（R2 M2）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'half-built');
+    mkdirSync(join(absPath, 'bin'), { recursive: true });
+    writeFileSync(join(absPath, 'pyvenv.cfg'), 'home = /usr/bin\n');
+    writeFileSync(join(absPath, 'bin', 'python3'), '#!/bin/sh\n'); // 解释器在、安装路径不在
+    const tool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath) });
+    const { exec, calls } = venvExec();
+
+    const payload = await tool.execute({}, { skillRoots: [root], ...exec });
+
+    assert.equal(
+      payload.venv.error,
+      'venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑；若系统缺 ensurepip，需先安装 python3-venv',
+      '收编拒绝文案逐字（M7 追加 ensurepip 前置指引）',
+    );
+    assert.equal(payload.installExit, -1, '安装未执行');
+    assert.equal(createCalls(calls).length, 0, '不重建：半成品走拒绝路径而非 `python3 -m venv`');
+    assert.equal(installCalls(calls).length, 0, '不安装');
+    assert.equal(existsSync(join(absPath, 'bin', 'python3')), true, '不自动删：目录原样保留');
+    assert.equal(existsSync(join(absPath, VENV_MARKER)), false, '拒绝行不写所有权标记');
+    // 复跑诊断与 info/入口正文同口径：exists=true 但无生效解释器（broken 推断式）。
+    assert.equal(payload.checkEnv.venv.exists, true, 'venv 目录成立');
+    assert.deepEqual(
+      payload.checkEnv.venv.python,
+      { found: false, version: null, meetsSkillRequirement: null },
+      'half-built 不得渲染成可用解释器（与 check_env 单测同判据）',
+    );
+    assert.deepEqual(payload.checkEnv.guard, { skipped: true });
+    assert.ok(payload.checkEnv.deps.every((dep) => dep.installed === 'UNKNOWN'));
+    assert.ok(tool.output.render({}, payload)[0].text.includes('未执行'), 'render 注明未执行');
   } finally {
     remove();
     restore();

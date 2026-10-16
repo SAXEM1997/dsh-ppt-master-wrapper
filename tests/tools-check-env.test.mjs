@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createTools, mapDistToImport, parseRequirements } from '../lib/tools.js';
 
@@ -89,8 +90,39 @@ const REQUIREMENTS_FIXTURE = new URL('./fixtures/requirements-fixture.txt', impo
 
 /** `createTools()` 中某个工具定义，按 name 精确查找。 */
 function toolNamed(name) {
-  return createTools().find((tool) => tool.name === name);
+  // 第 3 探测点（包根 `.env`）显式指向 fixture 锚（R2 M3）：开发机工作区根的真实 `.env`
+  // 不得让本文件的 `envFileExists===false` 断言假红；缝的生产默认由专门用例把守。
+  return createTools({ repoRoot: FIXTURE_REPO_ROOT }).find((tool) => tool.name === name);
 }
+
+/**
+ * 在**隔离 cwd**（空 fixture，无 `.env`）下执行 `body`（R2 M3）。
+ *
+ * cwd 是 `envFileExists` 的**第 1 探测点**，而本仓库工作区根＝插件根、README:33-39 又鼓励把
+ * `.env` 放在工作区根：套件从工作区根运行时，开发机的那份 `.env` 会让「四处皆无 ⇒ false」类
+ * 断言假红。需要判"无 .env"的用例一律经本助手把 cwd 显式指向空 fixture——cwd 探测点自身的
+ * 生产语义不变（`envFileExists — 仅 cwd 有 .env → true` 用例仍经 `process.chdir` 驱动它）。
+ */
+async function withIsolatedCwd(body) {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  try {
+    process.chdir(cwdRoot);
+    return await body();
+  } finally {
+    process.chdir(savedCwd);
+    rmSync(cwdRoot, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 第 3 探测点（包根 `.env`）的测试锚（R2 M3）：一个任何开发机上都**不存在**的路径。
+ *
+ * 本仓库工作区根＝插件根，而 README 又鼓励把 `.env` 放在工作区根，于是该探测点在生产默认
+ * （`REPO_ROOT`）下会随开发机配置翻转——本文件所有 `envFileExists===false` 断言都会假红。
+ * 故凡走 `envFileExists` 的用例一律显式指向该锚：结果只由用例自己造的 fixture 决定。
+ */
+const FIXTURE_REPO_ROOT = join(tmpdir(), 'check-env-repo-root-fixture-absent');
 
 // ─── exec stub ───────────────────────────────────────────────────
 
@@ -580,7 +612,8 @@ test('check_env: 缺 requirementsPath → 回落 SKILL_DIR/requirements.txt（<3
   const { root, skill, remove } = makeSkillRoot();
   try {
     writeFileSync(join(skill, 'requirements.txt'), 'PyYAML\nflask\n');
-    const payload = await toolNamed('ppt_master_check_env').execute({}, {
+    // 隔离 cwd：本用例断言"无 .env ⇒ false"，而工作区根（＝插件根）的真实 `.env` 是第 1 探测点（R2 M3）。
+    const payload = await withIsolatedCwd(() => toolNamed('ppt_master_check_env').execute({}, {
       skillRoots: [root],
       run: async (command, args) => {
         if (command !== 'python3') throw enoentError(command);
@@ -589,7 +622,7 @@ test('check_env: 缺 requirementsPath → 回落 SKILL_DIR/requirements.txt（<3
         if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
         return { stdout: '1.0.0\n', stderr: '', exitCode: 0 };
       },
-    });
+    }));
     assert.deepEqual(payload.python.version, '3.9.18');
     assert.equal(payload.python.meetsSkillRequirement, false, '≥3.10 仅 informational');
     assert.deepEqual(
@@ -962,7 +995,8 @@ test('check_env: 无 python3（spawn ENOENT）→ found=false、guard.skipped、
     const { file, remove: removeReq } = makeRequirementsFile(['PyYAML', 'python-pptx']);
     try {
       const tool = toolNamed('ppt_master_check_env');
-      const payload = await tool.execute(
+      // 隔离 cwd：本用例断言无 .env（第 1 探测点是 cwd，R2 M3）。
+      const payload = await withIsolatedCwd(() => tool.execute(
         { requirementsPath: file },
         {
           skillRoots: [root],
@@ -970,7 +1004,7 @@ test('check_env: 无 python3（spawn ENOENT）→ found=false、guard.skipped、
             throw enoentError(command);
           },
         },
-      );
+      ));
 
       assert.deepEqual(payload.python, {
         found: false,
@@ -1127,10 +1161,11 @@ test('check_env: 无 skill 目录 → deps 仍可探测、guard.skipped（不 th
   try {
     const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
     try {
-      const payload = await toolNamed('ppt_master_check_env').execute(
+      // 隔离 cwd：本用例断言无 .env（第 1 探测点是 cwd，R2 M3）。
+      const payload = await withIsolatedCwd(() => toolNamed('ppt_master_check_env').execute(
         { requirementsPath: file },
         { skillRoots: [empty], ...healthyExec() },
-      );
+      ));
       assert.deepEqual(payload.guard, { skipped: true });
       assert.equal(payload.envFileExists, false);
       assert.equal(payload.deps[0].installed, true, 'SKILL_DIR 缺失不阻断元数据探测');
@@ -1247,6 +1282,58 @@ test('check_env: envFileExists — cwd/SKILL_DIR/包根/HOME 四处皆无 → fa
   assert.equal(payload.envFileExists, false);
 });
 
+test('check_env: envFileExists 第 3 探测点（包根/仓库根）经装配期缝显式指向 fixture，生产默认仍是包根（R2 M3）', async () => {
+  const savedCwd = process.cwd();
+  const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
+  const isolatedHome = isolateHome();
+  const { root, remove } = makeSkillRoot();
+  const withEnv = mkdtempSync(join(tmpdir(), 'check-env-repo-root-'));
+  const withoutEnv = mkdtempSync(join(tmpdir(), 'check-env-repo-root-'));
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    writeFileSync(join(withEnv, '.env'), 'PROBE=fixture\n');
+    process.chdir(cwdRoot); // cwd 探测点也隔离：结论只可能来自第 3 探测点
+    assert.equal(existsSync(join(withEnv, '.env')), true, '前置：fixture 的包根有 .env');
+    assert.equal(existsSync(join(withoutEnv, '.env')), false, '前置：空 fixture 包根无 .env');
+
+    // 缝可按装配期注入：探测点随 `repoRoot` 走，与开发机工作区根的真实 `.env` 无关。
+    for (const [repoRoot, expected] of [[withEnv, true], [withoutEnv, false]]) {
+      const payload = await toolNamedWith({ repoRoot }, 'ppt_master_check_env').execute(
+        { requirementsPath: file },
+        { skillRoots: [root], ...healthyExec() },
+      );
+      assert.equal(
+        payload.envFileExists,
+        expected,
+        `第 3 探测点须由装配期 repoRoot 决定（repoRoot=${repoRoot}）`,
+      );
+    }
+
+    // 生产默认不变：不传缝时第 3 探测点仍是本包自己的根目录（README:33-39 的"工作区根"
+    // 在打包布局下就是它），故结论与 `existsSync(<包根>/.env)` 逐值一致。
+    const packagedRoot = fileURLToPath(new URL('..', import.meta.url));
+    // 必须用**未注入**的 `createTools()`（`toolNamed` 已把该探测点锚到 fixture）。
+    const defaultTool = createTools().find((tool) => tool.name === 'ppt_master_check_env');
+    const defaultPayload = await defaultTool.execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...healthyExec() },
+    );
+    assert.equal(
+      defaultPayload.envFileExists,
+      existsSync(join(packagedRoot, '.env')),
+      '省略该缝 ⇒ 生产默认探测点＝包根（行为不变）',
+    );
+  } finally {
+    removeReq();
+    process.chdir(savedCwd);
+    isolatedHome.restore();
+    remove();
+    rmSync(cwdRoot, { recursive: true, force: true });
+    rmSync(withEnv, { recursive: true, force: true });
+    rmSync(withoutEnv, { recursive: true, force: true });
+  }
+});
+
 test('check_env: envFileExists — 四处都无且 SKILL_DIR 有 .env.example → false（example 不算）', async () => {
   const savedCwd = process.cwd();
   const cwdRoot = mkdtempSync(join(tmpdir(), 'check-env-cwd-'));
@@ -1320,7 +1407,8 @@ test('check_env: execute 尊重 exec.signal（已中止 → 不返回结果）',
 test('check_env: 无 exec.run 注入时退回内置 spawn 助手（本机有 python3 则 found=true，无则 false，均不 throw）', async () => {
   const restoreHome = isolateHome().restore;
   try {
-    const payload = await toolNamed('ppt_master_check_env').execute({}, {});
+    // 隔离 cwd + HOME：本用例断言无 .env（第 1 探测点是 cwd，R2 M3）。
+    const payload = await withIsolatedCwd(() => toolNamed('ppt_master_check_env').execute({}, {}));
     assert.equal(typeof payload.python.found, 'boolean');
     if (payload.python.found) {
       // T14 首灌后包内 skills/ 存在：SKILL_DIR 可解析，guard 经真实 spawn 助手运行且通过。
@@ -1354,18 +1442,20 @@ function toolNamedWith(options, name) {
 
 /**
  * 造一个假 venv 目录（POSIX 布局）：`pyvenv.cfg` 恒在；`withPython=false` ⇒ 无
- * `bin/python3`（§5.3 的 exists-but-broken 子态）；`withMarker` 写所有权标记。
+ * `bin/python3`（§5.3 的 broken 子态）；`withPip=false` ⇒ 有解释器但无 `bin/pip3`
+ * （ensurepip 未跑完的半成品，同样落 broken 子态，R2 M2）；`withMarker` 写所有权标记。
  *
  * `dir` 给定则在**精确路径**落地——`~` 展开基准的用例需要
  * `<isolatedHome>/.ppt-master/venv` 这类确定路径（缺省为新建 tmp 目录）。
  */
-function makeVenvDir({ dir, withPython = true, withMarker = false } = {}) {
+function makeVenvDir({ dir, withPython = true, withPip = true, withMarker = false } = {}) {
   const target = dir ?? mkdtempSync(join(tmpdir(), 'check-env-venv-'));
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, 'pyvenv.cfg'), 'home = /usr/local/bin\n');
   if (withPython) {
     mkdirSync(join(target, 'bin'), { recursive: true });
     writeFileSync(join(target, 'bin', 'python3'), '#!/bin/sh\nexit 0\n');
+    if (withPip) writeFileSync(join(target, 'bin', 'pip3'), '#!/bin/sh\nexit 0\n');
   }
   if (withMarker) writeFileSync(join(target, '.ppt-master-wrapper.json'), '{}\n');
   return target;
@@ -1598,6 +1688,49 @@ test('check_env venv.on-ready 子态 exists-but-broken：exists=true ∧ python.
     const { guards, inlines } = probeBuckets(calls);
     assert.deepEqual(guards, [], 'guard 未运行');
     assert.deepEqual(inlines, [], 'deps 未探测');
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env venv.on-ready 半成品（有 bin/python3、缺 bin/pip3）：不报健康——python 取 absent 三字段、guard={skipped}、deps 全 UNKNOWN（R2 M2）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const venvDir = makeVenvDir({ withPip: false }); // ensurepip 未跑完：解释器在、安装路径不在
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    assert.equal(existsSync(join(venvDir, 'bin', 'python3')), true, '前置：bin/python3 可执行文件在盘上');
+    assert.equal(existsSync(join(venvDir, 'bin', 'pip3')), false, '前置：bin/pip3 缺失');
+
+    const { exec, calls } = venvExec();
+    const tool = toolNamedWith(
+      { venv: { enabled: true, path: venvDir, oldPathPolicy: 'keep' } },
+      'ppt_master_check_env',
+    );
+    const payload = await tool.execute({ requirementsPath: file }, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(payload.venv, {
+      enabled: true,
+      path: venvDir,
+      exists: true,
+      python: { found: false, version: null, meetsSkillRequirement: null },
+    }, '半成品须按 §5.3 broken 行定值：不得报「找到一个可用解释器」');
+    assert.deepEqual(
+      versionProbeTargets(calls),
+      ['python3', join(venvDir, 'bin', 'python3')],
+      '两 null 行的候选探测口径不变（broken 行的探测目标仍是 <absPath>/bin/python3）',
+    );
+    assert.deepEqual(payload.guard, { skipped: true }, '无生效解释器 → guard 跳过');
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+    ], '无生效解释器 → deps 全 UNKNOWN（不回退系统探测）');
+
+    const rendered = tool.output.render({}, payload)[0].text;
+    assert.ok(
+      rendered.includes(`venv: enabled=true path=${venvDir} exists=true python=not found`),
+      `半成品行须渲染"无可用解释器"而非版本号：${rendered}`,
+    );
+    assert.ok(!rendered.includes('python=3.12.1'), '不得把半成品的解释器版本渲染成健康态');
   } finally {
     removeReq();
     remove();

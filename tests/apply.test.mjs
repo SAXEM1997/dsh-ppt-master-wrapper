@@ -451,12 +451,16 @@ const ENTRY_SKILL_NAME = 'ppt-master-env';
 const packagedSkillsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
 const packagedSkillDir = join(packagedSkillsRoot, 'ppt-master');
 
-/** 真 venv fixture：`pyvenv.cfg` + `bin/python3` + wrapper 所有权标记。 */
+/**
+ * 真 venv fixture：`pyvenv.cfg` + `bin/python3` + `bin/pip3`（就绪判据两问齐备，R2 M2）
+ * + wrapper 所有权标记。
+ */
 async function makeVenvFixture() {
   const dir = await mkdtemp(join(tmpdir(), 'apply-venv-'));
   await mkdir(join(dir, 'bin'), { recursive: true });
   await writeFile(join(dir, 'pyvenv.cfg'), 'home = /usr/bin\n');
   await writeFile(join(dir, 'bin', 'python3'), '');
+  await writeFile(join(dir, 'bin', 'pip3'), '');
   await writeFile(
     join(dir, '.ppt-master-wrapper.json'),
     `${JSON.stringify({ createdAt: new Date().toISOString(), path: dir }, null, 2)}\n`,
