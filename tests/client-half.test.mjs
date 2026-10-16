@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { parseFrontmatter } from '../lib/skill-provider.js';
 
 /**
  * Task 1 契约：客户端半边（`lib/client.js`）的装载面、静态契约、三个隔离注册点、
@@ -19,6 +20,25 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLIENT_ENTRY = join(repoRoot, 'lib', 'client.js');
 const readPkg = () => JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+/**
+ * 包根**绝对**路径：供 T2①⑤ 的"不泄漏绝对 SKILL_DIR"断言（卡片只显示相对尾部）。
+ * 由 `CLIENT_ENTRY` 派生（`client.js` 在 `<包根>/lib/` 下）——与实现侧
+ * `PACKAGE_ROOT_ABS = dirname(CLIENT_ENTRY)` 取同一路径。
+ */
+const PACKAGE_ROOT_ABS = dirname(dirname(CLIENT_ENTRY));
+
+/** SKILL.md frontmatter 的上游版本（`metadata.version`，如 `6.7.0`）。 */
+function readUpstreamVersion() {
+  const raw = readFileSync(join(repoRoot, 'skills', 'ppt-master', 'SKILL.md'), 'utf8');
+  const parsed = parseFrontmatter(raw);
+  assert.ok(parsed !== null, 'SKILL.md 应有可解析的 frontmatter');
+  const version = parsed.data?.metadata?.version;
+  assert.equal(typeof version, 'string', 'SKILL.md 的 metadata.version 应为字符串');
+  return version;
+}
+
+/** escapeRe 的正则**字面量**转义（与夹具 `escapeRe` 同判据，供 `new RegExp` 拼接）。 */
+const escapeReLiteral = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ─── 装载 ─────────────────────────────────────────────────────────
 
@@ -49,6 +69,7 @@ let hookRuntime = null;
  * （上限 20 轮，超出抛错）；`unmount()` 按槽位逆序跑 cleanup。
  */
 function installHookRuntime() {
+  const effectDeps = new Map(); // effect 槽位 → 最近一次传入的依赖数组（T2 增量）
   let cursor = 0; // 本渲染的 hook 槽位游标
   let slots = []; // hook 槽位（跨重渲染保持）
   let pendingEffects = []; // 本渲染挂起的 effect
@@ -57,6 +78,14 @@ function installHookRuntime() {
   let current = { Component: null, props: undefined };
 
   const runtime = {
+    /**
+     * 外部（非 setState）变更后的**重渲染**请求：宿主语言切换不属于组件自身状态变更，
+     * 但真实 React 会因 locale 上下文更新而重渲染本卡片。测试侧以"置脏一次"建模，
+     * 下次 `settle()` 即重跑组件函数（T2③ 的同一用例内切语言断言依赖此语义）。
+     */
+    invalidate: () => {
+      dirty = true;
+    },
     createElement: (type, props, ...children) => {
       if (typeof type === 'function') {
         throw new Error(`卡片禁子组件：createElement 收到函数 type（${type.name || 'anonymous'}）`);
@@ -80,8 +109,10 @@ function installHookRuntime() {
       };
       return [slots[index], setState];
     },
-    useEffect: (fn) => {
-      pendingEffects.push({ index: cursor++, fn });
+    useEffect: (fn, deps) => {
+      // T2 增量：记录依赖数组。夹具不实现依赖比较（真实 React 的职责），但把 deps 暴露
+      // 出来，使"订阅 effect 以 holder 身份为依赖"（T1 审查裁定②）可被观测而非只靠约定。
+      pendingEffects.push({ index: cursor++, fn, deps });
     },
   };
 
@@ -100,10 +131,11 @@ function installHookRuntime() {
     let frame = lastFrame ?? paint();
     lastFrame = frame;
     for (let rounds = 0; ; rounds += 1) {
-      for (const { index, fn } of frame.effects) {
+      for (const { index, fn, deps } of frame.effects) {
         if (typeof slots[index] === 'function') slots[index](); // 上一轮 cleanup
         const result = fn();
         slots[index] = typeof result === 'function' ? result : null;
+        effectDeps.set(index, deps);
       }
       if (!dirty) {
         mounted = true;
@@ -137,7 +169,15 @@ function installHookRuntime() {
     current = { Component: null, props: undefined };
   };
 
-  hookRuntime = { runtime, render, settle, unmount, isMounted: () => mounted };
+  hookRuntime = {
+    runtime,
+    render,
+    settle,
+    unmount,
+    isMounted: () => mounted,
+    /** 某 effect 槽位最近一次的依赖数组（未传 ⇒ `undefined`）。 */
+    depsOf: (index) => effectDeps.get(index),
+  };
   return runtime;
 }
 
@@ -175,6 +215,9 @@ function makeRequire() {
  * - `ctx.slots.register(options, Component)`：记录；返回 disposer
  */
 function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } = {}) {
+  // `activeLocale` 用**持有器**而非裸参数：`setActiveLocale` 要能改到 `bind` 现读的那个变量
+  // （模块级/参数级解构都改不到），宿主语言切换形态即此。
+  const localeState = { current: activeLocale };
   const calls = {
     injects: [],
     effectLabels: [],
@@ -230,6 +273,14 @@ function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } =
       if (typeof disposer === 'function') disposers.push(disposer);
     },
     locale: {
+      /**
+       * T2 增量：界面语言可**运行时**切换（宿主语言切换形态）。`bind` 已按调用现读，
+       * 故只改此变量——T2③ 在**同一用例内**先断 zh、再切 en 断切换生效。
+       */
+      setActiveLocale: (next) => {
+        localeState.current = next;
+        hookRuntime?.runtime?.invalidate?.(); // 宿主语境变化 ⇒ 卡片随之重渲染
+      },
       register: (ns, dicts) => {
         const record = { ns, dicts, disposed: false };
         calls.localeRegisters.push(record);
@@ -242,7 +293,7 @@ function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } =
       },
       bind: (ns) => (key, params) => {
         const dict = dictionaries.get(ns) ?? {};
-        const table = dict[activeLocale] ?? {};
+        const table = dict[localeState.current] ?? {};
         const template = table[key] ?? key;
         if (params === undefined) return template;
         return String(template).replace(/\{(\w+)\}/g, (match, name) =>
@@ -683,4 +734,313 @@ test('package.json 声明面', () => {
   assert.equal(pkg.exports['.'], './index.js');
   assert.equal(pkg.exports['./cordis.patch.yml'], './cordis.patch.yml');
   assert.equal(pkg.exports['./package.json'], './package.json');
+});
+
+// ─── Task 2：卡片读面 ──────────────────────────────────────────────
+//
+// 复用 T1 夹具：`makeCtx({ form })` 驱动 holder，`renderCard/settle/textOf/find/findAll`
+// 驱动渲染树。**硬规则不变**：`loadEntry()` 一律在各用例体内调用。
+//
+// 本组用例的 DOM 锚即 T3 的消费面（根 `.ppt-master-config-card`、版本块
+// `.ppt-master-config-versions`、`#ppt-master-config-path` / `#ppt-master-config-policy`）。
+
+/** 渲染卡片的公共前缀：apply 后取注册的组件并渲染，返回 `{ tree, text, settle, ... }`。 */
+function renderApplied(face, ctxOpts) {
+  const { ctx, calls } = makeCtx(ctxOpts);
+  face.apply(ctx);
+  const Card = calls.slotRegisters[0].Component;
+  return { calls, Card, rendered: renderCard(Card) };
+}
+
+/** 齐备快照（三叶子均为正确类型）的假表单快照值。 */
+function fullSnapshot(overrides = {}) {
+  return { status: 'ready', value: { venv: { enabled: true, path: '/srv/venv', oldPathPolicy: 'delete' } }, ...overrides };
+}
+
+// ─── 用例 17：版本块 ──────────────────────────────────────────────
+
+test('版本块: 两条配对断言 + 相对尾部 + 不泄漏绝对路径', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  const pkgVersion = readPkg().version;
+  const upstreamVersion = readUpstreamVersion();
+  const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  const text = rendered.text;
+  const tokens = text.match(/\b\d+\.\d+\.\d+(?:-r\d+)?\b/g) ?? [];
+
+  // ① 插件版本常量 ≡ package.json.version；② 上游版本常量 ≡ SKILL.md metadata.version。
+  assert.ok(tokens.includes(pkgVersion), `版本块缺插件版本 ${pkgVersion}：${text}`);
+  assert.ok(tokens.includes(upstreamVersion), `版本块缺上游版本 ${upstreamVersion}：${text}`);
+  // ③ 归一化配对（不做三值相等）：版本块内每个版本类串都是"上游版本 + 可选 -rN"。
+  const paired = new RegExp('^' + escapeRe(upstreamVersion) + '(-r\\d+)?$');
+  assert.ok(tokens.length > 0, '版本块应至少含一个版本类串');
+  assert.ok(
+    tokens.every((token) => paired.test(token)),
+    `版本块出现非配对版本串：${JSON.stringify(tokens)}`,
+  );
+  // ③′ 常量间显式配对：插件版本 = 上游版本 + 可选 -rN（不依赖渲染面 token）。
+  assert.match(pkgVersion, new RegExp('^' + escapeRe(upstreamVersion) + '(-r\\d+)?$'));
+  // ④ 固定相对尾部逐字（含尖括号占位）；⑤ 不泄漏绝对 SKILL_DIR / 包根。
+  assert.ok(text.includes('<包根>/skills/ppt-master'), `版本块缺相对尾部：${text}`);
+  assert.equal(text.includes(PACKAGE_ROOT_ABS), false, `卡片泄漏绝对路径：${text}`);
+});
+
+// ─── 用例 18：开关读写面 ──────────────────────────────────────────
+
+test('开关: role/aria-checked/点击改暂存态不改宿主', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { calls, rendered } = renderApplied(face, {
+    form: makeFakeForm({ snapshot: { status: 'ready', value: { venv: { enabled: false, path: '/srv/venv', oldPathPolicy: 'keep' } } } }),
+  });
+
+  const switchOf = (tree) => find(tree, (el) => el.props?.role === 'switch');
+  assert.equal(find(rendered.tree, (el) => el.props?.className === 'ppt-master-config-switch')?.type, 'button');
+
+  const before = switchOf(rendered.tree);
+  assert.ok(before !== undefined, '卡片应渲染 role="switch" 控件');
+  assert.equal(before.props['aria-checked'], false);
+
+  before.props.onClick();
+  const after = switchOf(rendered.settle());
+  assert.equal(after.props['aria-checked'], true, '点击后开关应转 true');
+  assert.equal(calls.mutates.length, 0, '读面不得发任何宿主写');
+});
+
+// ─── 用例 19：关闭态文案（双语）───────────────────────────────────
+
+test('开关契约文案（关闭态，双语）', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { ctx, calls } = makeCtx({
+    form: makeFakeForm({ snapshot: { status: 'ready', value: { venv: { enabled: false, path: '/srv/venv', oldPathPolicy: 'keep' } } } }),
+  });
+  face.apply(ctx);
+  const rendered = renderCard(calls.slotRegisters[0].Component);
+
+  const zh = rendered.text;
+  for (const needle of ['不删除任何目录', '容器', 'python3']) {
+    assert.ok(zh.includes(needle), `zh 关闭态提示缺 ${needle}：${zh}`);
+  }
+
+  // 同一用例内切界面语言：字典 bind 现读，settle 后文案应随之切换。
+  ctx.locale.setActiveLocale('en');
+  const en = rendered.settle() && rendered.text;
+  for (const needle of ['no directory', 'container', 'python3']) {
+    assert.ok(en.includes(needle), `en 关闭态提示缺 ${needle}：${en}`);
+  }
+  assert.equal(en.includes('不删除任何目录'), false, 'en 下不应残留 zh 文案');
+});
+
+// ─── 用例 20：路径文案 ────────────────────────────────────────────
+
+test('路径文案（非法路径）', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
+
+  const text = rendered.text;
+  assert.ok(text.includes('配置无效'), `路径提示缺"配置无效"：${text}`);
+  assert.ok(text.includes('保存'), `路径提示缺"保存照常成功"预告：${text}`);
+});
+
+// ─── 用例 21：重置文案 ────────────────────────────────────────────
+
+test('重置文案', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  assert.ok(rendered.text.includes('config 键'), `重置提示缺"config 键"：${rendered.text}`);
+});
+
+// ─── 用例 22：焦点与 Escape ───────────────────────────────────────
+
+test('控件焦点与 Escape', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered } = renderApplied(face, {
+    form: makeFakeForm({ snapshot: { status: 'ready', value: { venv: { enabled: false, path: '/base', oldPathPolicy: 'keep' } } } }),
+  });
+
+  const inputOf = (tree) => find(tree, (el) => el.props?.id === 'ppt-master-config-path');
+  const selectOf = (tree) => find(tree, (el) => el.props?.id === 'ppt-master-config-policy');
+  const switchOf = (tree) => find(tree, (el) => el.props?.role === 'switch');
+
+  for (const [name, el] of [['input', inputOf(rendered.tree)], ['select', selectOf(rendered.tree)], ['switch', switchOf(rendered.tree)]]) {
+    assert.ok(el !== undefined, `卡片应渲染 ${name}`);
+    assert.equal(el.props.tabIndex, undefined, `${name} 不得设 tabIndex（原生可聚焦）`);
+  }
+  assert.equal(inputOf(rendered.tree).type, 'input');
+  assert.equal(selectOf(rendered.tree).type, 'select');
+
+  // 标签关联成立：每个字段行内的 `<label>` 的 htmlFor 逐字指向该行控件的 id。
+  const fieldOf = (tree, id) =>
+    find(tree, (el) => el.props?.className === 'ppt-master-config-field' &&
+      findAll(el, (node) => node.props?.id === id).length > 0);
+  for (const id of ['ppt-master-config-enabled', 'ppt-master-config-path', 'ppt-master-config-policy']) {
+    const field = fieldOf(rendered.tree, id);
+    assert.ok(field !== undefined, `应有承载 ${id} 的字段行`);
+    const label = find(field, (el) => el.props?.htmlFor !== undefined);
+    assert.ok(label !== undefined, `字段 ${id} 应有 <label htmlFor>`);
+    assert.equal(label.props.htmlFor, id, 'label htmlFor 应逐字指向控件 id');
+    assert.equal(label.type, 'label');
+  }
+
+  // 暂存：路径框设为 'B'，开关与选择器也各改一次（验证 Escape 只回落本字段）。
+  inputOf(rendered.tree).props.onChange({ target: { value: 'B' } });
+  switchOf(rendered.settle()).props.onClick();
+  selectOf(rendered.settle()).props.onChange({ target: { value: 'delete' } });
+  const staged = rendered.settle();
+  assert.equal(inputOf(staged).props.value, 'B');
+  assert.equal(selectOf(staged).props.value, 'delete');
+
+  inputOf(staged).props.onKeyDown({ key: 'Escape' });
+  const after = rendered.settle();
+  assert.equal(inputOf(after).props.value, '/base', 'Escape 后路径框应回落宿主基值');
+  assert.equal(selectOf(after).props.value, 'delete', 'Escape 只回落本字段，其余字段不动');
+  assert.equal(switchOf(after).props['aria-checked'], true, 'Escape 只回落本字段，开关不动');
+});
+
+// ─── 用例 23：readOnly 与 memory 提示 ─────────────────────────────
+
+test('readOnly 与 memory 提示', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const dict = (() => {
+    const { ctx, calls } = makeCtx();
+    face.apply(ctx);
+    return calls.localeRegisters[0].dicts.zh;
+  })();
+
+  const readOnly = renderApplied(face, { form: makeFakeForm({ snapshot: { status: 'ready', writable: false, value: { venv: {} } } }) });
+  const readOnlyText = readOnly.rendered.text;
+  assert.ok(readOnlyText.includes(dict['state.readOnly']), `缺 readOnly 文案：${readOnlyText}`);
+  assert.equal(readOnlyText.includes(dict['state.memory']), false, '两状态文案不得同时出现');
+  const disabledCount = findAll(readOnly.rendered.tree, (el) => el.props?.disabled === true).length;
+  assert.ok(disabledCount >= 3, `readOnly 下三控件应禁用（实际 ${disabledCount}）`);
+
+  const memory = renderApplied(face, { form: makeFakeForm({ snapshot: { status: 'unavailable', writable: false, mode: 'memory' } }) });
+  const memoryText = memory.rendered.text;
+  assert.ok(memoryText.includes(dict['state.memory']), `缺 memory 文案：${memoryText}`);
+  assert.ok(memoryText.includes('不会写入宿主配置'), `memory 文案应说清后果：${memoryText}`);
+  assert.equal(memoryText.includes(dict['state.readOnly']), false, '两状态文案不得同时出现');
+});
+
+// ─── 用例 24：敌意快照容错 ────────────────────────────────────────
+
+test('敌意快照容错', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+
+  const cases = [
+    { label: '① status 非枚举值', snapshot: { status: 'weird' } },
+    { label: '② value 为 null', snapshot: { status: 'ready', value: null } },
+    { label: '③ venv 缺失', snapshot: { status: 'ready', value: {} } },
+    { label: '④ 三叶子类型不符', snapshot: { status: 'ready', value: { venv: { enabled: 'yes', path: 42, oldPathPolicy: 'nope' } } } },
+  ];
+
+  const texts = [];
+  for (const item of cases) {
+    const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: item.snapshot }) });
+    let tree;
+    assert.doesNotThrow(() => {
+      tree = rendered.settle();
+    }, `${item.label} 渲染不得抛错`);
+    texts.push(textOf(tree));
+  }
+
+  // ① 非枚举 status → 归一化为 loading 文案（不动「不可用」文案）。
+  const { ctx: dictCtx, calls: dictCalls } = makeCtx();
+  face.apply(dictCtx);
+  const zh = dictCalls.localeRegisters[0].dicts.zh;
+  assert.ok(texts[0].includes(zh['state.loading']), `非枚举 status 应落 loading：${texts[0]}`);
+  assert.equal(texts[0].includes(zh['state.unavailable']), false);
+
+  // ②③④ 缺基值/类型不符 → 三控件禁用、路径框为空串、开关 false。
+  for (const index of [1, 2, 3]) {
+    const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: cases[index].snapshot }) });
+    const tree = rendered.settle();
+    const input = find(tree, (el) => el.props?.id === 'ppt-master-config-path');
+    const select = find(tree, (el) => el.props?.id === 'ppt-master-config-policy');
+    const toggle = find(tree, (el) => el.props?.role === 'switch');
+    assert.equal(input.props.value, '', `${cases[index].label}：路径应为空串`);
+    assert.equal(input.props.disabled, true, `${cases[index].label}：路径框应禁用`);
+    assert.equal(select.props.disabled, true, `${cases[index].label}：选择器应禁用`);
+    assert.equal(toggle.props.disabled, true, `${cases[index].label}：开关应禁用`);
+    assert.equal(toggle.props['aria-checked'], false, `${cases[index].label}：开关应为 false`);
+  }
+});
+
+// ─── 用例 25：渲染冒烟 ────────────────────────────────────────────
+
+test('渲染冒烟（设计 §7.4，SlotAssemblyError 触发条件规避）', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered } = renderApplied(face, { form: makeFakeForm({ snapshot: fullSnapshot() }) });
+
+  let tree;
+  assert.doesNotThrow(() => {
+    tree = rendered.settle();
+  }, '齐备快照渲染全程不得抛错');
+  for (const element of findAll(tree, () => true)) {
+    assert.equal(typeof element.type, 'string', '卡片只渲染原生元素（无子组件/Fragment）');
+  }
+  assert.equal(tree.props?.className, 'ppt-master-config-card', '根元素即卡片唯一定位锚');
+  assert.ok(find(tree, (el) => el.props?.className === 'ppt-master-config-versions') !== undefined, '应有版本块');
+
+  // 重挂载子断言（T1 审查裁定）：disposeAll 后旧 holder 已清空，新 apply 必须**刷新**
+  // Card 对 holder/t 的静态引用（或改用稳定转发器），否则重挂载的卡片死在"未接入"。
+  const first = makeCtx({ form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  face.apply(first.ctx);
+  const FirstCard = first.calls.slotRegisters[0].Component;
+  const firstRender = renderCard(FirstCard);
+  firstRender.unmount();
+  first.disposeAll();
+
+  const second = makeCtx({ form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  face.apply(second.ctx);
+  const SecondCard = second.calls.slotRegisters[0].Component;
+  const remounted = renderCard(SecondCard);
+  const remountedText = remounted.text;
+  assert.ok(
+    find(remounted.tree, (el) => el.props?.className === 'ppt-master-config-versions') !== undefined,
+    `重挂载后应读到新 holder 的 ready 态（不得卡"未接入"）：${remountedText}`,
+  );
+  assert.equal(remountedText.includes('configForms'), false, '重挂载后不应落 unconfigured 文案');
+  assert.equal(find(remounted.tree, (el) => el.props?.id === 'ppt-master-config-path').props.value, '/srv/venv');
+
+  // 裁定②的**依赖**观测：订阅 effect 不得用 `[]`（空依赖永不重订阅），且依赖项必须随
+  // holder **换代**而换身份——否则 holder 换代后卡片仍订阅旧 holder（旧 holder 已清空）。
+  const depsAt = (index) => hookRuntime.depsOf(index);
+  // 槽位编号＝hook **调用序**（2 个 useState 占 0/1，两个 useEffect 占 2/3）。
+  const SUBSCRIBE_SLOT = 2;
+  const INIT_SLOT = 3;
+  const beforeApply = [depsAt(SUBSCRIBE_SLOT), depsAt(INIT_SLOT)].map((deps) => deps?.[0]);
+  assert.ok(
+    Array.isArray(depsAt(SUBSCRIBE_SLOT)) && depsAt(SUBSCRIBE_SLOT).length === 1,
+    `订阅 effect 应恰依赖一项（空依赖＝永不重订阅）：${JSON.stringify(depsAt(SUBSCRIBE_SLOT))}`,
+  );
+  assert.ok(
+    Array.isArray(depsAt(INIT_SLOT)) && depsAt(INIT_SLOT).length === 1,
+    `初始化 effect 应恰依赖一项：${JSON.stringify(depsAt(INIT_SLOT))}`,
+  );
+
+  const fifth = makeCtx({ form: makeFakeForm({ snapshot: fullSnapshot() }) });
+  face.apply(fifth.ctx);
+  renderCard(fifth.calls.slotRegisters[0].Component);
+  const afterApply = [depsAt(SUBSCRIBE_SLOT), depsAt(INIT_SLOT)].map((deps) => deps?.[0]);
+  assert.ok(
+    afterApply.every((item, index) => item !== beforeApply[index]),
+    'apply 换代后新渲染的卡片应把依赖指向**新** holder 身份（依赖必须跟随 holder）',
+  );
 });
