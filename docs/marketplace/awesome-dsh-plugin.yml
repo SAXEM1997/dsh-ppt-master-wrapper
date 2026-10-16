@@ -1,0 +1,20 @@
+# 投递到 awesome-dsh-plugin 的条目文件（逐字复制到对方仓库）
+#
+# 目标路径：data/plugins/SAXEM1997__dsh-ppt-master-wrapper.yml
+# 规范：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md
+# 说明：README 由 data/plugins/*.yml 生成，**不要**手工编辑对方 README。
+#
+# 描述准确性自检（规范第 3 条：描述会被逐句对着代码核）：
+#   · 逐字节 vendor 技能树        → skills/ppt-master/（verify-plugin.mjs 字节比对 + 上游 attribution_guard.py）
+#   · 三个生命周期工具            → index.js 的 ctx.tools.register × 3（lib/tools.js）
+#   · 可选 venv 解释器隔离        → venv.enabled / venv.path / venv.oldPathPolicy（lib/venv.js）
+#   · 插件页配置卡片              → lib/client.js（dsh.client + exports["./client"]）
+#   · 零运行时依赖                → package.json 无 dependencies / devDependencies（tests/skeleton.test.mjs 断言）
+
+url: https://github.com/SAXEM1997/dsh-ppt-master-wrapper
+name: SAXEM1997/dsh-ppt-master-wrapper
+category: skill
+description:
+  # `: ` 存在 ⇒ 必须加引号，否则 YAML 会当成嵌套键
+  en: 'Wraps the upstream ppt-master presentation skill set as an installable DeepSeek Harness plugin: byte-for-byte vendored skills, three lifecycle tools (ppt_master_info, ppt_master_check_env, ppt_master_setup_deps), optional venv interpreter isolation, and a Plugins-page configuration card. Zero runtime dependencies.'
+  zh: 把上游 ppt-master 演示文稿技能集封装为可安装的 DeepSeek Harness 插件：逐字节 vendor 技能树，提供 ppt_master_info / ppt_master_check_env / ppt_master_setup_deps 三个生命周期工具、可选的 venv 解释器隔离与插件页配置卡片，零运行时依赖。
