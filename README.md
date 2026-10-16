@@ -60,7 +60,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 ### venv 配置说明
 
-- **插件页卡片（本版可用）**：GUI 侧边栏路径＝**插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包详情页的配置卡片。卡片含**三字段**（`venv.enabled` 开关 / `venv.path` 文本框 / `venv.oldPathPolicy` 选择器）＋**版本信息块**（插件版本 / 上游 ppt-master 版本 / 技能目录 `<包根>/skills/ppt-master`），文案**中英双语跟随界面语言**。改动经宿主配置通道保存——三叶子全 volatile ⇒ 保存走宿主 **volatile 快路径**（只写 `fiber._config` + `_commitVolatile()` → `loader/volatile-update`，**不 remount、不重跑 `apply`**），**免重启生效**（工具行为与入口 skill 正文随 volatile 引用原地换代）。若宿主以 **memory 模式**提供配置（非回环浏览器），卡片显式提示"当前会话为 memory 模式，**本次会话不会写入宿主配置**"——写永不落盘，静默失效不可接受。卡片与 profile patch 通道**二者等价、先写者为准**；卡片保存失败按两类呈现（宿主拒绝/被更高优先级配置层覆盖 vs 传输失败），"被覆盖"只在文案里给一般化提示。
+- **插件页卡片（本版可用）**：GUI 侧边栏路径＝**插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包详情页的配置卡片。卡片含**三字段**（`venv.enabled` 开关 / `venv.path` 文本框 / `venv.oldPathPolicy` 选择器）＋**版本信息块**（插件版本 / 上游 ppt-master 版本 / 技能目录 `<包根>/skills/ppt-master`），文案**中英双语跟随界面语言**。改动经宿主配置通道保存——三叶子全 volatile ⇒ 保存走宿主 **volatile 快路径**（只写 `fiber._config` + `_commitVolatile()` → `loader/volatile-update`，**不 remount、不重跑 `apply`**），**免重启生效**（工具行为与入口 skill 正文随 volatile 引用原地换代）。若宿主以 **memory 模式**提供配置（非回环浏览器），卡片显式提示「当前会话为 memory 模式，**本次会话不会写入宿主配置**」——写永不落盘，静默失效不可接受。卡片与 profile patch 通道**二者等价、先写者为准**；卡片保存失败按两类呈现（宿主拒绝/被更高优先级配置层覆盖 vs 传输失败），"被覆盖"只在文案里给一般化提示。
 - **重启边界（本版）**：**保存配置不需要重启**（如上，volatile 快路径）。重启只与**声明面**有关——改 `dsh.client` 或 `exports["./client"]`（`package.json`）需重启宿主才重新装载客户端半边；仅改 `lib/client.js` 本体**免重启**（宿主 stat 轮询热更新，约 500ms）。**profile `cordis.patch.yml` 的手工编辑是另一条通道**：它**不**走 volatile 快路径、无 watcher 热应用，仍**需重启 DSH** 生效（见下方「配置指引」）。
 - **PEP 668 说明**：本机系统 Python 为 PEP 668（EXTERNALLY-MANAGED），裸 `pip3 install` 需 `--break-system-packages`，且装入容器 rootfs、重建即丢。开启 venv 隔离后由 `<venv>/bin/pip3 install -r ...` 安装，不受 PEP 668 拦截、依赖落在 `venv.path`。`user` / `breakSystemPackages` 两个参数**仅系统模式生效**，venv 模式下被忽略并在返回中注明。
 - **配置指引（profile patch——与卡片等价的通道）**：编辑 profile 的 `cordis.patch.yml`（本机 `/dsh-home/profiles/web/cordis.patch.yml`），追加
@@ -97,7 +97,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 - **配置页诊断（卡片不出现 / 不可用时的分层排查）**：本包自带客户端半边（注册 `plugins.bundle.config` 卡片，键＝包名），故**本版 DSH 应能出配置卡片**。若卡片没出现或显示不可用，按**四层**依次排查——
   1. **声明面是否已生效**：`dsh.client` / `exports["./client"]` 属**装载期**声明——刚改过 `package.json` 需**重启 DSH** 才重新装载客户端半边（仅改 `lib/client.js` 免重启，stat 轮询热更新）。这是最常见的"改了没反应"。
   2. **宿主页是否在场**：卡片由插件页渲染，槽位名 `plugins.bundle.config`；若宿主页 `dsh-client-ui-plugin-manager` 缺席或未提供该槽位，则**槽位无人声明 ⇒ 卡片不出现**（与"半边未装载"不同，且宿主对 `dsh.client.inject` 图内不存在的包**静默跳过**、不报 warn——`inject` 只用于装载排序，不是 Cordis 服务注入）。
-  3. **`configForms` 服务是否可用**：该服务经 `ctx.inject(['configForms'], cb)` **可选**接入（**不在**硬 `inject` 里）。服务缺失 ⇒ 回调不触发、该接入不注册，但槽位注册照常 ⇒ 卡片显示"**配置通道不可用**"（命名空间未暴露时另显不可用态，两者文案不混用）。
+  3. **`configForms` 服务是否可用**：该服务经 `ctx.inject(['configForms'], cb)` **可选**接入（**不在**硬 `inject` 里）。服务缺失 ⇒ 回调不触发、该接入不注册，但槽位注册照常 ⇒ 卡片显示「**配置通道未接入**：宿主未提供 `configForms` 服务」（快照恒 `undefined`；命名空间未暴露时另显「配置通道**不可用**」态，两者文案不混用）。
   4. **老宿主不认 `dsh.client`**：该字段为**惰性元数据**，宿主半边照常工作、浏览器不加载任何东西 ⇒ **安静降级，插件功能不受影响**（只是没有卡片）；此时配置仍可走 profile patch 通道（见上文），或升级宿主。**宿主下限**：客户端半边依赖 DSH 0.2.0-rc.2 的契约（`dsh.engines.dsh` 仍写 `>=0.1.1-rc.1`，故老宿主不会因引擎门被拒装，而是走本条静默降级）。
 
   **另有硬失败形态（非安静降级）**：硬服务 `slots` / `locale` 缺失时 `apply` **不被调用**，宿主以 `pending (waiting for service…)` 上报（不是本插件能自行降级的形态）；同理若 `dsh.client.external` 未声明 `react`，`require` 命中不了模块表并**冒泡出页**。单个注册点异常（字典 / 槽位 / 订阅）则各自 try/catch → warn，**不影响其余注册点**。
