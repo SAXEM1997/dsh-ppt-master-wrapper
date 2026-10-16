@@ -227,6 +227,11 @@
 - §6.1④ 接受性措辞：原文称合成入口候选（无文件）经真实注册面的接受性"**未验证**"——Task 6 已凭宿主源码实证 `resourceBase` 为条件透传的可选字段（`@deepseek-ai/dsh-skill/lib/index.js:445`/`:501`，本机装包实测），故回写为"**不带 `resourceBase` 的候选已实证该字段可选，接受性由 compat ⑤ 实跑复核**"；§8"入口技能缺失诊断"行随之同口径更新。
 - §5.1/§6 附带：compat 脚本对插件入口的**静态 import** 使"无定位线索"用例语义受装载期 fail-loud 影响（**装载形态修复已上移归 Task 5**——动态装载改动与两保真例（无定位线索／未知参数）断言同在 T5；Task 10 保留本条的 spec 回写句）——属脚本自有面机制补充，spec 未载，回写时在 §6.1⓪/§7.5 注一句。
 
+- **⑳ broken 子态正文归属（Gate 3 G3-17/G3-18）**：spec §5.2 的四态未单列 `on-ready` + `broken`（目录在、`bin/python3` 不可用，即 `exists=true ∧ pythonPath=null`）；T6 以排除法裁决为"复用态 2 文案"（无可用解释器路径可替换，态 1 的替换契约不成立），本计划据此登记并回写：spec §5.2 四态说明后补该子态归属一句，README 四态①补"**且解释器可用**"限定 + broken 按②给指引（实现见 `lib/skill-provider.js` 的 `interpreterContract`）。**原文沉默，非行为变更**。
+- **㉑ wrapper-state 路径不可解析时抛错（Gate 3 G3-15）**：spec §5.4 wrapper-state 行只声明 `{ lastVenvPath }`/`readError`，未载 `wrapperStatePath()` 在 `os.homedir()` 非非空字符串（`HOME=''`）时**抛错**（拒绝退化为相对登记位置——相对登记会落进宿主 cwd）；读面折 `readError`、写面交由调用方注记。回写 §5.4 该行（登记位置守卫），**行为不动**。
+- **㉒ `ensureVenv` 取消时 reject（Gate 3 G3-16）**：spec §5.4 只声明返回面（never-rejects 的取值契约），未载**唯一例外**——创建被取消时 `ensureVenv` 以 `signal.reason`（或 runner 的 `AbortError`；null 退出码 + 已 abort 同判）**reject**，不得折成 `{ created: false, error }`。回写 §5.4 该行补 `@throws`，**行为不动**。
+- **㉓ 非清理门三行 cleanup 注记（Gate 3 G3-10）**：Task 9 把 off/invalid 行的 `cleanup` 钉为定值 `{oldPath:null, action:'none'}`；Step 4 修复给安装成功门之外的**三处返回**（系统模式 / venv 准备失败 / 安装非零失败）各加一条**固定注记**（仍是定值：不读登记、不调原语、不带 `oldPath`），使 render 与稳态 `无需清理` 可区分。稳态契约（登记路径＝当前路径 ⇒ 无 `error` 键）不变；spec §5.3 的 `cleanup.error` 本就是可选注记通道，故仅登记此处口径细化。
+
 ## 验收期人工步骤（spec §7.6 真实树 smoke；用户触发，不入自动化测试面）
 
 - [ ] 本机以 `/dsh-home/.ppt-master/venv` 实建 venv + 实装 19 依赖（该路径是**显式配置值**，非 `~` 展开结果）；如实记录 `ppt_master_setup_deps` 的 installCmd/installExit/venv/cleanup 输出。

@@ -76,11 +76,11 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 
 - name：`ppt-master-env`；description：中英双语，声明"任何 ppt-master 路由前必须先读本入口：它给出当前生效解释器与准备状态"。
 - body 四态（实例注册期按 config + 文件系统快照渲染。新鲜度定案：provider 工厂仅在注册期调用一次、技能数组注册期冻结——源码事实；故正文=插件实例生命周期的实例注册期快照，配置变更经热重载重建实例→正文随之换代；文件系统变化（如 venv 被外部删除）后正文可能陈旧→正文固定脚注指向 `ppt_master_info`/`ppt_master_check_env` 实时查询，`setup_deps` 执行后以工具输出为准）：
-   1. venv 开+已建：解释器 = `<解析后绝对路径>/bin/python3`，一切上游脚本调用一律以它替换字面 `python3`；给出 SKILL_DIR；读毕即路由 `ppt-master`。
+   1. venv 开+已建**且解释器可用**（`<解析后绝对路径>/bin/python3` 存在）：解释器 = 该绝对路径，一切上游脚本调用一律以它替换字面 `python3`；给出 SKILL_DIR；读毕即路由 `ppt-master`。
    2. venv 开+未建：先调用 `ppt_master_setup_deps` 准备环境；在此之前不以系统 python3 跑业务脚本。
    3. venv 关：系统 `python3`（现状）。
    4. 配置无效（相对路径）：指明修正方式，按系统模式继续。
-- 四态说明：第四态（配置无效）为 §6 无效配置降级在入口 skill 面的对应文案——超出澄清时的三态，但同源于已确认的错误处理决策；invalid×disabled 组合落态 3（disabled 优先，见 §5.3 组合细则）。
+- 四态说明：第四态（配置无效）为 §6 无效配置降级在入口 skill 面的对应文案——超出澄清时的三态，但同源于已确认的错误处理决策；invalid×disabled 组合落态 3（disabled 优先，见 §5.3 组合细则）。**破损子态归属（`on-ready` + `broken`，即目录在而解释器不可用）**：本四态未单列该子态，正文按**态 2** 渲染（无可用解释器路径可替换，故不适用态 1 的替换契约；`ppt_master_setup_deps` 会以"手动删除该目录后重跑"的恢复指引 fail-loud，§6 exists-but-broken 行）。
 - 注册形态：provider 技能列表 = vendor N + 入口 1；入口不落盘，不进 verify-plugin 字节比对面。**前提（决策A 收窄）**：入口**仅当 provider 以参数缺省创建**（无显式 scanRoots）时追加；任何**显式 roots**（含等于包内 `skills/` 者）一律不追加——零改动保护面（fixture 根不追加）据此成立。生产调用点经 `createSkillProvider(roots?, opts?)` 的**第二参** `opts = { venv }`（方案甲：roots 保持首参数组）传入已去引用的 venv 普通值。
 
 ### 5.3 工具 payload 增量（全部 additive；现有字段与系统模式语义不动）
@@ -109,8 +109,8 @@ apply 第二参为**统一注入包**：loader 传入经校验的 config（含 v
 - **命名原语与分工**：`probeVenvInterpreter(venvDir) → { found }`＝**同步 fs 存在性**探测，**入参为 venv 目录、内部拼 `bin/python3` 后探测**（dangling symlink → `found:false`），供 ensureVenv 体检 / `effectiveInterpreter` / 入口 skill body 三处共用；与**现有 async 三字段版本探测** `probePython`（`{ found, version, meetsSkillRequirement }`，check_env 的 `venv.python` 用；`pythonPath=null` 的两行改挂**候选** `<absPath>/bin/python3`）是**两个不同接口**，不得混用。
 - `venvExists(path)`：`pyvenv.cfg` 存在性。
 - marker：`<venv>/.ppt-master-wrapper.json`（`{ createdAt, path }`），读写 + 收编（存在 venv 缺标记则补写）。
-- `wrapper-state.json`：`<HOME>/.ppt-master/wrapper-state.json`。`readWrapperState() → { lastVenvPath: string|null, readError?: string }`——**「不存在」与「读失败」分离且均不抛**：不存在→无 `readError`（首次运行初始化语义）；读失败→附 `readError`（不知旧路径→跳过清理并注记，§6 同名行）。登记位置保持 `<HOME>` 单一；**持久性层级错配（显式承认）**：容器场景 HOME 易失而 venv 居持久卷，容器重建后登记丢失→旧 venv 成"有标记无登记"孤儿（§6）——取舍：不做多位置登记，README 明示手动清理（§8）。
-- `ensureVenv(run, path, { signal, probeVenvInterpreter, writeMarker }) → { created, adopted, error? }`：第三参收 options（`signal` 透传；`probeVenvInterpreter`/`writeMarker` 为可注入依赖，缺省即模块原语）；返回增 **`adopted`**（复用既有有效 venv 并补写标记的收编可观测）。形参命名口径：本条 `path` 即调用方传入的**去引用绝对路径**。
+- `wrapper-state.json`：`<HOME>/.ppt-master/wrapper-state.json`。`readWrapperState() → { lastVenvPath: string|null, readError?: string }`——**「不存在」与「读失败」分离且均不抛**：不存在→无 `readError`（首次运行初始化语义）；读失败→附 `readError`（不知旧路径→跳过清理并注记，§6 同名行）。登记位置保持 `<HOME>` 单一；**持久性层级错配（显式承认）**：容器场景 HOME 易失而 venv 居持久卷，容器重建后登记丢失→旧 venv 成"有标记无登记"孤儿（§6）——取舍：不做多位置登记，README 明示手动清理（§8）。**不可解析 home 的登记位置守卫**：`os.homedir()` 非非空字符串（`HOME=''`，Node 不回退 passwd）时 `wrapperStatePath()` **抛错**——拒绝退化为相对路径（相对登记位置会落进宿主 cwd，破坏"单一登记位置"契约）；读面（`readWrapperState`）把该抛错折成 `readError`（与"不存在"分离，§6 同名行），写面（`writeWrapperState`）保持抛出交由调用方注记。
+- `ensureVenv(run, path, { signal, probeVenvInterpreter, writeMarker }) → { created, adopted, error? }`：第三参收 options（`signal` 透传；`probeVenvInterpreter`/`writeMarker` 为可注入依赖，缺省即模块原语）；返回增 **`adopted`**（复用既有有效 venv 并补写标记的收编可观测）。形参命名口径：本条 `path` 即调用方传入的**去引用绝对路径**。**`@throws`（取消，never-rejects 契约的唯一例外）**：`signal` 转发进 runner，创建被取消时以 `signal.reason`（或 runner 拒绝的 `AbortError`；null 退出码 + 已 abort 同判）**reject**，绝不折成"环境故障"的 `{ created: false, error }` 值返回。**收编体检为两问**：解释器可用（`probeVenvInterpreter`，即 `bin/python3`）**且**安装路径可用（`probeVenvPip`，即 `bin/pip3`）——`python3 -m venv` 在 ensurepip 之前就写好 `pyvenv.cfg`/`bin/python3`，缺 `bin/pip3` 的半成品一律拒绝（`error='venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑'`，不自动删、不置 `adopted`），否则 `<absPath>/bin/pip3` ENOENT 会被永久粘滞。
    - **创建/收编前置**：目标目录须为（不存在 | 为空 | 已含 `pyvenv.cfg`）方可创建或收编；存在且非空且无 `pyvenv.cfg` → fail-loud 拒绝（`error="目标目录非空且非 venv"`，不创建、不写标记）——实测 `python3 -m venv` 对非空目录 EXIT=0 成功且保留用户文件，前置判定是唯一防线。
    - **已存在 venv 解释器体检**：损坏（exists-but-broken）→ 不自动删（保守），返回 error 提示"手动删除该 venv 目录后重跑"（恢复指引，§6）。
    - **复用语义**：重新启用 venv 且同路径已存在有效 venv → 直接复用（`venvExists` 判定，缺才建，不重建）。

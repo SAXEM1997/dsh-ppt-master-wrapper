@@ -16,12 +16,12 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createSkillProvider, parseFrontmatter } from './lib/skill-provider.js';
 import { createTools } from './lib/tools.js';
-import { assembleInjectionBag, effectiveInterpreter } from './lib/venv.js';
+import { assembleInjectionBag, effectiveInterpreter, snapshotVenvConfig } from './lib/venv.js';
 
 export const name = 'dsh-ppt-master-wrapper';
 
@@ -92,7 +92,8 @@ function locateDshModules() {
 /**
  * 同步解析宿主 `@deepseek-ai/schemastery`。
  *
- * `createRequire` **必须以定位到的 node_modules 为锚**（锚点取该目录下的占位文件路径）：
+ * `createRequire` **必须以定位到的 node_modules 为锚**（锚点取该目录下的占位文件路径，
+ * 且先经 `resolve` 落成绝对路径——定位命中的 `dir` 可能是相对拼写）：
  * 锚在 `index.js` 上即便 `DSH_PROFILE_DIR` 正确也会 `MODULE_NOT_FOUND`（本机实测）——
  * 本包被符号链接装载，从包内向上找不到 profile 的 node_modules。包为 CJS，同步解析可行。
  *
@@ -118,8 +119,15 @@ function loadSchemastery() {
     );
   }
 
-  const requireFromHost = createRequire(join(dir, 'noop-anchor.cjs'));
+  // `resolve` 先行：定位命中的 `dir` 允许是**相对拼写**（`DSH_NODE_MODULES=.`、相对
+  // `DSH_PROFILE_DIR`——`isDirectory` 以宿主 cwd 为基即可命中），而 `createRequire` 只接受
+  // 绝对路径/文件 URL：相对锚点会抛**不含包名**的裸 `ERR_INVALID_ARG_VALUE`，使 §6.1⓪ /
+  // README 承诺的"点名宿主包的可诊断 fail-loud"在该可达配置下退化成一句参数错误
+  // （Gate 3 G3-08，实测 `Received 'node_modules/noop-anchor.cjs'`）。锚点先解析为绝对路径，
+  // 且 `createRequire` 本身也留在 try 内——即使锚点仍不可用，也归到同一条点名诊断，
+  // 不泄漏裸 TypeError。
   try {
+    const requireFromHost = createRequire(join(resolve(dir), 'noop-anchor.cjs'));
     return requireFromHost('@deepseek-ai/schemastery');
   } catch (error) {
     throw new Error(
@@ -229,7 +237,9 @@ export const Config = z.object({
  *   explicit skill scan roots (test/embedding hook, forwarded verbatim) and the
  *   de-referenced venv config. Omitted (the production loader path) means the
  *   provider defaults to this package's `skills/` and venv falls back to
- *   `enabled: false`.
+ *   `enabled: false`. An assembly exception (an unexpected shape whose leaf `.get()`
+ *   throws) degrades to `VENV_DEFAULTS` plus one warn instead of propagating — the
+ *   `skillRoots` passthrough survives the fallback (spec §6.1③, Gate 3 G3-12).
  * @throws {Error} When `ctx.skills.registerProvider` is missing or not a function.
  */
 export function apply(ctx, opts) {
@@ -238,8 +248,28 @@ export function apply(ctx, opts) {
     throw new Error(`${name}: ctx.skills.registerProvider is required`);
   }
 
-  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。
-  const bag = assembleInjectionBag(opts);
+  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。装配带异常包装
+  // （spec §6.1③ / Gate 3 G3-12）：入参是宿主/嵌入方给的**任意形状**，"异常形态视为关闭"不得
+  // 靠"叶子缺省补默认"静默达成——装配抛错时回落 `VENV_DEFAULTS`（经 `snapshotVenvConfig(undefined)`
+  // 取得，默认值仍只有 `lib/venv.js` 一份字面量）、保留 `skillRoots` 原样透传语义、把异常送进
+  // warn 通道，插件其余部分照常注册。
+  let bag;
+  try {
+    bag = assembleInjectionBag(opts);
+  } catch (error) {
+    let skillRoots;
+    try {
+      skillRoots = opts?.skillRoots;
+    } catch {
+      // 连 roots 读取本身都抛：一并降级（`undefined` ＝ 消费方自取包内默认根），注册面不受影响。
+      skillRoots = undefined;
+    }
+    console.warn(
+      `${name}: 注入包装配异常（assembleInjectionBag 抛错）——回落默认配置（venv 视为关闭，`
+        + `按系统模式运行）：${error?.message ?? error}`,
+    );
+    bag = { skillRoots, venv: snapshotVenvConfig(undefined) };
+  }
 
   // 降级视图（spec §6 配置无效行）：与消费方**同一次** `effectiveInterpreter` 求值取
   // `invalidReason` 供 warn——本 Task 不替消费方判定 `state`、不另立判定路径。

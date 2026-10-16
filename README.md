@@ -62,7 +62,7 @@ dsh plugin --profile <name> add https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-p
 
 - **PEP 668 说明**：本机系统 Python 为 PEP 668（EXTERNALLY-MANAGED），裸 `pip3 install` 需 `--break-system-packages`，且装入容器 rootfs、重建即丢。开启 venv 隔离后由 `<venv>/bin/pip3 install -r ...` 安装，不受 PEP 668 拦截、依赖落在 `venv.path`。`user` / `breakSystemPackages` 两个参数**仅系统模式生效**，venv 模式下被忽略并在返回中注明。
 - **配置页指引**：DSH 设置页 → 插件 `dsh-ppt-master-wrapper` → venv 三项。`venv.path` 须为绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开；相对路径判无效 → venv 视为关闭 + 应用期 `console.warn`；可见反馈通道＝入口 skill「配置无效」态与 `ppt_master_check_env` 的 `venv.path=null`——渲染行逐字打印 `venv: enabled=true path=- exists=false python=skipped`）。注意：宿主设置页的 `applies:"live"` 是固定输出，真正的可编辑性来自字段的 volatile 声明。
-- **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开且已建 → 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
+- **入口 skill 用法**：任何 `ppt-master` 路由前**先读 `ppt-master-env`**（内存合成、不落盘）。四态：① venv 开、已建**且解释器可用** → 一律以解析后绝对路径的 `<path>/bin/python3` 替换上游脚本里的字面 `python3`（含 SKILL.md 第 2 步 `attribution_guard.py` 的调用），并给出 `SKILL_DIR`；② venv 开但未建 → 先调 `ppt_master_setup_deps`，在此之前不要用系统 `python3` 跑业务脚本；③ venv 关 → 现行系统 `python3`；④ 配置无效 → 按正文给出的修正方式处理后按系统模式继续。**破损子态**（`pyvenv.cfg` 在、`bin/python3` 不可用，即 `on-ready` + `broken`）不属①：没有可用的解释器路径可替换，正文按②给「先 `setup_deps` 准备环境」的指引（`setup_deps` 会以恢复指引 fail-loud：手动删除该目录后重跑）。正文是**插件实例注册期快照**：文件系统变化（如 venv 被外部删除）后可能陈旧，以 `ppt_master_info` / `ppt_master_check_env` 的实时输出为准。
 - **禁用后手动清理**：`venv.enabled=false` **不删除任何目录**（禁用后清理纯手动）：`rm -rf <原 venv.path>`。旧路径同理——`oldPathPolicy=keep`（默认）时旧 venv 保留待手动清理，`delete` 也仅删「带所有权标记且满足删除四条件」的旧目录。
 - **容器挂载卷建议**：容器用户宜把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`），不要留在容器 rootfs。
 
@@ -142,6 +142,14 @@ node --test tests/*.test.mjs
 > 该包解析不到时，这三个文件在 import 期**整体失败**（不是某条用例失败）——需让它经
 > `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME`(+`DSH_PROFILE`) 或宿主 profile 的
 > `node_modules` 可解析（同上面「schemastery 解析失败诊断」）。
+>
+> **同一条前置也覆盖 `tests/compat.test.mjs`，机制不同**：该文件不静态 import 插件入口，但其中
+> 13 处 in-process `runCompatCheck({ … env: {} })` 走的是脚本内**真实**的动态
+> `import(PLUGIN_ENTRY)`（`scripts/check-dsh-compat.mjs` 有意不经可注入的 `importModule` 通道），
+> 而 `options.env` 只喂 SDK 定位级、封不住插件侧对 `process.env` 的读取。因此该文件整体依赖宿主
+> `@deepseek-ai/schemastery` 可解析（in-process 真装载）：洁净环境下这些用例**整批转红**，而不是
+> 某几条失败。该文件的 CLI 子进程用例自带 stub 树注入
+> （`DSH_NODE_MODULES=<stub 树>/node_modules`）与 `{env:{}}` 失败态分组，不受此限。
 
 ## 致谢与许可
 

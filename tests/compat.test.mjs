@@ -1027,6 +1027,43 @@ test('T5⑧: schemastery 两态——可解析（注入 stub env）→ 装载成
   }
 });
 
+test('G3-08: 相对 DSH_NODE_MODULES 命中 → 锚点先 resolve（不抛裸 ERR_INVALID_ARG_VALUE；诊断含包名）', async () => {
+  const sdk = await makeStubSdk();
+  const emptyTree = await mkdtemp(join(tmpdir(), 'compat-rel-empty-'));
+  await mkdir(join(emptyTree, 'node_modules'), { recursive: true });
+  // 装载探针：只做"动态 import 插件入口"这一件事，故观测面与 CLI 无关。
+  const loadProbe = `await import(${JSON.stringify(pathToFileURL(PLUGIN_ENTRY).href)}); console.log('PLUGIN-LOADED');`;
+  const runProbe = (cwd) =>
+    execFileAsync(process.execPath, ['--input-type=module', '-e', loadProbe], {
+      cwd,
+      // 相对拼写：`locateDshModules()` 的 isDirectory 以 cwd 为基命中，但 createRequire 的锚点
+      // 曾是 `join('node_modules','noop-anchor.cjs')` 这类**相对路径** → 裸 TypeError。
+      env: { DSH_NODE_MODULES: 'node_modules' },
+    });
+  try {
+    // 形态一（正向）：相对命中且包可解析 → 锚点解析为绝对路径后照常装载。
+    const { stdout } = await runProbe(sdk.base);
+    assert.match(stdout, /PLUGIN-LOADED/, '相对 DSH_NODE_MODULES 命中应可装载（锚点须为绝对路径）');
+
+    // 形态二（负向）：相对命中但包不可解析 → 必须仍是"点名宿主包"的可诊断 fail-loud，
+    // 而不是不含包名的 createRequire 参数错误（compat 不可解析态用例的唯一正向标记）。
+    await assert.rejects(
+      runProbe(emptyTree),
+      (error) => {
+        assert.notEqual(error.code, 0, '装载期 fail-loud → 非零退出');
+        assert.match(
+          `${error.stdout ?? ''}${error.stderr ?? ''}`,
+          /@deepseek-ai\/schemastery/,
+          '相对命中且不可解析时，诊断仍须点名宿主包',
+        );
+        return true;
+      },
+    );
+  } finally {
+    await Promise.all([sdk.cleanup(), rm(emptyTree, { recursive: true, force: true })]);
+  }
+});
+
 test('CLI: §7.7 五项断言行（无 --skill-roots → 生产根形态）→ exit 0 且 stdout 五项齐', async () => {
   const sdk = await makeStubSdk();
   try {

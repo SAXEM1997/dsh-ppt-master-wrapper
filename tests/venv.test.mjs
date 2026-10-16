@@ -6,12 +6,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 // 访问形态钉死（plan Task 1 Step 1）：新导出一律经命名空间访问——Task 2/3/4/5 在同一文件
 // 追加导出时，本文件既有用例保持绿、追加用例先红，使「追加红/既有绿」在 test 文件粒度可观测。
@@ -72,6 +74,47 @@ test('venv: 导出面——7 个函数 + MARKER_FILENAME 常量齐备', () => {
   } finally {
     restore();
   }
+});
+
+// ─── 导出面增量（G3-02 / G3-09 追加的两个同步原语） ──────────────
+
+test('venv: 导出面增量——probeVenvPip（安装路径探测）与 normalizeVenvInput（工厂入口归一化）就位', () => {
+  for (const name of ['probeVenvPip', 'normalizeVenvInput']) {
+    assert.equal(typeof venv[name], 'function', `缺少函数导出: ${name}`);
+  }
+});
+
+test('normalizeVenvInput: 缺失或非 true 的 enabled → false；其余字段缺省补默认；venv 键缺省原样（G3-09）', () => {
+  // `venv` 键整体缺省/为 null ＝"未配置"（落 invalid 行、path=null），不得改写成默认袋。
+  assert.equal(venv.normalizeVenvInput(undefined), undefined);
+  assert.equal(venv.normalizeVenvInput(null), null);
+
+  // 严格 === true：除字面 true 外一律关闭（缺失、false、真值字符串、数字、null、对象）。
+  for (const enabled of [undefined, false, 'true', 1, null, {}]) {
+    assert.equal(
+      venv.normalizeVenvInput({ enabled, path: '/abs/venv' }).enabled,
+      false,
+      `enabled=${JSON.stringify(enabled)} 须归一为 false（缺键一律关闭）`
+    );
+  }
+  assert.equal(venv.normalizeVenvInput({ enabled: true, path: '/abs/venv' }).enabled, true);
+
+  // 其余字段缺省处补默认；在场值原样（含相对路径——有效性判定归 effectiveInterpreter，不在此降级）。
+  assert.deepEqual(
+    venv.normalizeVenvInput({ path: '/abs/venv' }),
+    { enabled: false, path: '/abs/venv', oldPathPolicy: 'keep' }
+  );
+  assert.deepEqual(
+    venv.normalizeVenvInput({ enabled: true, path: 'relative/venv' }),
+    { enabled: true, path: 'relative/venv', oldPathPolicy: 'keep' }
+  );
+  assert.deepEqual(
+    venv.normalizeVenvInput({}),
+    { enabled: false, path: '~/.ppt-master/venv', oldPathPolicy: 'keep' },
+    '空袋 → 三默认值逐字'
+  );
+  // 默认值只此一份字面量：与去引用快照的缺省产物同源。
+  assert.deepEqual(venv.normalizeVenvInput({}), venv.snapshotVenvConfig(undefined), '两处默认值同源（无第二份字面量）');
 });
 
 // ─── resolveVenvPath 矩阵 ────────────────────────────────────────
@@ -423,6 +466,20 @@ function addPythonBinary(venvDir, { symlinkTo = null } = {}) {
   if (symlinkTo === null) writeFileSync(binPython, '#!/bin/sh\n');
   else symlinkSync(symlinkTo, binPython);
   return binPython;
+}
+
+/**
+ * 造 `<venvDir>/bin/pip3`——真·完整 venv 的**安装路径**入口。
+ *
+ * `python3 -m venv` 在 ensurepip 之前就写好 `pyvenv.cfg` 与 `bin/python3`，故"解释器存在"不等于
+ * "安装路径可用"（Gate 3 G3-02）：收编体检必须同时看到 `bin/pip3`，否则半成品目录会被永久收编。
+ */
+function addPipBinary(venvDir) {
+  const binDir = join(venvDir, 'bin');
+  mkdirSync(binDir, { recursive: true });
+  const binPip = join(binDir, 'pip3');
+  writeFileSync(binPip, '#!/bin/sh\n');
+  return binPip;
 }
 
 test('probeVenvInterpreter: 入参＝venv 目录、内部拼 bin/python3（有效符号链接→true、悬空→false）', () => {
@@ -777,6 +834,7 @@ test('ensureVenv: 既有可用 venv 缺标记 → 收编（探针入参＝venv �
   try {
     const target = makeVenvDir(home, 'adoptable');
     addPythonBinary(target);
+    addPipBinary(target); // 真·完整 venv：收编体检须同时看到安装路径入口（G3-02）
     const { run, calls } = makeRunStub({ create: true });
     const probeCalls = [];
 
@@ -801,6 +859,7 @@ test('ensureVenv: 既有可用 venv 已有标记 → 复用且不重写标记（
   try {
     const target = makeVenvDir(home, 'marked');
     addPythonBinary(target);
+    addPipBinary(target); // 真·完整 venv：收编体检须同时看到安装路径入口（G3-02）
     venv.writeMarker(target);
     const before = venv.readMarker(target);
     const writes = [];
@@ -838,6 +897,68 @@ test('ensureVenv: 既有 venv 体检不可用（exists-but-broken）→ 拒绝�
       assert.equal(venv.readMarker(target), null, '损坏行不写标记');
     }
     assert.equal(calls.length, 0, '损坏行不得重建（python3 -m venv 会覆盖既有 venv）');
+  } finally {
+    restore();
+  }
+});
+
+test('ensureVenv: 半成品 venv（pyvenv.cfg + bin/python3、缺 bin/pip3）→ 首轮与次轮同一拒绝、不自动删、不写标记（P1）', async () => {
+  const { home, restore } = useTmpHome();
+  try {
+    // 真实成因：`python3 -m venv` 在 ensurepip **之前**就写好 pyvenv.cfg 与 bin/python3；
+    // ensurepip 失败（Debian 缺 python3-venv、受限源等）留下"有解释器、无 pip3"的半成品。
+    const target = makeVenvDir(home, 'half-built');
+    addPythonBinary(target);
+    assert.equal(
+      existsSync(join(target, 'bin', 'pip3')),
+      false,
+      '前置：bin/pip3 缺失（安装不完整形态）'
+    );
+    assert.equal(venv.probeVenvInterpreter(target).found, true, '前置：解释器入口可用');
+    const { run, calls } = makeRunStub({ create: true });
+
+    const expected = {
+      created: false,
+      adopted: false,
+      error: 'venv 内 pip3 缺失（安装不完整）——手动删除该目录后重跑',
+    };
+    // 粘滞消除：该形态首轮报错后，**次轮起**不得改判成"可收编"（否则 installCmd 指向
+    // 不存在的 <abs>/bin/pip3，只留一句 install did not succeed 且无恢复指引）。
+    for (const round of ['首轮', '次轮']) {
+      assert.deepEqual(
+        await venv.ensureVenv(run, target, {}),
+        expected,
+        `${round}：半成品 venv 必须得到同一类损坏拒绝（不得 adopted）`
+      );
+    }
+
+    assert.equal(existsSync(join(target, 'pyvenv.cfg')), true, '不自动删：目录原样保留');
+    assert.equal(existsSync(join(target, 'bin', 'python3')), true, '不自动删：解释器入口原样保留');
+    assert.equal(existsSync(join(target, 'bin', 'pip3')), false, '拒绝行不得代写 pip3');
+    assert.equal(venv.readMarker(target), null, '拒绝行不写所有权标记');
+    assert.equal(calls.length, 0, '拒绝行不得重建（python3 -m venv 会覆盖既有 venv）');
+  } finally {
+    restore();
+  }
+});
+
+test('probeVenvPip: 入参＝venv 目录、内部拼 bin/pip3（完整→true、缺 pip3/不存在/非字符串→false）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const venvDir = makeVenvDir(home, 'pip-probe');
+    assert.equal(venv.probeVenvPip(venvDir).found, false, '只有 pyvenv.cfg：安装路径尚不可用');
+    assert.deepEqual(Object.keys(venv.probeVenvPip(venvDir)).sort(), ['found'], '探测结果只承载 found 单键');
+
+    addPipBinary(venvDir);
+    assert.equal(venv.probeVenvPip(venvDir).found, true, 'bin/pip3 在场 → 安装路径可用');
+    assert.equal(
+      venv.probeVenvPip(join(home, 'absent-venv')).found,
+      false,
+      '目录不存在 → found:false（不抛）'
+    );
+    for (const bad of [null, undefined, 42, '']) {
+      assert.equal(venv.probeVenvPip(bad).found, false, `非字符串入参 ${String(bad)} 不抛`);
+    }
   } finally {
     restore();
   }
@@ -944,6 +1065,7 @@ test('ensureVenv: 收编行 marker 补写失败 → 仍 adopted:true（warn 含 
   try {
     const target = makeVenvDir(home, 'adopt-warn');
     addPythonBinary(target);
+    addPipBinary(target); // 真·完整 venv：收编体检须同时看到安装路径入口（G3-02）
     const writes = [];
     const { value: result, warnings } = await captureWarnAsync(() =>
       venv.ensureVenv(makeRunStub().run, target, {
@@ -1319,3 +1441,121 @@ test('cleanupOldVenv: 非字符串/空路径入参 → none 且不抛（无删�
   }
 });
 
+
+// ── 条件①②的路径规范化（P0：文本别名不得绕过删除安全） ──────────
+//
+// 事实（Gate 3 G3-01）：条件①（`oldPath !== currentPath`）与条件②（双向 `isPathPrefix`）曾按
+// **纯文本**比较，而 `resolveVenvPath` 不做规范化——同一目录写成 `<b>//venv`、`<b>/./venv`、
+// `<b>/sub/../venv` 时两条都放行，落到条件③④为真即删除**本次正在使用的 venv**。父目录为符号
+// 链接时（`old=/…/link/venv`、`current=/…/real/venv`）`path.resolve` 两值不等但 `realpath` 相同，
+// 故仅做 `resolve` 不足以修复：判定须按**同一文件系统实体**（realpath，退回 dev+ino）。
+// 规范化只服务**判定**：传 `remove()` 的仍是调用方给的 `oldPath` 原值。
+
+test('cleanupOldVenv: 条件一——同一目录的文本别名（重复分隔符 / `.` / `..`）一律拒绝，零删除调用（P0）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const base = join(home, 'alias-base');
+    const currentPath = makeMarkedVenv(base, 'venv'); // 正在使用的 venv，四条件齐备
+    mkdirSync(join(base, 'sub'), { recursive: true }); // 让 `sub/..` 成为可解析的真实路径
+    const { calls, remove } = makeRemoveStub();
+
+    for (const alias of [
+      `${base}//venv`, // 内部重复分隔符
+      `${base}/./venv`, // 内嵌 `.`
+      `${base}/sub/../venv`, // 内嵌 `..`（raw 拼写：`join` 会自行归一化，不得借它造别名）
+    ]) {
+      assert.notEqual(alias, currentPath, `前置：别名拼写与当前路径字面不同（${alias}）`);
+      assert.equal(resolve(alias), resolve(currentPath), '前置：别名与当前路径经 resolve 归一化后同一');
+      const result = venv.cleanupOldVenv(alias, 'delete', currentPath, { remove });
+      assert.equal(result.action, 'none', `别名 ${alias} 指向在用 venv → 必须拒绝删除`);
+      assert.match(result.error, /相同/, '拒绝原因应指明同路径（条件①归一化后命中）');
+    }
+
+    assert.deepEqual(calls, [], '三条别名一律零删除调用');
+    assert.equal(existsSync(currentPath), true, '在用 venv 与目录内容原样保留');
+    assert.notEqual(venv.readMarker(currentPath), null, '在用 venv 的标记未被触碰');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 条件一——父目录符号链接变体（resolve 不等、realpath 同实体）→ none 且不删（P0）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const real = join(home, 'real');
+    const currentPath = makeMarkedVenv(real, 'venv'); // 在用 venv：真实拼写
+    const link = join(home, 'link');
+    symlinkSync(real, link); // link → real（父目录符号链接，非 venv 目录本身）
+    const selfLink = join(home, 'venv-self-link');
+    symlinkSync(currentPath, selfLink); // venv 目录本身的符号链接（第三种拼写）
+
+    const { calls, remove } = makeRemoveStub();
+
+    for (const [label, alias] of [
+      ['父目录符号链接', join(link, 'venv')],
+      ['目录自身符号链接', selfLink],
+    ]) {
+      assert.notEqual(alias, currentPath, `前置：${label}拼写与当前路径字面不同`);
+      assert.notEqual(resolve(alias), resolve(currentPath), `前置：${label} 的 path.resolve 两值不等`);
+      assert.equal(
+        realpathSync(alias),
+        realpathSync(currentPath),
+        `前置：${label} 与当前路径 realpath 同一实体`,
+      );
+      const aliasStat = statSync(alias);
+      const currentStat = statSync(currentPath);
+      assert.equal(aliasStat.dev, currentStat.dev, `前置：${label} 同 dev`);
+      assert.equal(aliasStat.ino, currentStat.ino, `前置：${label} 同 inode`);
+
+      const result = venv.cleanupOldVenv(alias, 'delete', currentPath, { remove });
+      assert.equal(result.action, 'none', `${label} 指向在用 venv → 必须拒绝删除`);
+      assert.match(result.error, /同一实体/, `${label} 的拒绝原因应指明同一实体`);
+    }
+
+    assert.deepEqual(calls, [], '两种符号链接别名一律零删除调用');
+    assert.equal(existsSync(currentPath), true, '在用 venv 目录原样保留');
+    assert.equal(existsSync(join(currentPath, 'pyvenv.cfg')), true, 'venv 内容未被触碰');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 别名不削弱既有判定——反向包含（old 为 current 父目录，别名拼写）仍拒绝（P0）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const outerOld = makeMarkedVenv(home, 'nested'); // 合法 venv，但它是 current 的祖先
+    const innerCurrent = `${home}/./nested/inner`; // raw 别名拼写；归一化后确为嵌套配置
+    const { calls, remove } = makeRemoveStub();
+
+    const result = venv.cleanupOldVenv(outerOld, 'delete', innerCurrent, { remove });
+
+    assert.equal(result.action, 'none', '归一化后仍识别为嵌套配置 → 拒绝');
+    assert.match(result.error, /前缀包含/, '原因指向前缀包含（条件②未被规范化短路）');
+    assert.deepEqual(calls, [], '拒绝即零删除调用');
+    assert.equal(existsSync(outerOld), true, '祖先目录原样保留');
+  } finally {
+    restore();
+  }
+});
+
+test('cleanupOldVenv: 规范化只用于判定——真·不同路径经别名拼写仍 deleted，删除目标为原值（P0）', () => {
+  const { home, restore } = useTmpHome();
+  try {
+    const base = join(home, 'target-base');
+    const realOld = makeMarkedVenv(base, 'venv-old');
+    mkdirSync(join(base, 'sub'), { recursive: true });
+    const oldAlias = `${base}/sub/../venv-old`; // raw 别名拼写（`join` 会自行归一化）
+    const currentPath = join(base, 'venv-current'); // 真·不同路径（不共用前缀段边界）
+    const { calls, remove } = makeRemoveStub();
+
+    assert.notEqual(oldAlias, realOld, '前置：删除入参是别名拼写而非 realOld');
+    const result = venv.cleanupOldVenv(oldAlias, 'delete', currentPath, { remove });
+
+    assert.equal(result.action, 'deleted', '四条件齐备 + 真不同路径 → 照常删除（规范化不得误拒）');
+    assert.deepEqual(calls, [oldAlias], '删除原语收到的仍是调用方给的原值（删除目标语义不变）');
+    assert.equal(existsSync(realOld), false, '别名与真实拼写同一目录，删除确已生效');
+    assert.equal(existsSync(currentPath), false, '当前路径本就不存在（仅作对照，未创建）');
+  } finally {
+    restore();
+  }
+});

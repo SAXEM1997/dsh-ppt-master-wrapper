@@ -627,6 +627,33 @@ test('入口 skill: 态4（配置无效）——修正指引 + 按系统模式�
   assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'));
 });
 
+test('入口 skill: opts.venv 缺 enabled 键（测试/嵌入面直呼工厂）→ 归一为关闭（态3），不得静默开启（P2 G3-09）', async () => {
+  const missing = join(tmpdir(), 'skill-provider-venv-no-enabled');
+  assert.ok(!existsSync(missing), '前置：该路径确实不存在（未归一化时会落"开但未建"态2）');
+
+  // 直呼工厂的部分对象：`{path}` 而无 `enabled`。工厂入口须把"缺失或非 true 的 enabled"
+  // 归一为 false——否则 `effectiveInterpreter` 的 `venv?.enabled === false` 字面判定会把它
+  // 当成已启用，入口正文给出态2 指引、`setup_deps` 还会真的去建目录。
+  const content = await entryContent({ path: missing });
+
+  assert.ok(
+    content.includes('venv 未启用：使用系统 `python3`（现状系统模式）。'),
+    `缺 enabled 键 ⇒ 态3（系统模式），实际正文：${content}`,
+  );
+  assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'), '不得落态2（未启用）');
+  assert.ok(!content.includes('配置无效'), '归一化出的是"配置为关闭"，不是 invalid');
+  assert.equal(
+    content,
+    await entryContent(venvConfig('~/.ppt-master/venv', false)),
+    '与显式 enabled:false（路径合法）逐字节同文案',
+  );
+});
+
+test('入口 skill: venv 键整体缺省（未配置）仍如实落态4——归一化不得把"未配置"改写成默认袋', async () => {
+  const content = await entryContent(undefined);
+  assert.ok(content.includes('配置无效'), '未配置 ⇒ 单次求值给出的 invalid（path=null），不猜默认路径');
+});
+
 test('入口 skill: 正文含 SKILL_DIR（provider 侧元数据锚定）、读毕路由与固定脚注', async () => {
   const content = await entryContent(venvConfig('~/.ppt-master/venv', false));
   assert.ok(

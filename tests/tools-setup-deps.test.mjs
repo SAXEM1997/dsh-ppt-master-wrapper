@@ -922,7 +922,11 @@ test('setup_deps venv: 创建失败 → venv.error、installCmd 如实、install
     assert.equal(payload.venv.adopted, false);
     assert.equal(payload.venv.path, absPath);
     assert.match(payload.venv.error, /创建失败/, 'venv.error 携原因');
-    assert.deepEqual(payload.cleanup, { oldPath: null, action: 'none' }, '未安装成功 ⇒ 不动旧 venv');
+    assert.deepEqual(
+      payload.cleanup,
+      { oldPath: null, action: 'none', error: '安装未执行（venv 准备失败）' },
+      '未安装成功 ⇒ 不动旧 venv，且 cleanup 行携区分注记（G3-10：不得落「无需清理」默认臂）',
+    );
     assert.equal(payload.checkEnv.venv.enabled, true, '仍复跑 check_env（venv-on 口径）');
     assert.equal(payload.checkEnv.venv.exists, false);
     assert.ok(
@@ -1017,7 +1021,11 @@ test('setup_deps venv: pip 真失败保留真实退出码 7、render 不含「�
       { enabled: true, created: true, adopted: false, path: absPath },
       '安装失败不是 venv 准备失败：不置 venv.error',
     );
-    assert.deepEqual(payload.cleanup, { oldPath: null, action: 'none' }, '安装未成功 ⇒ 不动旧 venv');
+    assert.deepEqual(
+      payload.cleanup,
+      { oldPath: null, action: 'none', error: '安装未成功（旧 venv 留待下次成功运行清理）' },
+      '安装未成功 ⇒ 不动旧 venv，且 cleanup 行携区分注记（G3-10）',
+    );
     assert.equal(seams.countOf('readWrapperState'), 0, '安装未成功 ⇒ 不读登记');
     assert.equal(seams.countOf('writeWrapperState'), 0, '安装未成功 ⇒ 不改登记（旧路径留待下轮成功后再清理）');
     assert.equal(seams.countOf('remove'), 0, '安装未成功 ⇒ 不删旧 venv');
@@ -1025,6 +1033,98 @@ test('setup_deps venv: pip 真失败保留真实退出码 7、render 不含「�
     const text = tool.output.render({}, payload)[0].text;
     assert.ok(!text.includes('未执行'), `安装真失败不得谎称未执行：${text}`);
     assert.ok(text.includes('install exit: 7'));
+  } finally {
+    remove();
+    restore();
+  }
+});
+
+/**
+ * 系统模式（off/invalid）行的 cleanup 区分注记（G3-10）：系统模式不消费登记、也没有"安装成功门"，
+ * 旧登记 venv 可能仍在——渲染必须与稳态 `无需清理` 可区分，同时不带 oldPath（本次未读登记，给了会误导）。
+ */
+const SYSTEM_MODE_CLEANUP_NOTE = '系统模式（venv 未启用）不做旧 venv 清理';
+
+test('setup_deps venv: 安装失败/未执行两行的 cleanup 给出区分注记与区分渲染（P2 G3-10）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'current');
+
+    // 形态一：venv 准备失败（install 未执行）——installCmd 如实、installExit=-1。
+    const prepTool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath) });
+    const prep = await prepTool.execute({}, {
+      skillRoots: [root],
+      ...venvExec({ create: false, createExit: 1 }).exec,
+    });
+    assert.equal(prep.installExit, -1, '前置：本行是"安装未执行"');
+    assert.deepEqual(
+      prep.cleanup,
+      { oldPath: null, action: 'none', error: '安装未执行（venv 准备失败）' },
+      '未执行行须携区分注记',
+    );
+    const prepText = prepTool.output.render({}, prep)[0].text;
+    assert.ok(prepText.includes('cleanup: 未清理'), `未执行行的 cleanup 行须是「未清理」形态：${prepText}`);
+    assert.ok(prepText.includes('安装未执行（venv 准备失败）'), 'render 须带出该注记');
+    assert.equal(prepText.includes('cleanup: 无需清理'), false, '不得落「无需清理」默认臂');
+
+    // 形态二：安装真失败（非零退出码，未达清理门）。
+    const failTool = setupDepsToolWith({ roots: [root], venv: venvConfig(absPath) });
+    const failed = await failTool.execute({}, {
+      skillRoots: [root],
+      ...venvExec({ installExit: 7 }).exec,
+    });
+    assert.equal(failed.installExit, 7, '前置：本行是真实安装失败');
+    assert.deepEqual(
+      failed.cleanup,
+      { oldPath: null, action: 'none', error: '安装未成功（旧 venv 留待下次成功运行清理）' },
+      '安装失败行须携区分注记',
+    );
+    const failedText = failTool.output.render({}, failed)[0].text;
+    assert.ok(failedText.includes('cleanup: 未清理'), `安装失败行的 cleanup 行须是「未清理」形态：${failedText}`);
+    assert.ok(failedText.includes('安装未成功（旧 venv 留待下次成功运行清理）'), 'render 须带出该注记');
+    assert.equal(failedText.includes('cleanup: 无需清理'), false, '不得落「无需清理」默认臂');
+
+    // 形态三（F1 稳态不变）：安装成功 + 无登记 → 仍是无注记的「无需清理」行。
+    const okTool = setupDepsToolWith({ roots: [root], venv: venvConfig(join(home, 'venvs', 'steady')) });
+    const ok = await okTool.execute({}, {
+      skillRoots: [root],
+      ...venvExec().exec,
+    });
+    assert.deepEqual(ok.cleanup, { oldPath: null, action: 'none' }, '首跑成功：无登记 ⇒ 无注记');
+    assert.equal('error' in ok.cleanup, false, '稳态行 cleanup.error 须缺席');
+    const okText = okTool.output.render({}, ok)[0].text;
+    assert.ok(okText.includes('cleanup: 无需清理'), `稳态行仍渲染「无需清理」：${okText}`);
+    assert.equal(okText.includes('cleanup: 未清理'), false, '稳态行不得出现「未清理」形态');
+  } finally {
+    remove();
+    restore();
+  }
+});
+
+test('setup_deps: 系统模式（off / invalid）的 cleanup 行给出区分注记与区分渲染（P2 G3-10）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    for (const [label, venvOption] of [
+      ['off', venvConfig('~/.ppt-master/venv', { enabled: false, oldPathPolicy: 'delete' })],
+      ['invalid', venvConfig('relative/venv', { oldPathPolicy: 'delete' })],
+    ]) {
+      const seams = seamRecorder();
+      const tool = setupDepsToolWith({ roots: [root], venv: venvOption, seams: seams.seams });
+      const payload = await tool.execute({}, { skillRoots: [root], ...venvExec().exec });
+
+      assert.deepEqual(
+        payload.cleanup,
+        { oldPath: null, action: 'none', error: SYSTEM_MODE_CLEANUP_NOTE },
+        `${label} 行须携系统模式注记（且不带 oldPath：本次未读登记）`,
+      );
+      assert.deepEqual(seams.order(), [], `${label} 行仍零副作用原语（注记不得引入登记读取）`);
+      const text = tool.output.render({}, payload)[0].text;
+      assert.ok(text.includes('cleanup: 未清理'), `${label} 行 render 须与稳态可区分：${text}`);
+      assert.ok(text.includes(SYSTEM_MODE_CLEANUP_NOTE), `${label} 行 render 须带出注记`);
+      assert.equal(text.includes('cleanup: 无需清理'), false, `${label} 行不得落「无需清理」默认臂`);
+    }
   } finally {
     remove();
     restore();
@@ -1193,6 +1293,43 @@ test('setup_deps venv: 登记写入抛错 → action 不被改写 + 「登记失
   }
 });
 
+test('setup_deps venv: 登记失败 → payload 注记之外另有独立 warn 通道（含 absPath 与原因、action 不被改写）（P2 G3-11）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'current');
+    const oldPath = makeMarkedVenv(join(home, 'venvs'), 'old');
+    const seams = seamRecorder({
+      readWrapperState: () => ({ lastVenvPath: oldPath }),
+      writeWrapperState: () => {
+        throw new Error('ENOTDIR: <HOME>/.ppt-master 父路径被文件占用');
+      },
+    });
+    const tool = setupDepsToolWith({
+      roots: [root],
+      venv: venvConfig(absPath, { oldPathPolicy: 'delete' }),
+      seams: seams.seams,
+    });
+
+    const { value: payload, warnings } = await captureWarnAsync(() =>
+      tool.execute({}, { skillRoots: [root], ...venvExec().exec }),
+    );
+
+    // spec §6 的登记失败行要求 payload 注记；warn 是与 marker 行对称的**日志补充**通道，
+    // 两条通道互不替代：注记保留、`action` 如实、warn 可定位（absPath + 原因）。
+    assert.equal(payload.cleanup.action, 'deleted', 'warn 不改写清理结论（登记失败≠删除失败）');
+    assert.equal(payload.cleanup.oldPath, oldPath);
+    assert.match(payload.cleanup.error, /登记失败（非删除失败）/, 'payload 注记仍在');
+    assert.equal(warnings.length, 1, '登记失败恰一行 warn');
+    assert.ok(warnings[0].includes(absPath), `warn 应含登记目标 absPath：${warnings[0]}`);
+    assert.ok(warnings[0].includes('ENOTDIR'), `warn 应含失败原因：${warnings[0]}`);
+    assert.equal(seams.countOf('writeWrapperState'), 1, '登记确实被尝试（warn 由该次失败触发）');
+  } finally {
+    remove();
+    restore();
+  }
+});
+
 test('setup_deps venv: marker 写入抛错 → venv 仍可用（created 不变）+ 走 warn 通道（含 marker 路径）', async () => {
   const { home, restore } = useTmpHome();
   const { root, remove } = makeSkillDir();
@@ -1336,7 +1473,11 @@ test('setup_deps: venv off（路径合法）→ 系统模式 + 两键定值 + �
       { enabled: false, created: false, adopted: false, path: configured },
       'off 行定值：path 按配置原样（不解析）',
     );
-    assert.deepEqual(payload.cleanup, { oldPath: null, action: 'none' }, 'off 行 cleanup 定值');
+    assert.deepEqual(
+      payload.cleanup,
+      { oldPath: null, action: 'none', error: SYSTEM_MODE_CLEANUP_NOTE },
+      'off 行 cleanup 定值（含系统模式区分注记，G3-10）',
+    );
     assert.deepEqual(seams.order(), [], 'off 行零副作用原语（标记/登记读写、删除一律不调）');
     assert.equal(createCalls(calls).length, 0, '零 venv 创建');
     assert.equal(installCalls(calls).length, 1);
@@ -1349,6 +1490,40 @@ test('setup_deps: venv off（路径合法）→ 系统模式 + 两键定值 + �
     const text = tool.output.render({}, payload)[0].text;
     assert.ok(!text.includes('venv 模式忽略'), '系统模式不给 venv 模式行');
     assert.ok(!text.includes('未执行'));
+  } finally {
+    remove();
+    restore();
+  }
+});
+
+test('setup_deps: venv 子对象缺 enabled 键（测试/嵌入面直呼工厂）→ 归一为关闭：系统模式 + 零副作用（P2 G3-09）', async () => {
+  const { home, restore } = useTmpHome();
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const absPath = join(home, 'venvs', 'never-created');
+    const seams = seamRecorder();
+    // 部分对象：只有 path，没有 enabled —— 归一化前会被 `venv?.enabled === false` 判成"已启用"，
+    // 于是 setup_deps 真的发起 `python3 -m venv <absPath>`（真实创建副作用）。
+    const tool = setupDepsToolWith({ roots: [root], venv: { path: absPath }, seams: seams.seams });
+    const { exec, calls } = venvExec();
+
+    const payload = await tool.execute({}, { skillRoots: [root], ...exec });
+
+    assert.deepEqual(
+      payload.installCmd,
+      ['pip3', 'install', '-r', join(skill, 'requirements.txt')],
+      '缺 enabled 键不得静默开启 venv：走系统 pip3',
+    );
+    assert.deepEqual(
+      payload.venv,
+      { enabled: false, created: false, adopted: false, path: absPath },
+      '归一为关闭 ⇒ off 行定值（path 按配置原样）',
+    );
+    assert.deepEqual(seams.order(), [], '零 venv 原语调用（标记/登记读写、删除一律不调）');
+    assert.equal(createCalls(calls).length, 0, '零 venv 创建 argv');
+    assert.equal(installCalls(calls).length, 1);
+    assert.equal(installCalls(calls)[0].command, 'pip3');
+    assert.equal(existsSync(absPath), false, '不得留下真实创建副作用');
   } finally {
     remove();
     restore();
@@ -1379,7 +1554,11 @@ test('setup_deps: venv invalid（enabled + 相对路径）→ 系统模式、定
       { enabled: false, created: false, adopted: false, path: null },
       'invalid 定值：path=null、三布尔全 false',
     );
-    assert.deepEqual(payload.cleanup, { oldPath: null, action: 'none' });
+    assert.deepEqual(
+      payload.cleanup,
+      { oldPath: null, action: 'none', error: SYSTEM_MODE_CLEANUP_NOTE },
+      'invalid 行 cleanup 定值（含系统模式区分注记，G3-10）',
+    );
     assert.deepEqual(seams.order(), [], 'invalid 不调 ensure/cleanup/write（含删除原语零调用）');
     assert.equal(createCalls(calls).length, 0);
     // 偏差 ⑲ 的两处口径差异在此并现：setup_deps 的 `enabled` 是**生效态**（invalid ⇒ false），

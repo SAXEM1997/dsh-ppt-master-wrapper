@@ -362,6 +362,54 @@ test('T5④: 相对路径 venv → 注入包保留原值 + warn 触发（invalid
   }
 });
 
+test('G3-12: 注入包装配异常 → 不抛、回落 VENV_DEFAULTS（系统模式）、warn 一次、skillRoots 透传保留（spec §6.1③）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    const warnings = captureWarn(() =>
+      apply(ctx, {
+        skillRoots: [root],
+        // 异常形态的 venv 袋：叶子 `.get()` 抛错（宿主/嵌入方给的非预期形状）。
+        venv: {
+          enabled: {
+            get: () => {
+              throw new Error('bag 装配异常：volatile get 抛错');
+            },
+          },
+          path: volatileRef('/tmp/never-created'),
+          oldPathPolicy: volatileRef('keep'),
+        },
+      }),
+    );
+
+    assert.equal(calls.providers.length, 1, '装配异常不得阻断注册（降级续行，而非抛出）');
+    assert.equal(calls.tools.length, 3, '三工具照常注册');
+    assert.equal(warnings.length, 1, '恰一行 warn（回落值合法且关闭 → 无第二条 invalid warn）');
+    assert.match(warnings[0], /注入/, 'warn 须说明是注入/装配异常');
+    assert.match(warnings[0], /bag 装配异常/, 'warn 须携带原因，便于定位');
+
+    // 回落＝VENV_DEFAULTS：venv **视为关闭**（不是 invalid、更不是开启），故 path 按 off 行语义
+    // 取配置原样（默认路径字符串），exists=false、pythonPath=null。
+    const info = calls.tools.find((tool) => tool.name === 'ppt_master_info');
+    const payload = await info.execute({}, {});
+    assert.deepEqual(
+      payload.venv,
+      { enabled: false, path: '~/.ppt-master/venv', exists: false, pythonPath: null },
+      '回落默认值：关闭 + 默认路径（不落 invalid 的 path=null，也不猜盘上路径）',
+    );
+
+    // skillRoots 透传语义不因回落丢失：provider 列表仍是注入根的内容。
+    const listed = await calls.providers[0]().list();
+    assert.deepEqual(
+      listed.map((candidate) => candidate.name),
+      ['alpha', 'hidden-skill'],
+      'skillRoots 原样透传（回落只替换 venv 一支）',
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test('T5⑤: 既有注入通道不回归——{skillRoots} 缺省 venv 走默认、零降级日志、fixture 根不追加', async () => {
   const { root, cleanup } = await makePositiveRoot();
   try {
@@ -484,5 +532,60 @@ test('⑨: apply→消费方注入边端到端（payload 半边＋入口正文�
   } finally {
     await fixture.cleanup();
     await extra.cleanup();
+  }
+});
+
+/**
+ * G3-13（spec §7.4 补面）：loader 形态**引用袋**经 `apply` 的端到端去引用断言。
+ *
+ * 既有面只有两块：`snapshotVenvConfig`/`assembleInjectionBag` 的**纯函数直测**（T5①③）与
+ * `apply` + **普通值** venv 的端到端例（⑨）。缺的是"三叶子都是 `.get()` 引用对象"的**loader
+ * 形态**经 `apply` 走完全程——即生产路径真正会遇到的形态。本用例把两者接起来：去引用发生在
+ * `apply` 边界，正文（provider 侧）与 payload（tools 侧）两半边都必须反映同一个 venv。
+ * 观测面全部沿用本文件既有捕获通道（`calls.providers`/`calls.tools` + tmpdir 真 venv fixture），
+ * **不新增生产侧测试专用导出缝**。
+ */
+test('G3-13: loader 形态引用袋经 apply 端到端去引用——正文与 info payload 同源反映该 venv', async () => {
+  const fixture = await makeVenvFixture();
+  try {
+    const { ctx, calls } = makeCtx();
+    const warnings = captureWarn(() =>
+      apply(ctx, {
+        // loader 形态：cordis 校验后三叶子必为 `.volatile()` 的引用对象（`{ get() }`）。
+        venv: {
+          enabled: volatileRef(true),
+          path: volatileRef(fixture.dir),
+          oldPathPolicy: volatileRef('keep'),
+        },
+      }),
+    );
+
+    assert.deepEqual(warnings, [], '引用袋去引用后是合法配置：零降级日志');
+    const expectedInterpreter = join(fixture.dir, 'bin', 'python3');
+
+    // ── 正文半边：入口 skill 的解释器契约＝该 venv 的解释器 ──
+    const entry = await calls.providers[0]().get({ name: ENTRY_SKILL_NAME });
+    assert.ok(entry, '生产根形态捕获到合成入口技能');
+    assert.equal(
+      /生效解释器：`([^`]+)`/.exec(entry.content)?.[1],
+      expectedInterpreter,
+      `引用袋的 path 须经 apply 去引用后抵达入口正文：${entry.content}`,
+    );
+
+    // ── payload 半边：info.venv 三字段＋pythonPath 同源 ──
+    const infoTool = calls.tools.find((tool) => tool.name === 'ppt_master_info');
+    const payload = await infoTool.execute({}, {});
+    assert.deepEqual(
+      payload.venv,
+      {
+        enabled: true,
+        path: fixture.dir,
+        exists: true,
+        pythonPath: expectedInterpreter,
+      },
+      '引用袋的 enabled/path 须经 apply 去引用后抵达 tools payload（非 invalid、非默认值）',
+    );
+  } finally {
+    await fixture.cleanup();
   }
 });
