@@ -1,9 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parseFrontmatter } from '../lib/skill-provider.js';
+// compat 侧的 §7.7⑥（客户端半边 stub 装载与注册断言）——静态导入是**故意**的：
+// 该导出缺席时本文件在**加载期**整文件红灯（Step 2 的"整文件加载期失败"形态），
+// 无法逐例隔离——静态 import 属模块级依赖。T1–T3 的用例随之暂不可观测，落实现后复验。
+import { PLUGIN_CLIENT_ENTRY, checkClientHalf } from '../scripts/check-dsh-compat.mjs';
 
 /**
  * Task 1 契约：客户端半边（`lib/client.js`）的装载面、静态契约、三个隔离注册点、
@@ -1466,4 +1471,156 @@ test('pending 态: 未决时显示 saving、resolve 后转 saved', async () => {
   assert.ok(savedText.includes(zh['notice.saved']), `resolve true 后应显示 saved：${savedText}`);
   assert.equal(savedText.includes(zh['notice.pending']), false, '已决后不得残留 pending 文案');
   assert.equal(calls.mutates.length, 1);
+});
+
+// ─── Task 4：§7.7⑥ 客户端半边 stub 装载与注册（compat 脚本侧）─────────
+//
+// 本节验证 `scripts/check-dsh-compat.mjs` 的 `checkClientHalf`：它以 **stub window**
+// （`new Function('window', source)`，当前 realm）装载真实 `lib/client.js`，用**自带**的
+// 假 `require`（仅 react 系）/假 `ctx` 驱动 `factory` + `apply`，随后断言四要素。
+//
+// **夹具同形而刻意不合并**：本文件的 `loadEntry()`/`makeRequire()`/`makeCtx()` 与
+// `checkClientHalf` 内部的同名逻辑**同形**——但测试**不得**依赖被测脚本的测试替身
+// （否则替身失真会同时污染两侧），故两处各自维护、仅在此互相指认，避免日后单边漂移。
+// 本文件 35 例验的是**客户端半边自身**的行为；本节 5 例验的是**compat 判据与其负向
+// 敏感度**（改写真实源到 tmpdir 后必须转红）——两组断言面正交。
+
+/**
+ * 复制真实 `lib/client.js` 到 tmpdir，按 `replace` 表逐条做**唯一性受检**的文本替换。
+ *
+ * - `needle` 必须在源中恰出现一次（否则本用例的定位前提已破，直接抛错而非静默漏改）；
+ * - `replacement` 与 `insertBefore` 二选一：前者做替换，后者在文件首行前插入。
+ *
+ * 锚点消歧依赖 T1 骨架的逐字文本：`id: '` 前缀（包名字符串在 NS/name 等多处出现，
+ * 全局不唯一）、`const React = require('react')` 的字符串字面量（`factory: (require)`
+ * 形参**不得**触碰）、face 返回对象行的 `inject:` 键值对。
+ */
+function rewriteClientSource({ replace, insertBefore } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'client-half-7-7-6-'));
+  const entry = join(dir, 'client.js');
+  let source = readFileSync(CLIENT_ENTRY, 'utf8');
+  for (const { needle, replacement } of replace ?? []) {
+    const hits = source.split(needle).length - 1;
+    assert.equal(hits, 1, `负向改写锚点应恰出现 1 次（实际 ${hits}）：${needle}`);
+    source = source.split(needle).join(replacement);
+  }
+  if (insertBefore !== undefined) source = `${insertBefore}\n${source}`;
+  writeFileSync(entry, source, 'utf8');
+  return { entry, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** 逐条拼接 `checkClientHalf` 的 problems（负向用例的文本断言取此）。 */
+const problemsText = (result) => result.problems.join('\n');
+
+// ─── 用例 36：真实文件全绿 ────────────────────────────────────────
+
+test('§7.7⑥: checkClientHalf 对真实 lib/client.js 全绿', () => {
+  assert.equal(PLUGIN_CLIENT_ENTRY.endsWith('/lib/client.js'), true, '导出应为包内 lib/client.js 绝对路径');
+  const result = checkClientHalf();
+  assert.deepEqual(result.problems, [], `真实文件应全绿：${problemsText(result)}`);
+  assert.match(result.note, /^§7\.7⑥ 客户端半边/, 'note 前缀逐字');
+  // note 须逐字列出**四个证据串**中的三个（locale ns 由四要素断言覆盖，不重复断言）：
+  // 任一标记缺席即说明 ①–④ 四项检查或 note 证据串在空跑。
+  for (const marker of ['dsh-ppt-master-wrapper', 'plugins.bundle.config', 'configForms']) {
+    assert.ok(result.note.includes(marker), `note 应含证据串 ${marker}：${result.note}`);
+  }
+});
+
+// ─── 用例 37：inject 缺 locale ────────────────────────────────────
+
+test('§7.7⑥ 负向: inject 缺 locale → problems 指名', () => {
+  const { entry, cleanup } = rewriteClientSource({
+    replace: [{ needle: "inject: ['slots', 'locale']", replacement: "inject: ['slots']" }],
+  });
+  try {
+    const result = checkClientHalf({ clientEntry: entry });
+    assert.equal(result.problems.length, 1, `应恰一条 problem：${problemsText(result)}`);
+    assert.ok(problemsText(result).includes('§7.7⑥'), 'problems 应指名 §7.7⑥');
+    assert.equal(result.note, null, '失败时不得给出 note');
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── 用例 38：loader id 非包名 ────────────────────────────────────
+
+test('§7.7⑥ 负向: loader id 非包名', () => {
+  const { entry, cleanup } = rewriteClientSource({
+    // 以 `id: '` 前缀消歧：包名字符串在 NS/name 等多处出现，全局替换会连带改写实现常量。
+    replace: [{ needle: "id: 'dsh-ppt-master-wrapper'", replacement: "id: 'other-plugin'" }],
+  });
+  try {
+    const result = checkClientHalf({ clientEntry: entry });
+    const text = problemsText(result);
+    assert.ok(text.includes('§7.7⑥'), `problems 应含 §7.7⑥：${text}`);
+    assert.ok(text.includes('dsh-ppt-master-wrapper') && text.includes('other-plugin'),
+      `problems 文本应同时含包名与实读 id：${text}`);
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── 用例 39：无 apply / apply 空转 ───────────────────────────────
+
+test('§7.7⑥ 负向: 无 apply / apply 空转', () => {
+  // ① 删 `apply` 导出＝移除 face 返回对象中的 `apply` 键值对（face 行整行替换，
+  //    `apply` 函数定义本体保留——被删的是**导出面**而非实现）。
+  const removed = rewriteClientSource({
+    replace: [{
+      needle: "return { name: NS, inject: ['slots', 'locale'], apply };",
+      replacement: "return { name: NS, inject: ['slots', 'locale'] };",
+    }],
+  });
+  try {
+    const result = checkClientHalf({ clientEntry: removed.entry });
+    assert.ok(problemsText(result).includes('§7.7⑥'), `缺 apply 应报 §7.7⑥：${problemsText(result)}`);
+  } finally {
+    removed.cleanup();
+  }
+
+  // ② `apply` 体置空＝保留签名、体内仅 `/* noop */`（不动其余）→ 槽位未注册。
+  const noop = rewriteClientSource({
+    replace: [{
+      needle: '    function apply(ctx) {',
+      replacement: '    function apply(ctx) {\n      /* noop */\n      return;',
+    }],
+  });
+  try {
+    const result = checkClientHalf({ clientEntry: noop.entry });
+    assert.ok(problemsText(result).includes('§7.7⑥'), `apply 空转应报 §7.7⑥：${problemsText(result)}`);
+  } finally {
+    noop.cleanup();
+  }
+});
+
+// ─── 用例 40：require Harness 包 / 含 import 语句 ─────────────────
+
+test('§7.7⑥ 负向: require Harness 客户端包 / 含 import 语句', () => {
+  // ① 仅替换 `require('react')` 的**字符串字面量**（`factory: (require) =>` 形参不动）：
+  //    假 require 拒绝表外 spec，但拒绝须如实转 problems、**不抛**。
+  const harnessRequire = rewriteClientSource({
+    replace: [{ needle: "'react'", replacement: "'@deepseek-ai/dsh-client-ui-primitives'" }],
+  });
+  try {
+    // 拒绝须如实转 problems、**不抛**：先断不冒泡，再断 problems 文本。
+    let result;
+    assert.doesNotThrow(() => {
+      result = checkClientHalf({ clientEntry: harnessRequire.entry });
+    }, 'Harness 包 require 应转 problems，不得冒泡');
+    assert.ok(problemsText(result).includes('§7.7⑥'), `应报 §7.7⑥：${problemsText(result)}`);
+  } finally {
+    harnessRequire.cleanup();
+  }
+
+  // ② 文件首行前插入 `import 'x';` → `new Function` 抛 SyntaxError → 转 problems、不冒泡。
+  const esmStatement = rewriteClientSource({ insertBefore: "import 'x';" });
+  try {
+    let result;
+    assert.doesNotThrow(() => {
+      result = checkClientHalf({ clientEntry: esmStatement.entry });
+    }, 'ESM 语句应转 problems，不得冒泡');
+    assert.ok(problemsText(result).includes('§7.7⑥'), `应报 §7.7⑥：${problemsText(result)}`);
+  } finally {
+    esmStatement.cleanup();
+  }
 });

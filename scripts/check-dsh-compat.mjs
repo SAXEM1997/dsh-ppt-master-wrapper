@@ -40,12 +40,17 @@
  *     形态，固定以源码正则读其入口文件）与本插件期望值比对：读得到且不等 →
  *     漂移告警 + 非零退出；读不到 → warning 降级该项（本脚本主职责是 SDK 契约，
  *     superpowers-dsh 为跟随策略观测项）。
- *  7. §7.7 五项设计成立性前置检查（Task 10）——载体分工钉死：**③④＝静态源码文本
- *     断言**（bundle insert 层 `cordis.patch.yml` 条目、受控解析通道存在），
+ *  7. §7.7 六项设计成立性前置检查（Task 10 + Task 4）——载体分工钉死：**③④＝静态
+ *     源码文本**断言（bundle insert 层 `cordis.patch.yml` 条目、受控解析通道存在），
  *     **①②⑤＝实跑断言**（`ns.Config` volatile 声明、apply 第二参注入通道、
  *     生产根形态经真实 SkillRegistry 读回入口技能）。**不采用 env 通道子进程**。
  *     另含默认值交叉锚定（schema 校验默认值 ≡ 注入袋缺省默认值；两处字面拷贝的
  *     唯一钉住处）。
+ *     **⑥＝客户端半边 stub 装载与注册**（`lib/client.js` 经 stub `window.__ModuleLoader__`
+ *     装载 ＋ 假 require/假 ctx 驱动 `factory`+`apply`，断言 loader id＝包名、硬 inject 含
+ *     slots/locale 且不含 configForms、`ctx.inject(['configForms'])` 回调式接入、槽位
+ *     options 三键逐字）——它与①–⑤的**宿主面**取文处不同（客户端半边是另一个文件），
+ *     故并入静态检查报告段后在装载失败路径**同样给出结论**。
  *
  * 全绿 → exit 0；任一契约失败/漂移 → 非零退出并列出全部 problems。
  *
@@ -86,6 +91,14 @@ import { assembleInjectionBag, snapshotVenvConfig } from '../lib/venv.js';
  */
 export const PLUGIN_ENTRY = fileURLToPath(new URL('../index.js', import.meta.url));
 
+/**
+ * §7.7⑥ 的取文处：本插件**客户端半边**（浏览器侧插件入口）。
+ *
+ * 与 `PLUGIN_ENTRY`（宿主侧包根 index.js）是两个不同的装载面——⑤ 走真实 SkillRegistry
+ * 挂载宿主半边，⑥ 走 stub `window` 装载客户端半边；两者不得互相代替。
+ */
+export const PLUGIN_CLIENT_ENTRY = fileURLToPath(new URL('../lib/client.js', import.meta.url));
+
 /** 本包根（§7.7③ 的 bundle 面静态断言取文位置）。 */
 const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -102,7 +115,7 @@ const PACKAGED_SKILLS_ROOT = fileURLToPath(new URL('../skills/', import.meta.url
  */
 const ENTRY_SKILL_NAME = 'ppt-master-env';
 
-// ─── §7.7 五项设计成立性前置检查的判据锚（Task 10）───────────────
+// ─── §7.7 六项设计成立性前置检查的判据锚（Task 10 + Task 4）───────
 
 /**
  * ① 的遍历口径锚：Config 三叶子 volatile，**且**必须另有 ≥1 个非 volatile 叶。
@@ -120,6 +133,15 @@ const VENDOR_PRIMARY_SKILL = 'ppt-master';
 
 /** ③ 判据锚：bundle insert 条目 id（应与插件 `name` 导出一致；不一致即 problems）。 */
 const BUNDLE_INSERT_ID = 'dsh-ppt-master-wrapper';
+
+/** ⑥ 判据锚：插件页 bundle 级配置槽名（客户端半边 `slots.register` 的 options.name）。 */
+const SLOT_NAME = 'plugins.bundle.config';
+
+/**
+ * ⑥ 判据锚：客户端半边的 locale 命名空间（`ctx.locale.register` 的 ns，亦是槽位
+ * options.locale）——与 §7.7①②③④⑤ 的宿主面 anchor 相互独立。
+ */
+const CLIENT_LOCALE_NS = 'dsh-ppt-master-config';
 
 /**
  * ④ 的静态文本判据（受控解析通道的两半）：正向标记必须出现、ESM 裸导入必须缺席。
@@ -393,6 +415,196 @@ function readControlledChannelEvidence() {
   return { ok: true };
 }
 
+// ─── §7.7⑥ 客户端半边 stub 装载与注册（静态判据外的独立性检查）───
+
+/**
+ * 假 `require`：**白名单仅 react 系**（与 `lib/client.js` 的装载契约一致）。
+ *
+ * 表外 spec（尤其 `@deepseek-ai/dsh-client-*` 等 Harness 客户端包）一律 **throw**——
+ * 官方 practice 明令客户端半边不得 require 任何 Harness 客户端包，一切经 Cordis 服务
+ * 取得。拒绝是**如实转 problems**、不静默降级：require 白名单是硬契约。
+ */
+function clientRequireStub(spec) {
+  if (spec === 'react' || spec === 'react-dom' || spec === 'react/jsx-runtime') {
+    // 桩只提供注册面断言所需的成员；⑥ 不渲染卡片，故无需真实 React。
+    return { createElement: () => null, useState: () => [undefined, () => {}], useEffect: () => {} };
+  }
+  throw new Error(`require 白名单拒绝模块表外的 spec：${spec}`);
+}
+
+/**
+ * §7.7⑥：以 stub `window` 装载**真实**客户端半边，驱动 `factory` + `apply`，断言四要素。
+ *
+ * **当前 realm 求值**：用 `new Function('window', source)` 而非 `vm.runInNewContext`——
+ * 后者产出的对象跨 realm，`deepStrictEqual`/字符串比较虽可用，但对象面不必要地跨界。
+ *
+ * 四要素（任一失败 → `problems` 前缀逐字 `§7.7⑥ `）：
+ *  ① 载荷 `id === BUNDLE_INSERT_ID`（逐字＝包名，Loader 以它作 settings 命名空间名）；
+ *  ② 插件面 `inject` 恰含 `slots`/`locale`（**不含** `configForms`——可选能力不得列入
+ *     硬 inject）且 `apply` 为函数；
+ *  ③ `ctx.inject` 收到 `['configForms']`（可选能力经回调式接入）；
+ *  ④ `slots.register` 的 options 为 `{name:'plugins.bundle.config', key: BUNDLE_INSERT_ID,
+ *     locale:'dsh-ppt-master-config'}`（槽位名/归属键/locale ns 三者逐字）。
+ *
+ * 全通过 → `note` 前缀逐字 `§7.7⑥ 客户端半边`，并逐字列出**四个证据串**（loader id＝
+ * 包名、槽位名、locale ns、接入方式 `configForms`）；任一失败 → `problems` 非空、`note` 为 null。
+ *
+ * **夹具同形而刻意不复用** `tests/client-half.test.mjs` 的 `loadEntry`/假 require/假 ctx：
+ * 测试不得依赖被测脚本的测试替身（替身失全会同时污染两侧），故两处各自维护、仅互相指认
+ * （twin: `tests/client-half.test.mjs` 的「装载」/`makeRequire`/假 ctx 三节及其 Task 4
+ * 用例头注）。
+ *
+ * @param {{ clientEntry?: string }} [options] `clientEntry` 为测试注入缝（tmpdir 改写源
+ *   驱动负向用例）；生产缺省＝真实 `lib/client.js`。
+ * @returns {{ problems: string[], note: string | null }}
+ */
+export function checkClientHalf({ clientEntry = PLUGIN_CLIENT_ENTRY } = {}) {
+  const problems = [];
+  const fail = (reason) => {
+    problems.push(`§7.7⑥ ${reason}`);
+    return { problems, note: null };
+  };
+
+  // ── 装载：读源 → 当前 realm 求值 → 捕获载荷 ──
+  let source;
+  try {
+    source = readFileSync(clientEntry, 'utf8');
+  } catch (error) {
+    return fail(`客户端半边 ${clientEntry} 不可读: ${firstLine(error)}`);
+  }
+
+  const loads = [];
+  const stubWindow = { __ModuleLoader__: { load: (payload) => loads.push(payload) } };
+  try {
+    // 含顶层 `import`/`export` 语句的源在此抛 SyntaxError——如实转 problems、不冒泡。
+    new Function('window', source)(stubWindow);
+  } catch (error) {
+    return fail(`客户端半边 ${clientEntry} 装载失败（stub window 求值抛错）: ${firstLine(error)}`);
+  }
+  if (loads.length !== 1) {
+    return fail(`__ModuleLoader__.load 应恰调用一次（实际 ${loads.length}）——装载契约漂移`);
+  }
+
+  // ── ① 载荷 id 逐字＝包名 ──
+  const payload = loads[0];
+  if (payload?.id !== BUNDLE_INSERT_ID) {
+    return fail(
+      `loader 载荷 id 非包名: 期望 ${BUNDLE_INSERT_ID}、实读 ${String(payload?.id)}`
+        + '（Loader 以该 id 作 settings 命名空间名，不一致则宿主不认归属）',
+    );
+  }
+  if (typeof payload?.factory !== 'function') {
+    return fail('loader 载荷 factory 非函数——插件面无从取得');
+  }
+
+  // ── 插件面：factory(require) 的返回值即宿主眼中的 module.exports ──
+  let face;
+  try {
+    face = payload.factory(clientRequireStub);
+  } catch (error) {
+    return fail(`factory(require) 执行失败: ${firstLine(error)}`);
+  }
+
+  // ── ② 硬 inject 恰含 slots/locale（不含 configForms）且 apply 为函数 ──
+  const inject = Array.isArray(face?.inject) ? face.inject : null;
+  if (inject === null) {
+    return fail(`插件面 inject 非数组（实读 ${String(face?.inject)}）——硬服务声明无从判定`);
+  }
+  const missingServices = ['slots', 'locale'].filter((service) => !inject.includes(service));
+  if (missingServices.length > 0) {
+    return fail(
+      `插件面 inject 缺硬服务: ${missingServices.join('、')}（实读 [${inject.join(', ')}]）`
+        + '——二者缺失时 apply 根本不被调用，宿主以 pending 上报',
+    );
+  }
+  if (inject.includes('configForms')) {
+    return fail(
+      `插件面 inject 误含可选能力 configForms（实读 [${inject.join(', ')}]）`
+        + '——可选能力一律经 ctx.inject([\'configForms\'], cb) 回调式接入',
+    );
+  }
+  if (typeof face?.apply !== 'function') {
+    return fail(`插件面未导出 apply 函数（实读 ${typeof face?.apply}）——注册面无从驱动`);
+  }
+
+  // ── 驱动 apply：假 ctx 记录四个注册面（inject/effect/locale.register/slots.*）──
+  const calls = { injects: [], localeRegisters: [], slotInjects: [], slotRegisters: [] };
+  const ctx = {
+    inject: (deps, cb) => {
+      calls.injects.push(deps);
+      cb?.(ctx);
+    },
+    effect: (fn) => fn(),
+    locale: {
+      register: (ns, dicts) => {
+        calls.localeRegisters.push({ ns, dicts });
+        return () => {};
+      },
+      bind: () => (key) => key,
+    },
+    slots: {
+      inject: (name, cb) => {
+        calls.slotInjects.push(name);
+        return cb();
+      },
+      register: (options, Component) => {
+        calls.slotRegisters.push({ options, Component });
+        return () => {};
+      },
+    },
+  };
+  try {
+    face.apply(ctx);
+  } catch (error) {
+    return fail(`apply(ctx) 实跑抛错: ${firstLine(error)}`);
+  }
+
+  // ── ③ 可选能力 configForms 经 ctx.inject 回调式接入 ──
+  const configFormsInject = calls.injects.find(
+    (deps) => Array.isArray(deps) && deps.includes('configForms'),
+  );
+  if (configFormsInject === undefined) {
+    return fail(
+      `未观测到 ctx.inject(['configForms'], cb) 回调式接入（实读 ${JSON.stringify(calls.injects)}）`
+        + '——缺可选能力时该接入不注册，但接入通道本身必须存在',
+    );
+  }
+
+  // ── ④ 槽位注册：options 三键逐字 ──
+  if (calls.slotInjects.length === 0) {
+    return fail('未观测到 slots.inject 槽位接入（实读 0 次）——卡片无挂载点');
+  }
+  if (calls.slotRegisters.length !== 1) {
+    return fail(`slots.register 应恰调用一次（实际 ${calls.slotRegisters.length}）——注册契约漂移`);
+  }
+  const registered = calls.slotRegisters[0];
+  if (typeof registered.Component !== 'function') {
+    return fail(`slots.register 的 Component 非函数（实读 ${typeof registered.Component}）`);
+  }
+  const options = registered.options ?? {};
+  if (options.name !== SLOT_NAME) {
+    return fail(`槽位 options.name 非 ${SLOT_NAME}（实读 ${String(options.name)}）`);
+  }
+  if (options.key !== BUNDLE_INSERT_ID) {
+    return fail(
+      `槽位 options.key 非包名 ${BUNDLE_INSERT_ID}（实读 ${String(options.key)}）`
+        + '——key 不＝包名时宿主插件页不渲染该 section',
+    );
+  }
+  if (options.locale !== CLIENT_LOCALE_NS) {
+    return fail(`槽位 options.locale 非 ${CLIENT_LOCALE_NS}（实读 ${String(options.locale)}）`);
+  }
+
+  // 全通过：note 逐字四个证据串（供用例 1 的三标记断言证明非空跑）。
+  return {
+    problems,
+    note:
+      `§7.7⑥ 客户端半边: stub window 装载 ${clientEntry} 成功；loader id=${payload.id}、`
+      + `槽位 ${options.name}（key=${options.key}）、locale ns=${options.locale}、`
+      + `可选能力 configForms 经 ctx.inject 回调式接入（未入硬 inject）`,
+  };
+}
+
 // ─── runCompatCheck：主流程编排 ─────────────────────────────────
 
 /** 错误首行（多行 message 只保留第一行，报告可读）。 */
@@ -412,6 +624,8 @@ function firstLine(error) {
  *     缺省真实 `import(url)`；单测注入 stub 模块（无网络、不依赖真实安装位置）。
  *   - `expectedRank?: number` — 期望 rank 常量，缺省 lib/skill-provider.js 的
  *     SKILL_RANK 真值；与 superpowers-dsh 实际常量比对驱动漂移分支。
+ *   - `clientEntry?: string` — §7.7⑥ 的取文处，缺省真实 `lib/client.js`；测试以
+ *     tmpdir 改写源驱动⑥的负向分支（生产恒为真实文件）。
  * @returns {Promise<{ problems: string[], warnings: string[], notes: string[],
  *   resolved: { path: string, via: string } | null, entry: string }>}
  *   problems 非空 → CLI 非零退出；warnings 永不影响退出码。
@@ -424,6 +638,8 @@ export async function runCompatCheck(options = {}) {
   const env = options.env ?? process.env;
   const importModule = options.importModule ?? ((url) => import(url));
   const expectedRank = options.expectedRank ?? SKILL_RANK;
+  // ⑥ 的取文处：测试注入缝（tmpdir 改写源驱动负向用例）；生产缺省＝真实 lib/client.js。
+  const clientEntry = options.clientEntry ?? PLUGIN_CLIENT_ENTRY;
 
   // ── 1. 定位（五级 + 无序扫描；定位失败即整检失败）──
   let resolved = null;
@@ -600,7 +816,7 @@ export async function runCompatCheck(options = {}) {
     notes.push(`superpowers-dsh PACKAGED_SKILL_RANK=${drift.rank} = 本插件 SKILL_RANK=${expectedRank} ✓（跟随一致）`);
   }
 
-  // ── 7. §7.7 五项设计成立性前置检查（Task 10）──
+  // ── 7. §7.7 六项设计成立性前置检查（Task 10 + Task 4）──
   //
   // 载体分工（brief Step 1）：**③④＝静态源码文本断言**、**①②⑤＝实跑断言**；不采用
   // env 通道子进程。⑤ 的生产根形态＝`toolOptions` 缺省（provider 以参数缺省创建 →
@@ -653,6 +869,16 @@ export async function runCompatCheck(options = {}) {
             ? '＋ 本环境入口实跑装载成功（受控解析命中）'
             : '；**本环境入口实跑装载失败**——受控解析未命中（见 problems），本项仅静态半成立'),
       );
+    }
+
+    // ⑥ 客户端半边（stub window 装载 + 注册面断言）：与宿主面装载成败**无关**——它读的是
+    //    另一个文件（lib/client.js），故装载失败路径同样给出⑥结论（与③④同纪律）。
+    //    ⑥ 自身不抛：任何失败都在 checkClientHalf 内转成带 `§7.7⑥ ` 前缀的 problems。
+    const clientHalf = checkClientHalf({ clientEntry: clientEntry });
+    if (clientHalf.problems.length > 0) {
+      problems.push(...clientHalf.problems);
+    } else {
+      notes.push(clientHalf.note);
     }
   };
 
