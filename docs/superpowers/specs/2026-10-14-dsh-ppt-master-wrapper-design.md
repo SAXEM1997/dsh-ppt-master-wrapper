@@ -20,7 +20,7 @@
 - 提供 3 个生命周期工具（`ctx.tools.register`）；
 - 提供一键更新脚本同步上游（默认最新 release tag，支持 `--ref`）；
 - 检测结构变化（skill/工具增删、架构变更）时停下报告，人工介入后发新版本；
-- git main 分支管理，推送到 `https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-ppt-master-wrapper.git`。
+- git main 分支管理，推送到 `https://github.com/SAXEM1997/dsh-ppt-master-wrapper.git`（公开主地址）。
 
 ### 1.1 已确认的决策（用户逐项批准）
 
@@ -175,7 +175,7 @@
 
 ## 5. Git、推送与安全
 
-- 仓库初始化于 `/workspace/ppt-master`，**main 分支**；`origin` = `https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-ppt-master-wrapper.git`（**URL 不含任何凭据**）。
+- 仓库初始化于 `/workspace/ppt-master`，**main 分支**；公开主地址 = `https://github.com/SAXEM1997/dsh-ppt-master-wrapper.git`（**URL 不含任何凭据**）。
 - **PAT 解析顺序**（推送时）：环境变量 `DSH_PPT_GITLAB_PAT` → `git credential fill`（系统 credential helper）→ 失败并输出指引。经 credential helper 路径时 PAT 完全不经由本插件脚本参数/环境，仅在 git 进程内流转，安全边界不变。推送使用一次性 URL（`https://oauth2:<PAT>@…`——不落盘、不进 git 历史、不回显于日志；经 git argv 传递时同主机同用户理论上可经 `/proc` 短暂观测，故优先 credential helper 路径）。**PAT 绝不写入任何被提交的文件、绝不出现在日志与 git 历史中。**
 - **授权边界**：`--confirm-structural` 仅表示人工已确认结构变化，其后的推送授权与自动路径**一致**（仍受 `--no-push` 控制、PAT 解析顺序相同）——结构确认不额外要求推送审批（与 4.1 步骤 7 的人工流程顺序呼应）。
 - 首次交付时由开发者会话完成初始 commit/tag/push（PAT 通过环境变量注入）。

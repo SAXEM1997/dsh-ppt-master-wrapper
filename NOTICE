@@ -1,0 +1,35 @@
+dsh-ppt-master-wrapper — 上游归属 / Upstream attribution
+
+本包装层封装的上游技能集来自以下 MIT 许可项目，其版权声明随附如下：
+
+- **ppt-master** — https://github.com/hugohe3/ppt-master
+  Copyright (c) 2025-2026 Hugo He
+  Licensed under the MIT License.
+
+上游技能树以**逐字节（byte-for-byte）**方式 vendor 于本仓库 `skills/ppt-master/`：
+
+- 该目录下的全部文件（含上游 `LICENSE`、`SPONSORS.md`、`SPONSORS_CN.md`）均为上游原文，
+  **未作任何修改**，并由上游 `attribution_guard.py` 完整性门校验；
+- 上游 `LICENSE` 与本项目根 `LICENSE` **独立共存**：前者覆盖 vendor 技能内容，
+  后者覆盖包装层代码（`index.js` / `lib/` / `scripts/` / `tests/` 等）。
+
+完整许可条款见 [LICENSE](LICENSE) 与 [skills/ppt-master/LICENSE](skills/ppt-master/LICENSE)。
+
+---
+
+This wrapper packages an upstream skill set published under the MIT License:
+
+- **ppt-master** — https://github.com/hugohe3/ppt-master
+  Copyright (c) 2025-2026 Hugo He
+  Licensed under the MIT License.
+
+The upstream skill tree is vendored **byte-for-byte** at `skills/ppt-master/`:
+
+- Every file in that directory (including the upstream `LICENSE`, `SPONSORS.md` and
+  `SPONSORS_CN.md`) is the upstream original, **unmodified**, and is validated by the
+  upstream `attribution_guard.py` integrity gate;
+- The upstream `LICENSE` and this project's root `LICENSE` **coexist independently**:
+  the former covers the vendored skill content, the latter the wrapper code
+  (`index.js` / `lib/` / `scripts/` / `tests/`, …).
+
+Full license terms: [LICENSE](LICENSE) and [skills/ppt-master/LICENSE](skills/ppt-master/LICENSE).

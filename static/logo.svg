@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 180" width="880" height="180" role="img" aria-label="dsh-ppt-master-wrapper">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eef3ff"/>
+      <stop offset="55%" stop-color="#f6f8fc"/>
+      <stop offset="100%" stop-color="#eaf6f1"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4f6ef7"/>
+      <stop offset="100%" stop-color="#2f9e78"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="880" height="180" rx="18" fill="url(#bg)"/>
+  <rect x="0.75" y="0.75" width="878.5" height="178.5" rx="17.25" fill="none" stroke="#d6ddea" stroke-width="1.5"/>
+
+  <!-- slide mark: a deck outline with a play glyph -->
+  <g transform="translate(56 50)">
+    <rect x="0" y="0" width="72" height="52" rx="8" fill="url(#mark)" opacity="0.14"/>
+    <rect x="8" y="10" width="56" height="32" rx="5" fill="none" stroke="url(#mark)" stroke-width="2.5"/>
+    <path d="M30 20 L46 26 L30 32 Z" fill="url(#mark)"/>
+    <rect x="8" y="58" width="34" height="6" rx="3" fill="#4f6ef7" opacity="0.35"/>
+    <rect x="48" y="58" width="16" height="6" rx="3" fill="#2f9e78" opacity="0.35"/>
+  </g>
+
+  <text x="164" y="76" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="700" fill="#0f1115">dsh-ppt-master-wrapper</text>
+  <text x="165" y="110" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="17" fill="#5b6472">DeepSeek Harness plugin · byte-for-byte vendored ppt-master skill set</text>
+  <text x="165" y="139" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#7b8494">skills/ppt-master · ctx.skills · ppt_master_info / check_env / setup_deps</text>
+</svg>

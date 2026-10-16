@@ -19,7 +19,7 @@
 - `version` 镜像上游 + `-rN` 后缀；无后缀视为 `r0`，新后缀 = 当前 N+1；`-rN` 不承诺 semver pre-release 排序（spec §4.3）
 - rank=550、`source: 'custom'`、`resourceBase: {kind:'directory'}`、index.js `inject = ['skills','tools']`（spec §3.4/§3.5）
 - PAT 仅经环境变量 `DSH_PPT_GITLAB_PAT` 或 `git credential fill`；一次性 URL 不落盘/不进历史/不回显；**绝不写入任何被提交文件**（spec §5）
-- main 分支；origin = `https://gitlab.ai.isv.iridesc.cn:23000/zyx/dsh-ppt-master-wrapper.git`（URL 无凭据）（spec §5）
+- main 分支；公开主地址 = `https://github.com/SAXEM1997/dsh-ppt-master-wrapper.git`（URL 无凭据）（spec §5）
 - `.gitignore`：`.env`、`.upstream/`、`.skills-staging/`、`__pycache__/`、`*.pyc`、`.mnemon/`、`sync-report.txt`（spec §5）
 - 完整性门资产不可动：SKILL.md 门标记、frontmatter 逐字精确值（copyright/license/official_repository）、LICENSE/SPONSORS*、9 个门文件（spec §2）
 - 测试 fixtures 是**自造 mini 树**，绝不复制上游 78MB 资产进仓库（tests/ 不入 npm `files`）
