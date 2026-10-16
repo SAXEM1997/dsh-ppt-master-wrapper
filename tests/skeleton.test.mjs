@@ -43,6 +43,9 @@ test('package.json: files 白名单', () => {
     'scripts',
     'cordis.patch.yml',
     'README.md',
+    'README.en.md',
+    'NOTICE',
+    'static',
     'LICENSE',
   ]);
 });
@@ -132,9 +135,10 @@ test('LICENSE: 本插件自身 MIT 许可', () => {
 test('README.md: 完整文档（安装/三工具/.env/同步用法/致谢双 LICENSE）', () => {
   const text = read('README.md');
   assert.match(text, /^# dsh-ppt-master-wrapper$/m);
-  // 安装：本地 link 与 GitLab URL 两种方式。
+  // 安装：本地 link 与公开主地址（GitHub）两种方式。
+  // 2026-10-16 起插件主地址切到 GitHub（公开仓库），内网 GitLab 仅为可选镜像、不出现在 README。
   assert.match(text, /dsh plugin --profile <name> add link:/);
-  assert.match(text, /https:\/\/gitlab\.ai\.isv\.iridesc\.cn:23000\/zyx\/dsh-ppt-master-wrapper\.git/);
+  assert.match(text, /https:\/\/github\.com\/SAXEM1997\/dsh-ppt-master-wrapper\.git/);
   // 三工具说明（spec §3.5）。
   for (const tool of ['ppt_master_info', 'ppt_master_check_env', 'ppt_master_setup_deps']) {
     assert.ok(text.includes(tool), `README 缺少工具说明: ${tool}`);
