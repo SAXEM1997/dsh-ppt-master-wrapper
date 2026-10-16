@@ -2,7 +2,7 @@
 
 > 承接 2026-10-15 的 venv 特性。**触发**：验收期实测发现「纯宿主插件不出配置页」——宿主侧 volatile 投影与 settings 命名空间均已就绪，但插件页槽位无渲染者（见 `docs/superpowers/specs/2026-10-15-ppt-master-venv-config-design.md` §5.1 勘误 ㉗）。
 > 澄清真相源：`docs/superpowers/clarifications/2026-10-16-ppt-master-config-ui.md`。
-> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后**：M13＝按官方 practice **不 require 任何 Harness 客户端包**（含 `ui-primitives`/`SettingsFormModel`）⇒ 控件自绘；M1/M14＝依赖边语义与 `external` 声明更正；M3＝`configForms` 回调式接入；M5＝volatile 快路径（不 remount）；M6＝保存失败三通道 + memory 模式提示 + 重置语义；M4＝版本断言拆分。（4）**M2 重审（用户 2026-10-16）**：因 `SettingsFormModel` 恰在禁 require 的 `ui-primitives` 内、其"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持**嵌套 volatile 路径** ⇒ **维持既有嵌套 schema**，改为"卡片自持暂存态 + 手写嵌套 `path` 的 ops"；上一特性交付的键名/测试/文档**零改动**，profile 条目无需迁移（详见 §5.5）。
+> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后**：M13＝按官方 practice **不 require 任何 Harness 客户端包**（含 `ui-primitives`/`SettingsFormModel`）⇒ 控件自绘；M1/M14＝依赖边语义与 `external` 声明更正；M3＝`configForms` 回调式接入；M5＝volatile 快路径（不 remount）；M6＝保存失败**按可观测量分两类** + memory 模式提示 + 重置语义；M4＝版本断言拆分。（4）**M2 重审（用户 2026-10-16）**：因 `SettingsFormModel` 恰在禁 require 的 `ui-primitives` 内、其"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持**嵌套 volatile 路径** ⇒ **维持既有嵌套 schema**，改为"卡片自持暂存态 + 手写嵌套 `path` 的 ops"；上一特性交付的键名/测试/文档**零改动**，profile 条目无需迁移（详见 §5.5）。
 
 ## 1. 概述与动机
 
@@ -60,7 +60,7 @@
 | `tests/client-half.test.mjs` | 客户端半边单测 | 新增 |
 | `README.md` | 配置入口补"插件页卡片"路径、重启边界、memory 模式提示 | 修改 |
 | `index.js` / `lib/venv.js` / `lib/tools.js` / `lib/skill-provider.js`（宿主半边） | 提供 Config 与工具 | **冻结**（零改动；M2 重审后维持嵌套 schema） |
-| `tests/*`（既有 5 个文件） | — | **零改动**（无 schema 变更） |
+| `tests/*`（既有测试） | — | **零改动**（无 schema 变更） |
 
 ## 4. 数据流
 
@@ -155,7 +155,7 @@
 | `lib/client.js` | 新增（卡片自持暂存；`ops.path` 用嵌套键数组） |
 | `package.json` | 仅加 `exports["./client"]` + `dsh.client` |
 | 宿主半边（`index.js`/`lib/venv.js`/`lib/tools.js`/`lib/skill-provider.js`） | **冻结** |
-| 既有测试的形状断言（含 `{venv:{…}}` 断言的共 7 个文件：`apply`/`compat`/`skill-provider`/`venv`/`tools-check-env`/`tools-info`/`tools-setup-deps`） | **零改动** |
+| 既有测试的形状与字段断言（`tests/*.test.mjs`，含 `venv` 形状者如 `apply` / `compat` / `skill-provider` / `tools-check-env` / `tools-info` / `tools-setup-deps`） | **零改动** |
 | compat 脚本 | 仅**新增** §7.7⑥（既有断言不回归） |
 | README | 补卡片路径、重启边界、memory 模式提示（配置写法与键名不变） |
 | profile `cordis.patch.yml` 既有条目 | **无需迁移**（键名未变） |
@@ -195,7 +195,7 @@
 2. **静态契约断言**：`lib/client.js` 无 `import`/`export`、require 白名单＝react 系（**无 Harness 客户端包**）、`package.json` 的 `exports["./client"]`/`dsh.client.platform === 'web'`/`external` 声明存在、`files` 覆盖 `lib/client.js`。
 3. **compat 脚本扩展（spec §7.7⑥）**：按 §7.1 stub 形态装载 `lib/client.js` 并断言注册面成立（与既有 spec §7.7⑤ 同风格；编号属 2026-10-15 篇 §7 第 7 项，本设计沿用并登记该篇"五项→六项"字样回写）。
 4. **渲染冒烟（R2 更正）**：元素树断言测不到渲染期异常（`SlotAssemblyError` 会冒泡出页、非该类才被吞成占位）⇒ 冒烟改为**真实 outlet 挂载一次**（种子表 + 最小 host），或断言"不产生 `SlotAssemblyError` 触发条件"。
-5. **宿主半边零回归（§5.5）**：`index.js` / `lib/venv.js` / `lib/tools.js` / `lib/skill-provider.js` 与既有测试文件（7 个含 `{venv:{…}}` 断言者）**零改动**；全量 `node --test tests/*.test.mjs` 全绿；`check-dsh-compat` OK（既有断言不回归，仅新增 §7.7⑥）；`verify-plugin --upstream` OK（vendor `skills/` 字节零漂移）。
+5. **宿主半边零回归（§5.5）**：`index.js` / `lib/venv.js` / `lib/tools.js` / `lib/skill-provider.js` 与既有测试文件（含 `venv` 形状与字段断言者）**零改动**；全量 `node --test tests/*.test.mjs` 全绿；`check-dsh-compat` OK（既有断言不回归，仅新增 §7.7⑥）；`verify-plugin --upstream` OK（vendor `skills/` 字节零漂移）。
 6. **手工验收**：见 §9。
 
 ## 8. 风险与未知
@@ -203,7 +203,7 @@
 | # | 项 | 状态 / 处理 |
 |---|---|---|
 | D1 | 版本信息形态 | **已裁决**：常量两版本 + 相对尾部（§5.4） |
-| D2 | 首次装载须重启宿主 | **已裁决**：实现后由用户重启容器一次。**实证更正**：宿主半边代码**已**在 2026-10-16 12:16:43 那次重启装载（`index.js` 09:38:34、`skill-provider.js` 09:39:31、`venv.js` 10:44:58、`tools.js` 11:06:06，均 **< 12:16:43**）；venv 配置 patch 写于 12:26:52、**晚于**该次启动 ⇒ 下一次重启只交付：**venv 配置生效** + **客户端半边首次装载** |
+| D2 | 首次装载须重启宿主 | **已裁决**：实现后由用户重启容器一次。**实证更正**：宿主半边代码**已**在 2026-10-16 12:16:43 那次重启装载（`index.js` 09:38:34、`skill-provider.js` 09:39:31、`venv.js` 10:44:58、`tools.js` 11:06:06，均 **< 12:16:43**）；venv 配置条目为 2026-10-16 手工写入、**晚于**该次启动（内容至今未变，文件 mtime 后续有变动） ⇒ 下一次重启只交付：**venv 配置生效** + **客户端半边首次装载** |
 | V1 | 版本注解可达性 | **已闭**：不可达（§5.4） |
 | V2 | `inject` 是否需列 `ui-slots`/`ui-primitives` | **已闭**：二者为前端静态种子模块，且按官方 practice **不得 require**（§5.1） |
 | V3 | 保存是否热生效 | **已静态结案**：volatile 快路径，不 remount；volatile 引用原地换代 |

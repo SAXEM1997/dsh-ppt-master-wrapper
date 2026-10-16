@@ -52,7 +52,8 @@
 > **本表两行已被实证推翻（勘误，2026-10-16 Phase 0 复核）**——保留原文以便溯源：
 > 1. 「卡片挂载点」行末句"页面把 `form` 传给卡片"**错**：`plugins.bundle.config` 槽的派发是 `renderSlot(..., { view: 'page' }, { entryKey: pkg.name })`，**不带 `form`**（对比 row/item 槽带 `form`）⇒ 保存/重置控件必须由卡片自持。见设计 §5.3。
 > 2. 「版本注解可取」行**错**：宿主 `describe()` 下发的 `schema` 是 `volatileForm(Config).toJSON()`，该函数重建对象、只保留 volatile 叶子，根 description（含版本三元组）被丢弃；`ConfigFormSnapshot` 亦无 `schema` 字段 ⇒ 注解**不可达**，版本信息只能走客户端常量。见设计 §5.4。
-> 3. 「客户端文件形态」行不完整：`factory` 返回的 `module.exports` 会被宿主 vendored cordis Loader **当插件装载**，必须导出 `inject`（服务名数组）与 `apply(ctx)`；`factory(require)` 本身拿不到 `ctx`。见设计 §5.2。
+> 3. **「客户端文件形态」行内的 require 面已被推翻**：该行写 `require("<inject 里的宿主包>")`，但官方 practice 明令**不得 require 任何 Harness 客户端包**（`@deepseek-ai/dsh-client-ui-primitives` 等），客户端半边只允许 require react 系（见设计 §5.1/§5.2/§10）；`configForms` 等服务须走 Cordis 服务注入（`ctx.inject([...], cb)` 回调式），不是 require。
+> 4. 「客户端文件形态」行另有不完整处：`factory` 返回的 `module.exports` 会被宿主 vendored cordis Loader **当插件装载**，必须导出 `inject`（服务名数组）与 `apply(ctx)`；`factory(require)` 本身拿不到 `ctx`。见设计 §5.2。
 
 
 ## 5. 边界与隐含假设（标注来源）
