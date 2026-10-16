@@ -69,5 +69,5 @@
 1. ~~卡片挂载层级选择（bundle 级 vs row 级）~~ → **已闭**：bundle 级（键＝包名），见设计 §3/§5.2。
 2. ~~版本注解在客户端表单快照中是否直接可达~~ → **已闭**：不可达（宿主 `volatileForm` 重建 schema 丢弃根 description、快照无 `schema` 字段），版本信息改走客户端常量 + 两条配对断言，见设计 §5.4（V1）。
 3. ~~版本号递增（`6.7.0-r2` → `-r3`）~~ → **已闭**：不递增，随下次上游 sync 按 `-rN` 规则处理，见设计 §2/§9。
-4. **（R2 新增并已闭）配置 schema 形态** → 用户 2026-10-16 裁决：**拍平为顶层三键** `venvEnabled` / `venvPath` / `venvOldPathPolicy`（原嵌套 `{venv:{…}}` 与宿主扁平表单模型不兼容，读写双向皆断）。影响面与迁移见设计 §5.5。
+4. **（R2 新增；先选拍平、后经重审改回嵌套）** 配置 schema 形态 → **最终裁决：维持嵌套 `venv.{enabled,path,oldPathPolicy}`**。过程：R2 落地视角实证官方 `SettingsFormModel` 只能寻址顶层键（嵌套会读恒空、写必拒）⇒ 一度选择拍平为顶层三键；随后核实 `SettingsFormModel` **住在禁 require 的 `@deepseek-ai/dsh-client-ui-primitives` 内**（官方 practice 明令不得 require Harness 客户端包），"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持嵌套 volatile 路径 ⇒ 用户 2026-10-16 重审后决定**改回嵌套**（卡片自持暂存态 + 手写嵌套 path 的 ops；宿主半边与既有测试零改动、profile 条目无需迁移）。见设计 §5.5。
 

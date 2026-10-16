@@ -2,7 +2,7 @@
 
 > 承接 2026-10-15 的 venv 特性。**触发**：验收期实测发现「纯宿主插件不出配置页」——宿主侧 volatile 投影与 settings 命名空间均已就绪，但插件页槽位无渲染者（见 `docs/superpowers/specs/2026-10-15-ppt-master-venv-config-design.md` §5.1 勘误 ㉗）。
 > 澄清真相源：`docs/superpowers/clarifications/2026-10-16-ppt-master-config-ui.md`。
-> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后（本节为重）**：M2（P0）用户裁决＝**配置 schema 拍平为顶层键**（结构性变更，见 §5.5）；按官方 practice 更正为**不 require 任何 Harness 客户端包**（M13）；依赖边语义更正（M1/M14）；volatile 快路径更正（M5）；保存失败三通道/memory 模式/重置语义（M6）；版本断言拆分（M4）等。
+> **修订记录**：（1）builder check 后按宿主源码重写装载契约/写控件归属/注解可达性；D1、D2 经用户裁决。（2）Gate 0 R1 审查后补注册生命周期、写路径测试、重启交付物更正、依赖边说明。（3）**Gate 0 R2 审查后**：M13＝按官方 practice **不 require 任何 Harness 客户端包**（含 `ui-primitives`/`SettingsFormModel`）⇒ 控件自绘；M1/M14＝依赖边语义与 `external` 声明更正；M3＝`configForms` 回调式接入；M5＝volatile 快路径（不 remount）；M6＝保存失败三通道 + memory 模式提示 + 重置语义；M4＝版本断言拆分。（4）**M2 重审（用户 2026-10-16）**：因 `SettingsFormModel` 恰在禁 require 的 `ui-primitives` 内、其"扁平兼容"好处归零，而宿主 `applyPathOp`/`isVolatilePath` 实证支持**嵌套 volatile 路径** ⇒ **维持既有嵌套 schema**，改为"卡片自持暂存态 + 手写嵌套 `path` 的 ops"；上一特性交付的键名/测试/文档**零改动**，profile 条目无需迁移（详见 §5.5）。
 
 ## 1. 概述与动机
 
@@ -25,7 +25,7 @@
 - 新宿主↔页面 RPC 面、typert remote、自研页面。
 - 引入打包器/构建步骤，或把 React 打进产物。
 - 发行元数据补全（`repository` 等）与版本号递增——归 §9「发行待办」，不属本特性交付面。
-- **venv 语义的任何行为变更**：拍平 schema（§5.5）只改**键的层级**，不改判定/副作用/工具 payload 语义。
+- **宿主半边行为与配置 schema 的任何改动**：`venv.{enabled,path,oldPathPolicy}` 的键名与层级、判定逻辑、副作用、工具 payload 全部保持不变（M2 重审后维持嵌套，见 §5.5）。
 
 ## 3. 架构
 
@@ -42,7 +42,7 @@
         │    3) ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({name, key, locale}, Card))
         ▼
   卡片（自持暂存态；控件自绘，仅用 CSS token）
-        → mutate([{op:'set', path:['venvEnabled'], value:…}], revision)  ← 顶层键（§5.5）
+        → mutate([{op:'set', path:['venv','enabled'], value:…}], revision)  ← 嵌套 volatile 路径
         ▼
   宿主 settings RPC → dsh-settings → config-editor edit() → 写 profile cordis.patch.yml
                     → Loader：三叶子全 volatile ⇒ **volatile 快路径**（只写 fiber._config +
@@ -55,21 +55,19 @@
 | 组件 | 职责 | 变更 |
 |---|---|---|
 | `lib/client.js` | 浏览器半边：导出 cordis 插件（`inject`/`apply`）、注册槽位与字典、渲染卡片、自持暂存与保存 | **新增** |
-| `index.js`（宿主半边） | `Config` 三叶子**改为顶层键**（§5.5） | 修改（键名/层级） |
-| `lib/venv.js` | `snapshotVenvConfig` / `normalizeVenvInput` / `VENV_DEFAULTS` 的键名随之拍平 | 修改（键名） |
 | `package.json` | `exports["./client"]` + `dsh.client` 声明（含 `external`，见 §5.1） | 修改 |
-| 宿主半边其余（`lib/tools.js`、`lib/skill-provider.js`） | 消费的是去引用后的普通值对象，**语义零改动**（仅键名） | 微改 |
-| `tests/*` | 形状断言与键名面同步（§5.5.3 列出） | 修改 |
-| `scripts/check-dsh-compat.mjs` | 默认值交叉锚定 + §7.7① volatile 计数 + 新增 §7.7⑥ 客户端半边装载 | 修改 |
-| `README.md` | 配置指引（顶层键写法）+ 卡片可用性 + 重启边界（§5.1/§9） | 修改 |
-| `docs/superpowers/specs/2026-10-15-*.md` | §5.1/§5.3/§5.4/§6/§8 的键名与"五项→六项"字样回写 | 修改 |
+| `scripts/check-dsh-compat.mjs` | 新增 §7.7⑥ 客户端半边装载断言（+ 既有断言不回归） | 修改 |
+| `tests/client-half.test.mjs` | 客户端半边单测 | 新增 |
+| `README.md` | 配置入口补"插件页卡片"路径、重启边界、memory 模式提示 | 修改 |
+| `index.js` / `lib/venv.js` / `lib/tools.js` / `lib/skill-provider.js`（宿主半边） | 提供 Config 与工具 | **冻结**（零改动；M2 重审后维持嵌套 schema） |
+| `tests/*`（既有 5 个文件） | — | **零改动**（无 schema 变更） |
 
 ## 4. 数据流
 
 1. **装载**：页面加载 → `dsh-client-modules` 按 `dsh.client` 声明把 `lib/client.js` 作为浏览器半 cordis 插件装载（`load({id})` 的 id **必须等于包名**）→ Loader 等 `inject` 服务就绪 → 调 `apply(ctx)`。
 2. **注册**：`apply` 内三件事（见 §3 图）：`configForms` 回调式接入（可选能力）、`locale.register`（显式 `ctx.effect`）、槽位注册（`slots.inject` 等槽位声明，天然满足 G5）。
 3. **读**：卡片经 `configForms.get('dsh-ppt-master-wrapper')`（命名空间＝loader 条目 id）取快照，**必读字段**：`status`（`loading`/`ready`/`unavailable`）、`value`、`revision`、`writable`、`mode`（`host`/`memory`）。
-4. **写**：卡片自持暂存态 → 用户点保存 → 组 `ops`（`op:'set'`，`path` 为**顶层键数组**，如 `['venvEnabled']`）→ `mutate(ops, revision)` → 以宿主回推值为准（不做乐观更新）。
+4. **写**：卡片自持暂存态 → 用户点保存 → 组 `ops`（`op:'set'`，`path` 为**嵌套键数组**，如 `['venv','enabled']`）→ `mutate(ops, revision)` → 以宿主回推值为准（不做乐观更新）。
 5. **生效**：宿主写 patch → **volatile 快路径**（三叶子全 volatile）→ 只换代 volatile 引用，**不 remount、不重跑 apply**；非 volatile 字段变化才会 `restart()`。故"保存后插件实例重建"的说法**不成立**（V3 由此静态结案）。
 6. **profile 层条目**：首次保存时若 profile 无该 id 条目，宿主 config-editor 代建（`index<0` → `document.add({id,name,config})`）；**本机 profile 已存在手工条目** ⇒ 该分支本轮**不可观测**（登记为未覆盖，§9）。`config` 为整体替换语义。
 7. **重置**：宿主语义是**删除** `config` 键（全默认时连整行删除）⇒ 卡片"重置"＝把三个叶子 unset/回落继承层，文案须预告这一点。
@@ -122,11 +120,11 @@
 
 | 区域 | 内容 | 语义要点（文案必须说清后果） |
 |---|---|---|
-| 启用开关 | `venvEnabled` | 关＝用系统 `python3`，**且不删除任何目录**（清理纯手动）；关闭态文案要让"依赖已就绪的容器用户"一眼判断"这项不需要开" |
-| 路径 | `venvPath` 文本框 | 绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开）；**非法路径不由 schema 拦**——宿主保存照常成功，插件侧按"配置无效"降级（venv 视为关闭并在应用期 `console.warn`），卡片文案须预告 |
-| 旧路径处理 | `venvOldPathPolicy` 选择器 | `keep`＝保留旧 venv 待手动清理（默认）；`delete`＝下次环境准备成功后删除**带所有权标记**的旧目录 |
+| 启用开关 | `venv.enabled` | 关＝用系统 `python3`，**且不删除任何目录**（清理纯手动）；关闭态文案要让"依赖已就绪的容器用户"一眼判断"这项不需要开"；用 `role="switch"` + `aria-checked` |
+| 路径 | `venv.path` 文本框 | 绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开）；**非法路径不由 schema 拦**——宿主保存照常成功，插件侧按"配置无效"降级（venv 视为关闭并在应用期 `console.warn`），卡片文案须预告 |
+| 旧路径处理 | `venv.oldPathPolicy` 选择器 | `keep`＝保留旧 venv 待手动清理（默认）；`delete`＝下次环境准备成功后删除**带所有权标记**的旧目录 |
 | 版本信息 | 只读文本块 | 插件版本 / ppt-master 上游版本 / 固定相对尾部 `<包根>/skills/ppt-master`（两版本号＝客户端常量，两条配对断言防漂移） |
-| 保存 / 重置 | **卡片自持**（bundle 槽不带 `form`，页面也无保存控件） | 控件**自绘**（不 require Harness 客户端包）；保存发 `mutate(ops, revision)`；"重置"＝unset 三叶子（回落继承层），文案预告"宿主会删掉 config 键" |
+| 保存 / 重置 | **卡片自持**（bundle 槽不带 `form`，页面也无保存控件） | 控件**自绘**：按官方 practice **抄宿主 markup/CSS/行为**（类名加本插件前缀、只引用 `--dsw-alias-*` token、保留焦点与 Escape 等用户依赖行为），**不 require 任何 Harness 客户端包**；保存发 `mutate(ops, revision)`，`path` 用嵌套键数组；"重置"＝unset 三叶子（回落继承层），文案预告"宿主会删掉 config 键" |
 
 ### 5.4 版本信息的取数（V1 已闭：注解**不可达**）
 
@@ -138,23 +136,31 @@
 
 **D1（已裁决 2026-10-16）**：显示 插件版本 + 上游版本 + 固定相对尾部 `<包根>/skills/ppt-master`；**不显示绝对 SKILL_DIR**（别的机器上必然错），**不新增下发通道**。
 
-### 5.5 配置 schema 拍平（结构性变更；M2 P0 修复，用户裁决 2026-10-16）
+### 5.5 写路由：自绘控件 + 嵌套 volatile path（M2 重审结论，用户 2026-10-16）
 
-**问题（落地视角实证，读写双向皆断）**：`SettingsFormModel` 只能寻址**顶层键**（`sectionValue(field) = value[field]`、`plan()` 产出 `path:[field]`）；宿主把 `op.path` 当键数组逐层套用，非 volatile 路径直接抛 `Config field "…" is not volatile`；读侧 `value?.['venv.path']` 恒 `undefined`。原嵌套 `{venv:{…}}` 配 `SettingsFormModel` ⇒ **G1 落空**。
+**M2 暴露的事实（成立，保留）**：官方 `SettingsFormModel` 只能寻址**顶层键**（`sectionValue(field) = value[field]`、`plan()` 产出 `path:[field]`、`stored()` 亦按顶层），照它渲染嵌套 `{venv:{…}}` 会读恒空、写必被拒。**若走该模型，非拍平不可。**
 
-**裁决**：把 Config 拍平为**顶层三键**（用户 2026-10-16 选择，取代"卡片自持暂存 + 手写 path"路线）：
+**M2 重审的翻转依据**：`SettingsFormModel`（及 `SettingsForm`/`SettingsValueField`）**住在 `@deepseek-ai/dsh-client-ui-primitives` 内**（官方配置页 `dsh-client-ui-settings-agent-loop` 第 104 行即 `require("…dsh-client-ui-primitives").SettingsFormModel`），而官方 `practices.md` 明令 *"Do not `require('@deepseek-ai/dsh-client-ui-primitives')` or load any other Harness Client package as a module"* ⇒ 该模型对本插件**不可用**，"扁平兼容"这条好处归零；控件两种方案都得自绘。
 
-| 原 | 新 |
+**裁决（用户 2026-10-16）**：**维持既有嵌套 schema**，改成"卡片自持暂存态 + 手写嵌套 path 的 ops"。宿主侧已实证支持：
+
+- `applyPathOp(section, op, schema)` 把 `op.path` 当键数组逐层套用，并按 schema 节点逐层取 `meta.default`（`dsh-settings/lib/index.js:189-216`）；
+- `isVolatilePath(schema, path)` 逐层递归 `schema.dict[key]`，**叶子 volatile 即放行**（同文件 `:153-158`）——本插件三叶子逐个 `.volatile()`，故 `path:['venv','enabled']` 合法；
+- 读侧由卡片直接取 `value.venv.enabled` 等（快照 `value` 是普通对象）。
+
+**因此本特性的改动面（取代拍平方案）**：
+
+| 面 | 变动 |
 |---|---|
-| `venv.enabled` | `venvEnabled` |
-| `venv.path` | `venvPath` |
-| `venv.oldPathPolicy` | `venvOldPathPolicy` |
+| `lib/client.js` | 新增（卡片自持暂存；`ops.path` 用嵌套键数组） |
+| `package.json` | 仅加 `exports["./client"]` + `dsh.client` |
+| 宿主半边（`index.js`/`lib/venv.js`/`lib/tools.js`/`lib/skill-provider.js`） | **冻结** |
+| 既有 5 个测试文件的形状断言 | **零改动** |
+| compat 脚本 | 仅**新增** §7.7⑥（既有断言不回归） |
+| README | 补卡片路径、重启边界、memory 模式提示（配置写法与键名不变） |
+| profile `cordis.patch.yml` 既有条目 | **无需迁移**（键名未变） |
 
-- 三叶子**仍逐个 `.volatile()`**（判定与热更新语义不变），默认值不变（`false` / `'~/.ppt-master/venv'` / `'keep'`）。
-- 卡片可用官方扁平模型寻址；`mutate` 的 `path` 恒为 `[<顶层键>]`。
-- **影响面（须同批落地）**：`index.js` 的 `Config`；`lib/venv.js` 的 `snapshotVenvConfig` / `normalizeVenvInput` / `VENV_DEFAULTS`；`lib/tools.js` / `lib/skill-provider.js` 只消费去引用后的普通值对象（仅键名随动，语义零变更）；**测试形状断言面**（`tests/apply.test.mjs`、`tests/venv.test.mjs`、`tests/tools-*.test.mjs`、`tests/skill-provider.test.mjs`、`tests/compat.test.mjs` 中涉及 `{venv:{…}}` 形状与默认值逐字面）；`scripts/check-dsh-compat.mjs` 的默认值交叉锚定与 §7.7① volatile 计数；README 配置指引；2026-10-15 篇 spec §5.1/§5.3/§5.4/§6/§8 的键名回写。
-- **配置迁移**：已存在于 profile `cordis.patch.yml` 的条目（本机 `config.venv.*`，2026-10-16 手工写入）在新 schema 下不再匹配 ⇒ 需改写为 `config.venvEnabled/venvPath/venvOldPathPolicy`（或删除条目回落默认）。**本机那条必须改写**，否则 venv 静默回到关闭。
-- 语义零变更的验证：既有系统模式/venv 模式行为断言全绿（仅形状断言随键名修订）。
+**登记的取舍（偏离官方"扁平才好用官方表单"惯例）**：本插件的 Config 保持嵌套分组，理由是官方表单模型被禁 require 后该惯例失去工具支撑，而嵌套与插件内部语义单元（注入袋 `venv` 对象、三个纯函数签名、工具 payload）一致，且避免破坏性配置变更。代价＝卡片必须自写 ops 组装与读值路径（约十余行），已在 §7.1 立断言。
 
 ## 6. 错误处理与降级
 
@@ -178,7 +184,7 @@
 1. **客户端半边单测**（`tests/client-half.test.mjs`，新增）：
    - stub `globalThis.window.__ModuleLoader__` 收集 `{id, factory}`；以**假 `require`**（只提供 React stub）调用 `factory` → 断言 `typeof apply === 'function'`、`inject` 恰含 `slots`/`locale`（**不含** `configForms`）；**静态断言无 Harness 客户端包 require**。
    - 假 `ctx` 调 `apply(ctx)`：断言 `slots.register` 的槽位名/键/locale ns、字典 `zh`/`en` **键集合相等**、`configForms` 经 `ctx.inject` 回调接入。
-   - **ops 形状（M2 修复面）**：改字段后断言 `mutate` 收到的 `path` 为**顶层键数组**（`['venvEnabled']` 等）。
+   - **ops 形状（M2 重审面）**：改字段后断言 `mutate` 收到的 `path` 为**嵌套键数组**（`['venv','enabled']` / `['venv','path']` / `['venv','oldPathPolicy']`），且值为相应类型。
    - 写路径：① `ops`/`revision` 透传；② 不做乐观更新；③ 三通道各一例（false / reject / 抛错=override）。
    - `status`：`unavailable` 与 `loading` 两态各一例。
    - `mode === 'memory'`：断言出现"不写入宿主配置"提示。
@@ -189,7 +195,7 @@
 2. **静态契约断言**：`lib/client.js` 无 `import`/`export`、require 白名单＝react 系（**无 Harness 客户端包**）、`package.json` 的 `exports["./client"]`/`dsh.client.platform === 'web'`/`external` 声明存在、`files` 覆盖 `lib/client.js`。
 3. **compat 脚本扩展（spec §7.7⑥）**：按 §7.1 stub 形态装载 `lib/client.js` 并断言注册面成立（与既有 spec §7.7⑤ 同风格；编号属 2026-10-15 篇 §7 第 7 项，本设计沿用并登记该篇"五项→六项"字样回写）。
 4. **渲染冒烟（R2 更正）**：元素树断言测不到渲染期异常（`SlotAssemblyError` 会冒泡出页、非该类才被吞成占位）⇒ 冒烟改为**真实 outlet 挂载一次**（种子表 + 最小 host），或断言"不产生 `SlotAssemblyError` 触发条件"。
-5. **schema 拍平回归（§5.5）**：全量 `node --test tests/*.test.mjs` 全绿；`check-dsh-compat` OK；`verify-plugin --upstream` OK（vendor `skills/` 字节零漂移）。
+5. **宿主半边零回归（§5.5）**：`index.js` / `lib/venv.js` / `lib/tools.js` / `lib/skill-provider.js` 与既有 5 个测试文件**零改动**；全量 `node --test tests/*.test.mjs` 全绿；`check-dsh-compat` OK（既有断言不回归，仅新增 §7.7⑥）；`verify-plugin --upstream` OK（vendor `skills/` 字节零漂移）。
 6. **手工验收**：见 §9。
 
 ## 8. 风险与未知
@@ -207,17 +213,17 @@
 | R2 | 双语字典漂移 | 单测断言键集合相等 |
 | R3 | 卡片影响插件页稳定性 | 守卫 + 单点 try/catch + 不注册优先；注意 `SlotAssemblyError` 会冒泡（§7.4） |
 | R4 | 依赖宿主私有种子表/内部形态（CSS token、`configForms` 快照字段）的稳定性 | 官方 practice 已警示"随时变更" ⇒ 只依赖**公开服务与 CSS token**，不 require 其模块；变更只影响外观与卡片可用性，不影响配置协议 |
-| R5 | schema 拍平是破坏性变更（已写入的 profile 条目失配） | §5.5 迁移步骤；本机条目**必须**改写，README 写明升级注意 |
+| R5 | 嵌套 schema 与官方"扁平才好用官方表单"惯例不一致 | **已裁决（M2 重审）**：官方表单模型因禁 require 不可用，故维持嵌套；代价＝卡片自写 ops/读值路径，由 §7.1 断言覆盖（§5.5） |
 
 ## 9. 文档与发布 / 验收期人工步骤
 
-- README：配置指引改为**顶层键**写法（`venvEnabled` / `venvPath` / `venvOldPathPolicy`）+ 插件页卡片可用性 + **重启边界**（改 `dsh.client`/`exports["./client"]` 需重启；仅改 `lib/client.js` 免重启，stat 轮询约 500ms）+ memory 模式提示。
-- spec（2026-10-15 篇）：㉗ 的"GUI 出页属新特性"追加指向本篇链接；**回写键名拍平**（§5.1/§5.3/§5.4/§6/§8）与 §7.7"五项→六项"字样。
+- README：配置指引**键名不变**（`venv.enabled` / `venv.path` / `venv.oldPathPolicy`）+ 新增"插件页卡片可用性"+ **重启边界**（改 `dsh.client`/`exports["./client"]` 需重启；仅改 `lib/client.js` 免重启，stat 轮询约 500ms）+ memory 模式提示。
+- spec（2026-10-15 篇）：㉗ 的"GUI 出页属新特性"追加指向本篇链接；**回写 §7.7"五项→六项"字样**（键名与 schema 不变，无需改 §5.1 等）。
 - **发行待办（不在本特性范围，登记于此免遗漏）**：① `package.json` 缺 `repository`；② 无 npm 发布流程与发布前检查（`files` 已覆盖 `lib/client.js`）；③ 版本号递增随下次上游 sync（`-rN`）。
 - 验收期人工步骤（**D2：实现完成后由用户重启容器一次**）：
   1. 重启后打开插件页 → 「已安装」→ `dsh-ppt-master-wrapper` → 包详情页出现配置卡片（三字段 + 版本信息块）；
   2. 界面语言中/英各看一次，文案随之切换；
-  3. 改 `venvEnabled`（或路径）保存 → 核对 `ppt_master_check_env` 的 `venv.enabled` 转 `true`、`path` 为所配值；观察是否**免重启**换代（预期：volatile 原地换代，无需重启）；记录 profile patch 写入形态（改 config / 删条目）；
+  3. 改 `venv.enabled`（或 `venv.path`）保存 → 核对 `ppt_master_check_env` 的 `venv.enabled` 转 `true`、`path` 为所配值；观察是否**免重启**换代（预期：volatile 原地换代，无需重启）；记录 profile patch 写入形态（改 config / 删条目）；
   4. 降级验证：**"宿主页缺席"形态**（若可得）⇒ 卡片不出现但插件功能正常；本机不可得则登记**未覆盖**；
   5. **未覆盖登记**：① "宿主代建 profile 条目"分支（本机已有手工条目 ⇒ 只会就地更新，不可观测）；② "老宿主不认 `dsh.client`"（无旧宿主环境）。
 - 迭代面：首次装载后，改 `lib/client.js` 走 stat 轮询热更新（免重启）；改 `dsh.client`/`exports` 需再重启。
@@ -229,5 +235,5 @@
 - **require 任何 Harness 客户端包**（含 `ui-primitives`/`ui-slots`/`ui-settings`）——官方 practice 明令禁止。
 - 构建链（tsdown/rollup/esbuild）、TypeScript、JSX、`.d.ts` 产物。
 - companion 客户端包、`plugins.item` 官方命名空间条目。
-- venv 判定/副作用/工具 payload 的语义变更（§5.5 只改键的层级）。
+- venv 判定/副作用/工具 payload 的语义变更，以及**配置 schema 的键名与层级变更**（§5.5 维持嵌套）。
 - 发行元数据补全与 npm 发布流程（§9 发行待办）。
