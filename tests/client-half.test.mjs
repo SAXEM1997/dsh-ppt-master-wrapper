@@ -488,6 +488,24 @@ test('静态契约: 无硬编码颜色字面量', () => {
   assert.doesNotMatch(src, /\bhsla?\(/);
 });
 
+// 2026-10-16 现场回归：令牌名写错而 `var()` 无兜底 ⇒ 声明在计算值阶段失效、被整条丢弃
+// （边框/背景/圆角/文字层级静默消失，卡片退化成裸文本）。此处把"必须带兜底"钉死；
+// 令牌名本身仍靠人工比对宿主词汇（本机词汇表见 lib/client.js 样式段注释）。
+test('静态契约: var() 一律带兜底且限于宿主令牌命名空间', () => {
+  const src = readFileSync(CLIENT_ENTRY, 'utf8');
+  const bare = [];
+  const tokens = new Set();
+  for (const match of src.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/g)) {
+    tokens.add(match[1]);
+    if (match[2] === ')') bare.push(match[1]);
+  }
+  assert.deepEqual(bare, [], `无兜底的 var() 会整条丢失声明：${bare.join(', ')}`);
+  assert.ok(tokens.size > 0, '样式应以 var() 引用宿主令牌');
+  for (const token of tokens) {
+    assert.match(token, /^--(dsw|ds)-/, `非宿主令牌命名空间：${token}`);
+  }
+});
+
 // ─── 用例 7–9：注册面 ──────────────────────────────────────────────
 
 test('注册面: locale 字典 ns 逐字 + zh/en 键集合相等 + 必含子集', () => {
