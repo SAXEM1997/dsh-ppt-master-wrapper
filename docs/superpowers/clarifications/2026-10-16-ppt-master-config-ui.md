@@ -61,8 +61,8 @@
 - 〔代理判断〕受众含"不读 README 的用户" ⇒ 卡片文案需自解释：三个字段的**后果**要说清（尤其 `oldPathPolicy=delete` 会删旧目录、`enabled=false` 不删任何东西）。
 - 〔代理判断〕本包保持**零 npm 依赖** ⇒ 客户端文件手写、不引入构建链、不新增 runtime 依赖（`files` 白名单需收录该文件）。
 - 〔代理判断〕发行面缺口顺带登记：`package.json` 现无 `repository` 字段（发行元数据）。
-- 〔代理判断〕宿主版本差异：卡片须在宿主缺少所需客户端服务/槽位时**安静跳过注册**（不得让插件页整页崩），与 dsh-market 的 `missingPrimitives` 守卫同思路。
-- 〔已实测〕本机 DSH rc.2 下 profile patch **手工编辑不热生效**；而 GUI 保存走 config-editor `edit()` → `reconcileProfilePatches` → Loader 重建，是否**热生效**需在验收期实测记录（spec 勘误 ㉘ 只否证了手工通道）。
+- 〔代理判断〕宿主版本差异：卡片须在**槽位或可选能力**缺失时**安静降级**（不得让插件页整页崩）。**边界（R2 更正）**：硬服务 `slots`/`locale` 缺失时 `apply` 根本不被调用、宿主以 `pending (waiting for service…)` 上报——那不是本插件能安静降级的形态；`configForms` 走 `ctx.inject` 回调式可选接入，缺它则卡片显示不可用态。
+- 〔已实测〕本机 DSH rc.2 下 profile patch **手工编辑不热生效**。**R2 更正**：GUI 保存走 config-editor `edit()`，而本 Config 三叶子全 volatile ⇒ Loader 走 **volatile 快路径**（只写 `fiber._config` + `_commitVolatile()` → `loader/volatile-update`，**不 remount**），故「保存 → 重建插件实例」不成立、V3 由此**静态结案**（详见设计 §4 第 5 步 / §8 V3；并已据此对 2026-10-15 篇 §4.1/§6.1② 的机制措辞提出回写，见设计 §9）。
 
 ## 6. 开放项（**全部已闭，2026-10-16 回填**）
 
