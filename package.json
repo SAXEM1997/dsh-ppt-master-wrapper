@@ -1,6 +1,6 @@
 {
   "name": "dsh-ppt-master-wrapper",
-  "version": "6.7.0-r3",
+  "version": "6.7.1",
   "description": "DeepSeek Harness plugin wrapping the upstream ppt-master skill set: byte-for-byte vendored skills, zero runtime dependencies, optional venv isolation and a Plugins-page configuration card.",
   "keywords": [
     "dsh",
@@ -57,7 +57,9 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-plugin-manager"
       ],
-      "external": ["react"]
+      "external": [
+        "react"
+      ]
     }
   }
 }
