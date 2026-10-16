@@ -1,0 +1,12 @@
+# 仓库内文本统一 LF 存储（跨仓库同步对比以内容为准，避免 CRLF/LF 分裂噪音）
+* text=auto
+
+# vendor 树：上游原文逐字节保留，行尾不得被 git 规范化（否则完整性门失败）
+skills/ppt-master/** -text
+
+# GitHub 语言统计：vendor 的上游技能树（Python 为主）不是本项目代码
+skills/ppt-master/** linguist-vendored
+skills/ppt-master/** linguist-documentation
+
+# 本项目的设计与计划文档（开发史）
+docs/** linguist-documentation
