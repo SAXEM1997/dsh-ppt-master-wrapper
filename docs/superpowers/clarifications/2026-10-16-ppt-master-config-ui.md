@@ -32,6 +32,11 @@
 - **Q3（界面语言）**：卡片只做中文还是跟随用户界面语言（中英双语）？
   **A3**：**中英文都做**。
   - 影响：需注册宿主客户端 locale 字典（zh/en 两套文案），而非只写中文硬编码。
+- **Q4（版本信息形态，即设计 D1）**：宿主下发的配置 schema **拿不到**我们那条含版本三元组的 description（实测：`dsh-settings` 下发前 `volatileForm` 重建 schema、只保留 volatile 叶子），而 SKILL_DIR 是本机绝对路径——卡片上这条要怎么写？
+  **A4**：**插件版本 + 上游版本 + 固定相对尾部 `<包根>/skills/ppt-master`**（选项 B）。不显示绝对 SKILL_DIR，不开新的下发通道。
+- **Q5（验收窗口，即设计 D2）**：加完 `dsh.client` 声明后浏览器半边**首次装载必须重启宿主**，而当前 GUI/会话就跑在同一进程里——怎么验收？
+  **A5**：**实现完成后由用户重启容器一次**。该次重启同时交付：venv 配置 patch 生效、客户端半边首次装载。（宿主半边代码早在 2026-10-16 12:16:43 的那次容器重启中已装载，见 §7 实测记录。）
+  - 影响：验收步骤排在用户重启之后；此后 `lib/client.js` 改动走 stat 轮询热更新，无需再重启。
 
 ## 4. 代理侧勘察结论（事实，非用户陈述）
 
@@ -43,6 +48,12 @@
 | 配置值读写 | 宿主 `dsh-settings.describe()` 按 volatile 投影出命名空间（`ns = 条目 id`）并附 `schema`/`value`/`revision`；客户端经 `configForms.get(ns)` 取表单、`configForms.describe()` 读原始 describe 视图 | `@deepseek-ai/dsh-settings`（describe）、`@deepseek-ai/dsh-client-ui-settings`（镜像 `view: response.value`） |
 | 版本注解可取 | 注解在 `Config` schema 的 `description` 内，随命名空间 `schema` 一起下发 → 卡片无需新通道 | 同上 + 本包 `index.js` 的 `CONFIG_ANNOTATION` |
 | 降级前提 | 宿主不认 `dsh.client` 时该字段只是惰性元数据 → 纯宿主半边行为不变 | 现有 bundle 契约（`dsh.bundle.patch`）与 `dsh.client` 解析为可选 |
+
+> **本表两行已被实证推翻（勘误，2026-10-16 Phase 0 复核）**——保留原文以便溯源：
+> 1. 「卡片挂载点」行末句"页面把 `form` 传给卡片"**错**：`plugins.bundle.config` 槽的派发是 `renderSlot(..., { view: 'page' }, { entryKey: pkg.name })`，**不带 `form`**（对比 row/item 槽带 `form`）⇒ 保存/重置控件必须由卡片自持。见设计 §5.3。
+> 2. 「版本注解可取」行**错**：宿主 `describe()` 下发的 `schema` 是 `volatileForm(Config).toJSON()`，该函数重建对象、只保留 volatile 叶子，根 description（含版本三元组）被丢弃；`ConfigFormSnapshot` 亦无 `schema` 字段 ⇒ 注解**不可达**，版本信息只能走客户端常量。见设计 §5.4。
+> 3. 「客户端文件形态」行不完整：`factory` 返回的 `module.exports` 会被宿主 vendored cordis Loader **当插件装载**，必须导出 `inject`（服务名数组）与 `apply(ctx)`；`factory(require)` 本身拿不到 `ctx`。见设计 §5.2。
+
 
 ## 5. 边界与隐含假设（标注来源）
 

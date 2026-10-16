@@ -2,7 +2,7 @@
 
 > 承接 2026-10-15 的 venv 特性。**触发**：验收期实测发现「纯宿主插件不出配置页」——宿主侧 volatile 投影与 settings 命名空间均已就绪，但插件页槽位无渲染者（见 `docs/superpowers/specs/2026-10-15-ppt-master-venv-config-design.md` §5.1 勘误 ㉗）。本设计为该 Config 补一个**浏览器半边**，把 venv 三项配置与版本信息做成插件页上的原生表单。
 > 澄清真相源：`docs/superpowers/clarifications/2026-10-16-ppt-master-config-ui.md`。
-> **修订记录（2026-10-16，builder check 后）**：§5.2 的装载契约、§4.1/§5.3 的写控件归属、§5.4 的注解可达性、§8 的未知项均按宿主源码实证重写；遗留两项待用户裁决（D1/D2）。
+> **修订记录**：（1）2026-10-16 builder check 后——§5.2 的装载契约、§4.1/§5.3 的写控件归属、§5.4 的注解可达性、§8 的未知项均按宿主源码实证重写；**D1/D2 已于同日经用户裁决**（D1＝版本信息取常量两版本＋相对尾部；D2＝实现完成后由用户重启容器一次验收）。（2）2026-10-16 Gate 0 审查后——补注册生命周期与写路径测试、修 §8/§9 陈旧的"重启交付物"表述、`dsh.client.inject` 依赖边失败面登记、发行待办归位。
 
 ## 1. 概述与动机
 
@@ -91,7 +91,7 @@
 }
 ```
 
-`dsh.client.inject` 是**包图边**（运行期必须存在的宿主客户端包），与模块自身的 `inject`（**服务名**）是两回事。实证（V2 已闭）：`@deepseek-ai/dsh-client-ui-slots` 与 `…-ui-primitives` 属前端**静态种子模块**（`dsh-web-frontend` 的 `staticModules`），require 即可、**不必**列入 `inject`，也不进 npm 依赖。
+`dsh.client.inject` 是**包图边**（运行期必须存在的宿主客户端包），与模块自身的 `inject`（**服务名**）是两回事。实证（V2 已闭）：`@deepseek-ai/dsh-client-ui-slots` 与 `…-ui-primitives` 属前端**静态种子模块**（`dsh-web-frontend` 的 `staticModules`），require 即可、**不必**列入 `inject`，也不进 npm 依赖。`@deepseek-ai/dsh-client-ui-plugin-manager` 这条边保留的理由＝与官方配置页（`…-settings-agent-loop`）同形态，确保宿主页在场；代价是**依赖边缺失时本半边不会被装载、且宿主不报 warn**（见 §6）。
 
 ### 5.2 客户端文件契约（`lib/client.js`）
 
@@ -101,6 +101,8 @@
 - 注册面（`apply` 内）：
   - `ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-ppt-master-wrapper', locale: 'dsh-ppt-master-config' }, Card))`
   - `ctx.locale.register('dsh-ppt-master-config', { zh, en })`（任意 ns，仅校验 BCP-47 标签）
+- **注册生命周期（Gate 0 补）**：`slots.register`、`locale.register` 与卡片对表单控制器的订阅都返回 disposer ⇒ **一律用 `ctx.effect(...)` 绑定到 fiber 作用域**，随宿主卸载/重载一并回收；`locale.register` 对重复的 `(ns, locale)` **直接抛错** ⇒ `apply` 二次执行（宿主重载/热更新）必须靠 effect 回收后的干净状态注册，不得依赖"重复注册幂等"。
+- **try/catch 粒度（Gate 0 补）**：异常隔离**收窄到单个注册点**（每个 register/subscribe 各自 try/catch + warn），不得在 `apply` 外层包一个整体 try/catch——否则一次字典注册失败会连带跳过其后的槽位注册，表现为"卡片整块消失、只留一行 warn"。
 - 槽位键＝**包名**（`plugins.bundle.config` 的键语义），与 settings 命名空间同串（条目 id = 包名）。
 - locale 命名空间：`dsh-ppt-master-config`。
 - 守卫：服务/槽位缺失 → 不注册 + 一行 `console.warn`；`apply` 与渲染全程 try/catch，异常只 warn 不外抛。
@@ -109,8 +111,8 @@
 
 | 区域 | 内容 | 语义要点（文案必须说清后果） |
 |---|---|---|
-| 启用开关 | `venv.enabled` | 关＝用系统 `python3`，**且不删除任何目录**（清理纯手动） |
-| 路径 | `venv.path` 文本框 | 绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开）；相对路径判无效 → venv 视为关闭 + 警告 |
+| 启用开关 | `venv.enabled` | 关＝用系统 `python3`，**且不删除任何目录**（清理纯手动）；**关闭态文案要让"依赖已就绪的容器用户"一眼判断"这项不需要开"**，而不是只写"false/关闭" |
+| 路径 | `venv.path` 文本框 | 绝对路径或 `~` 前缀（`~` 按宿主进程 HOME 展开）；**非法路径不由 schema 拦**——宿主保存照常成功，插件侧按"配置无效"降级（venv 视为关闭并在应用期 `console.warn`），卡片文案须预告这一后果 |
 | 旧路径处理 | `venv.oldPathPolicy` 选择器 | `keep`＝保留旧 venv 待手动清理（默认）；`delete`＝下次环境准备成功后删除**带所有权标记**的旧目录 |
 | 版本信息 | 只读文本块 | 插件版本 / ppt-master 上游版本 / 固定相对尾部 `<包根>/skills/ppt-master`（两版本号＝客户端常量，断言防漂移；不显示绝对路径） |
 | 保存 / 重置 | **卡片自持**（bundle 槽不带 `form`，也没有页面级保存控件） | 官方范式＝`SettingsFormModel(configForms.get(ns), fields)` + `SettingsForm`/`SettingsValueField`；`enabled`(boolean) 与 `oldPathPolicy`(enum) 无现成控件，需自绘或自定义 field spec |
@@ -119,7 +121,7 @@
 
 实证：宿主 `describe` 下发的命名空间 `schema` 是 `volatileForm(Config).toJSON()`，而 `volatileForm` 会**重建**对象、只保留 volatile 叶子——根 description（`CONFIG_ANNOTATION`，含版本三元组）与 venv 层 description **都被丢弃**；`ConfigFormSnapshot` 也不含 schema。⇒ 卡片**无法**从宿主拿到注解。
 
-因此版本信息只能来自客户端常量（随包发布，与包版本同生命周期），并以断言防漂移：单测/compat 断言客户端常量 ≡ `package.json.version` 与 `skills/ppt-master` 元数据的上游版本。**SKILL_DIR 是本机绝对路径，写成常量对"别的使用者"就是错的** → 待裁决（D1）。
+因此版本信息只能来自客户端常量（随包发布，与包版本同生命周期），并以断言防漂移：单测/compat 断言客户端常量 ≡ `package.json.version` 与 `skills/ppt-master` 元数据的上游版本。**SKILL_DIR 是本机绝对路径，写成常量对"别的使用者"就是错的** → 形态由 D1 裁决（见下）。
 
 **D1（已裁决 2026-10-16）**：卡片显示 **插件版本 + ppt-master 上游版本 + 固定相对尾部 `<包根>/skills/ppt-master`**。两个版本号取客户端常量，由单测/compat 断言与 `package.json.version` / `skills/ppt-master` 元数据的上游版本保持一致（漂移＝测试红，不留到运行期）。**不显示绝对 SKILL_DIR**（它在别的机器上必然错），**不新增下发通道**（选项 (c) 被否，§2/§10 的"宿主半边冻结"保持封闭）。
 
@@ -128,9 +130,11 @@
 | 情形 | 行为 |
 |---|---|
 | 宿主不认 `dsh.client`（老版本） | 该字段为惰性元数据，宿主半边照常；浏览器不加载任何东西 |
+| `dsh.client.inject` 依赖边缺失（如宿主未装 plugin-manager） | 本半边**不被装载**，宿主**不报 warn**（宿主行为，非本插件可拦截）；README 的验收④与 §9 以该形态做降级验证 |
 | 所需服务/槽位缺失 | `slots.inject` 不触发 + 不注册（G5），不报错 |
-| `apply` / 渲染内任何异常 | try/catch → warn，不外抛（不得让插件页崩） |
-| 命名空间未就绪 | `configForms.get(ns)` 的快照无值/未 serve → 卡片显示不可用态，不报错 |
+| 单个注册点异常（字典/槽位/订阅） | 该点 try/catch → warn，**不影响其余注册点**（§5.2 粒度约束） |
+| `apply` 二次执行（宿主重载/热更新） | 依赖 `ctx.effect` 回收后的干净状态；`locale.register` 同名重复会抛错，须靠回收而非幂等 |
+| 命名空间未就绪 | `configForms.get(ns)` 快照处于未 serve 态（无值）→ 卡片显示不可用态，不报错（与"loading"态区分，二者不混用同一文案） |
 | 保存被拒绝 / 被更高优先级 patch 覆盖 | 卡片依表单控制器的 `writable`/`mode`/错误态自行呈现（页面不代劳） |
 | 版本常量与包版本不一致 | 单测/compat 断言拦截（构建期问题，不留到运行期） |
 | 保存成功但 Loader 重建失败 | 属宿主面；下一次重启生效（与既有兜底一致） |
@@ -141,6 +145,8 @@
    - stub `globalThis.window.__ModuleLoader__` 收集 `{id, factory}`；以**假 `require`**（返回 React stub 与 primitives stub）调用 `factory` → 得到 `module.exports`；断言 `typeof apply === 'function'`、`inject` 含三服务名。
    - 以**假 `ctx`**（`slots.inject` 立即回调并记录 `register` 参数、`locale.register` 记录字典、`configForms.get` 返回假控制器）调用 `apply(ctx)`；断言槽位名/键/locale ns、字典 `zh`/`en` **键集合相等**。
    - 渲染冒烟：以 `view='page'` 渲染一次（React 元素树断言，不做 DOM 渲染）；`configForms.get` 返回空快照时不抛。
+   - **写路径（Gate 0 补，G1 核心）**：① 改字段后调用 `mutate(ops, revision)` 并断言收到的 `ops` 形态与 `revision` 透传；② 断言**不做乐观更新**（宿主未回推前不改变显示值）；③ 保存被拒（`writable=false`/错误态）与被更高优先级 patch 覆盖（overridden）两种呈现各一例。
+   - **注册生命周期（Gate 0 补）**：① 断言三个注册点都经 `ctx.effect` 绑定（fake ctx 记录 effect 调用）且 disposer 被调用后不再残留；② 模拟 `locale.register` 抛错 → 断言槽位注册**仍然完成**（try/catch 粒度）；③ 二次 `apply` 幂等：先 dispose 再 apply 不抛错。
    - 守卫路径：缺 `slots` 或缺 `locale` → 不注册、warn、不抛。
    - 常量防漂移：客户端常量 ≡ `package.json.version` ≡ skills 元数据上游版本。
 2. **静态契约断言**（并入 compat 脚本或单测）：`lib/client.js` 无 `import`/`export`、require 白名单（react 系 + primitives + 种子模块）、`package.json` 的 `exports["./client"]` 与 `dsh.client.platform === 'web'` 存在、`files` 覆盖 `lib/client.js`。
@@ -153,7 +159,7 @@
 | # | 项 | 处理 |
 |---|---|---|
 | D1 | 版本信息形态（注解不可达、SKILL_DIR 不可为绝对路径） | **已裁决**：常量两版本 + 相对尾部，见 §5.4 |
-| D2 | 首次装载须重启宿主，而当前 GUI/会话就在同一进程 | **已裁决**：实现完成后由**用户重启容器一次**——这一次重启同时交付三件事（宿主半边 P0 修复代码、已写入的 venv 配置生效、客户端半边首次装载）；此后改 `lib/client.js` 走 stat 轮询热更新，无需再重启 |
+| D2 | 首次装载须重启宿主，而当前 GUI/会话就在同一进程 | **已裁决**：实现完成后由**用户重启容器一次**。**注意（Gate 0 实证更正）**：宿主半边的新代码**已**在 2026-10-16 12:16:43 的那次容器重启中装载（代码文件最后改动 10:45 < 启动时刻），而 venv 配置 patch 写于 12:26:52、**晚于**该次启动 ⇒ 下一次重启实际只交付两件事：**venv 配置生效** + **客户端半边首次装载**。此后改 `lib/client.js` 走 stat 轮询热更新，无需再重启 |
 | V3 | 保存是否**热生效**（config-editor `edit()` 通道在本部署是否重建实例） | 验收期实测并记录（手工 patch 通道已否证） |
 | V4 | 手写半边能否被真实 Loader 接受（官方产物经构建链） | 先 stub 断言，再真实页面装载验证；失败按 Loader 报错修正（stub 形态已按宿主源码钉死，残余风险＝未知校验） |
 | 已闭 | V1 注解可达性（不可达，见 §5.4）；V2 inject 是否需列 ui-slots（不需要） | — |
@@ -165,8 +171,9 @@
 
 - README：配置入口一节补"插件页卡片（有客户端渲染者时）+ profile patch 手工条目（兜底）"，并写明**首次装载该半边需重启 DSH**（此后改动 `lib/client.js` 走 stat 轮询热更新）；GUI 保存是否热生效按 V3 实测结果改写。
 - spec（2026-10-15 篇）：㉗ 的"GUI 出页属新特性"一句追加指向本篇链接；不改其结论。
+- **发行待办（不在本特性范围，登记于此免遗漏）**：① `package.json` 缺 `repository` 字段；② 无 npm 发布流程/发布前检查（`files` 白名单已覆盖 `lib/client.js`，无需改）；③ 版本号递增按规则随下次上游 sync 处理。
 - 版本号：**不递增**（随下次上游 sync 递增 `-r`）。
-- 验收期人工步骤（**D2 裁决：实现完成后由用户重启容器一次**，该次重启同时交付宿主半边新代码、已写入的 venv 配置、客户端半边首次装载）：
+- 验收期人工步骤（**D2 裁决：实现完成后由用户重启容器一次**；该次重启交付 venv 配置生效 + 客户端半边首次装载——宿主半边代码已于 12:16:43 装载，不必再等）：
   1. 重启后打开插件页 → 「已安装」→ `dsh-ppt-master-wrapper` → 包详情页出现配置卡片（含三字段与版本信息块）；
   2. 界面语言中/英各看一次，文案随之切换；
   3. 改 `venv.enabled`（或路径）保存 → 观察入口 skill 正文 / `ppt_master_check_env` 是否**免重启换代**（记录 V3 结论）；并记录 profile `cordis.patch.yml` 的写入形态（是否为该条目整体替换）；
@@ -176,7 +183,7 @@
 ## 10. 排除范围（明确不做）
 
 - 实时状态面板、依赖计数、"准备环境"按钮。
-- 任何新 RPC / remote 命名空间 / 宿主侧新导出面（除非 D1 选 (c) 并由用户明确同意）。
+- 任何新 RPC / remote 命名空间 / 宿主侧新导出面（§5.4 的候选方案"解冻宿主半边另开下发通道"已由 D1 裁决否决，此处一并排除）。
 - 构建链（tsdown/rollup/esbuild）、TypeScript、JSX、`.d.ts` 产物。
 - companion 客户端包、`plugins.item` 官方命名空间条目。
 - 宿主半边任何行为改动（含 `Config` schema 与注解格式）。
