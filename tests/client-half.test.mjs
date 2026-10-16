@@ -1744,8 +1744,7 @@ test('spec 2026-10-15: ㉙ 勘误两行（4.1 配置变更 / ② config-editor�
   const spec = readVenvSpec();
   const eLines = spec.split('\n').filter((l) => l.includes('㉙'));
   assert.equal(eLines.length, 2, `㉙ 勘误行应恰两处（实际 ${eLines.length}）`);
-  // `②` 前缀是必须的：L50 `4.1 配置变更` 行内另有无前缀的「宿主 config-editor」描述，
-  // 裸串会双命中 → 下一条断言（恰一行）永红。
+  // `②` 前缀用于锁定 §6.1② 锚点行、并防御未来他处出现裸串（今日裸串仅命中本行恰 1 次）。
   assert.equal(
     eLines.filter((l) => l.includes('4.1 配置变更')).length,
     1,

@@ -357,7 +357,7 @@ function samePlainRecord(left, right) {
  * **分层重解释（不可越界）**：本包 patch 的顶层是 `- insert:` 列表项，其下才是
  * `- id: <插件 id>` 条目——compat 侧静态断言**只锁 bundle insert 层**。**profile 层**
  * 条目（`$DSH_HOME/profiles/<p>/cordis.patch.yml`）在本版 DSH（0.2.0-rc.2）由操作者
- * **手工写入**（纯宿主插件无设置页渲染者，见 spec 勘误 ㉗/㉘）；若宿主版本提供设置页，
+ * **手工写入**或宿主 config-editor 代建（设置页渲染者＝本包客户端半边，2026-10-16 特性已交付）；若宿主版本提供设置页，
  * 则由宿主 config-editor `edit()` 在首次编辑且 `index<0` 时以
  * `document.add({id,name,config})` 代建——两通道均不写成 bundle 面静态断言，
  * 其落点是验收期人工步骤（见 README §8 核对表）。
