@@ -201,6 +201,7 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | `selected` + 注入尚未到达 | 不 warn、不判定 | 可见（装配期的一瞬） |
 | `selected` + `registry.list()` 抛错 | 维持已有判定；无判定者可见 + warn + 重试 | 上一轮结果 / 可见 |
 | `selected` + `registry.list()` 返回空表 | 视为"注册表确无工作区" ⇒ 全不可见（装层） | 不可见 |
+| `selected` + `agents.list()` 抛错 | **本轮不产生新判定**：不改层、不做"已消失 agent"清理、不重复装层；warn + 1000ms 复检 | 上一轮结果 |
 | `selected` + 缺 `tools.restrict` | guard-only（按判定拒绝）+ warn | 工具仍列出；调用被拒 |
 | `selected` + 缺 `tools.guard` | 只装 restrict + warn | 装配层已收窄（G8 使窗口≈0） |
 | `selected` + 缺 `ctx.on` | 只在装配时判定一次 + warn（新会话不判定、配置改动需重启 DSH） | 静态快照 |
@@ -297,3 +298,19 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | RF7 | Gate0 落地（P2） | **记录**：guard 的同步重判依赖 workspaces/pathMap 快照，而 guard 在注入之前安装——此时 `listAvailable=false`，verdict 直接放行；round 起来后快照才生效（代码即注释） |
 | RF8 | Gate0 落地（P2） | **记录**：层随 agent ctx 卸载自动解除，"残留层需重启"只覆盖 `dispose` 抛错这一路径（README 已按此措辞） |
 | RF9 | Gate0 落地（P2） | **采纳**：非法配置的 warn 用 `warnOnce`（每进程一条），不随轮次刷屏 |
+### Gate 3（代码审查）裁决
+
+| 编号 | 严重度 | 裁决 |
+|---|---|---|
+| GF1 | P0 | **采纳**：`agents.list()` 读失败与"读成功但为空"必须分开——否则一次瞬时失败会拆掉所有限制层（工具重现、调用全被拒、且无路径装回）。`readLiveAgents()` 改返回 `{ok, list}`；`!ok` ⇒ 本轮不产生新判定 + 复检 |
+| GF2 | P1 | **采纳**：guard 同步重判只对 `no-match` 放行；`no-cwd` / `unresolved` 是有结论的不可见，必须拒绝 |
+| GF3 | P1 | **采纳**：`selected` + 缺 `ctx.on` 补 warn（此前只落地"只判定一次"，可诊断性落空） |
+| GF4 | P1 | **采纳**：`registry.list()` 失败补 1000ms 复检；且复检计数每轮结束后重置（否则一次瞬时失败永久失去自愈） |
+| GF5 | P1 | **采纳**：假宿主 `restrict` 补齐真宿主三条前置条件（scoped ctx / 非空 filter / 已知工具名）；`check-dsh-compat` 增 §7.7⑦ 对**真实 ToolRuntime** 实跑 `restrict`（根 ctx 必抛 "scoped context"）与 `guard`（返回 disposer） |
+| GF6 | P1 | **采纳**：`ctx.inject` 抛错时立即撤掉 guard 与 `denyAll`；`global` 分支改为**无条件**清理（此前 `!activated` 直接短路，会让默认 global 下三个工具永久不可调用） |
+| GF7 | P2 | **采纳**：`resolveNow` 的 docstring 改为"只服务 guard 的同步裁决" |
+| GF8 | P2 | **采纳**：`workspaceHolder` getter 改为返回**同一代稳定**的函数引用（否则每次渲染都退订重订） |
+| GF9 | P2 | **采纳**：双语 README「已知限制」补齐"残留层需重启清除""截图待重制"两条 |
+| GF10 | P2 | **采纳**：补"注入尚未到达 ⇒ 不 warn、不判定"用例 |
+| GF11 | P2 | **采纳**：`Promise.race` 的超时定时器在正常返回时 `clearTimeout` |
+| GF12 | P2 | **采纳**：`WorkspaceSnapshot.state === 'error'` 归到 error 态，不再被显示成"宿主没有工作区" |

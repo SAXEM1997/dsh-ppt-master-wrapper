@@ -17,20 +17,35 @@ function makeAgent({ id, cwd, restrictable = true }) {
   const agent = {
     id,
     session: { header: cwd === undefined ? {} : { cwd } },
-    ctx: {
-      tools: {
-        restrict(filter) {
-          record.installed += 1;
-          record.filters.push(filter);
-          let released = false;
-          return () => {
-            if (released) return;
-            released = true;
-            record.released += 1;
-          };
-        },
-      },
-    },
+    ctx: { tools: {} },
+  };
+  /**
+   * 假 `restrict` 逐条复刻真宿主的**三条前置条件**（Gate 3 F5）：
+   * ① 必须在 agent 作用域调用（根 ctx 调用抛 "requires a scoped context"）；
+   * ② filter 不能为空（`{}` 是 no-op 配置 bug）；
+   * ③ 名字必须 ∈ 已知全局工具名（未知名字抛错）。
+   * 少了这三条，"把 `this` 弄丢"或"名字漂移"这类改动会静默通过全部用例。
+   */
+  agent.ctx.tools.restrict = function restrict(filter) {
+    if (this !== agent.ctx.tools) {
+      throw new Error('tools.restrict() requires a scoped context (agent.ctx)');
+    }
+    const deny = filter?.deny ?? [];
+    if (deny.length === 0 && (filter?.allow ?? []).length === 0) {
+      throw new Error('tools.restrict({}) is a no-op');
+    }
+    const unknown = deny.filter((name) => !TOOL_NAMES.includes(name));
+    if (unknown.length > 0) {
+      throw new Error(`tools.restrict() names unknown global tool "${unknown[0]}"`);
+    }
+    record.installed += 1;
+    record.filters.push(filter);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      record.released += 1;
+    };
   };
   if (!restrictable) delete agent.ctx.tools.restrict;
   return { agent, record };
@@ -42,6 +57,7 @@ function makeHost(options = {}) {
     canGuard = true,
     canRestrict = true,
     canOn = true,
+    injectNeverResolves = false,
     agents = [],
     workspaces = [W1, W2],
     listThrows = false,
@@ -93,7 +109,16 @@ function makeHost(options = {}) {
       ...(canGuard ? { guard: (fn) => child.tools.guard(fn) } : {}),
       ...(canRestrict ? { restrict: () => () => {} } : {}),
     },
-    ...(canInject ? { inject(keys, cb) { calls.injectKeys.push(keys); return cb(child); } } : {}),
+    ...(canInject
+      ? {
+          inject(keys, cb) {
+            calls.injectKeys.push(keys);
+            // 模拟"注入尚未到达"：登记了但回调永远不执行（宿主 pending 态）。
+            if (injectNeverResolves) return undefined;
+            return cb(child);
+          },
+        }
+      : {}),
     ...(canOn ? { on(event, cb) { return child.on(event, cb); } } : {}),
   };
 
@@ -531,4 +556,125 @@ test('dispose 后到达的事件不再触发安装', async () => {
   await handle.whenIdle();
 
   assert.equal(record.installed, 0, '拆除后不再装层');
+});
+
+// ─── Gate 3 审查回归（F1/F2/F3/F4/F6/F10）──────────────────────
+
+test('F1: agents.list() 瞬时抛错不得拆掉已装层（区分"读失败"与"读空"）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }] });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.equal(record.installed, 1);
+
+  // 让 agents.list() 抛错后再触发重算
+  hostCase.child.agents.list = () => {
+    throw new Error('registry busy');
+  };
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+
+  assert.equal(record.released, 0, '一次读失败不得拆层（否则工具重现但每次调用都被拒）');
+  assert.equal(record.installed, 1, '也不得重复安装');
+  handle.dispose();
+});
+
+test('F1b: agents.list() 读成功且为空 ⇒ 才释放（确实一个都没有）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }] });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.equal(record.installed, 1);
+
+  hostCase.child.agents.list = () => [];
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+
+  assert.equal(record.released, 1);
+  handle.dispose();
+});
+
+test('F2: guard 同步重判——无 cwd 的 agent 必须拒绝（不是放行）', async () => {
+  const hostCase = makeHost({ agents: [] });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  const verdict = hostCase.calls.guards[0]({
+    name: 'ppt_master_info',
+    agent: { id: 'never-judged', session: { header: {} } },
+  });
+  assert.equal(typeof verdict, 'string', 'no-cwd 是"明确回答无归属" ⇒ fail-closed');
+  handle.dispose();
+});
+
+test('F3: selected + 缺 ctx.on ⇒ warn 点明只判定一次', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }], canOn: false });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  assert.equal(record.installed, 1, '仍要完成装配期这一次判定');
+  assert.ok(
+    hostCase.calls.warnings.some((line) => /ctx\.on/.test(line)),
+    `缺 ctx.on 须有一条点名告警，实际：${JSON.stringify(hostCase.calls.warnings)}`,
+  );
+  handle.dispose();
+});
+
+test('F6: ctx.inject 抛错 ⇒ 立即撤掉 guard 与 denyAll（不残留全拒）', async () => {
+  const hostCase = makeHost({ agents: [] });
+  hostCase.ctx.inject = () => {
+    throw new Error('inject exploded');
+  };
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await handle.whenIdle();
+
+  assert.ok(hostCase.calls.warnings.some((line) => /inject/.test(line)), '要有一条点名 inject 的 warn');
+  assert.equal(hostCase.calls.guards.length, 0, '注入失败后 guard 必须撤掉（否则 global 下也会全拒）');
+
+  // 切回 global 再切回 selected：不得残留任何拒绝面
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.guards.length, 0);
+  handle.dispose();
+});
+
+test('F10: 注入尚未到达（pending）⇒ 不 warn、不装层、不崩', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }], injectNeverResolves: true });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  assert.deepEqual(hostCase.calls.injectKeys, [['agents', 'workspaceRegistry']], '确实去注入了');
+  assert.deepEqual(hostCase.calls.warnings, [], 'pending 不是降级，不得 warn');
+  assert.equal(record.installed, 0, '注入没到 ⇒ 不判定、不装层（工具暂时可见）');
+  handle.dispose();
+});
+
+test('F4: registry.list() 抛错后自动复检（1000ms 内自愈，不必等外部事件）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  let broken = true;
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    workspaces: [W1, W2],
+  });
+  const originalList = hostCase.child.workspaceRegistry.list;
+  hostCase.child.workspaceRegistry.list = () => {
+    if (broken) throw new Error('registry down');
+    return originalList();
+  };
+
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.equal(record.installed, 0, '读失败 ⇒ 本轮不判定（可见）');
+
+  broken = false;
+  // 等有界复检（1000ms）触发
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await handle.whenIdle();
+
+  assert.equal(record.installed, 1, '复检后应自愈装上限制层');
+  handle.dispose();
 });

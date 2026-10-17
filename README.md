@@ -138,6 +138,8 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 - 只收窄**工具**；`ppt-master` 技能条目在任何工作区仍可被调用（宿主对 skill 没有 per-agent 隐藏通道）。
 - 判定基于会话创建时的 `cwd`；会话中途切换工作目录不会重判。
 - 名单里已删除的工作区 id 会被忽略（卡片显示为"已不存在"并可勾掉）。
+- 释放限制层时若宿主抛错，该层可能仍生效——重启 DSH 可清除（日志里会有一条点名 agent 的 warn）。
+- 市场截图 `assets/screenshot-1-config-card.png` 尚未重制（卡片新增了本节），下次发布时补。
 
 ### 配置指引（profile patch——与卡片等价的通道）
 

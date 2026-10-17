@@ -730,6 +730,47 @@ export async function runCompatCheck(options = {}) {
       ? undefined
       : { skillRoots: options.skillRoots };
 
+  // ── 3b. 工具可见范围（2026-10-18）依赖的两条宿主契约，在**真宿主**上实跑 ──
+  //
+  // `lib/scope-host.js` 的整个收窄面押在 `tools.restrict()` 与 `tools.guard()` 上：
+  // 前者只能在 agent 作用域调用（根 ctx 调用必须抛错——这是"别把限制装到全局"的护栏），
+  // 后者在普通 ctx 上全局生效并返回 disposer。假宿主无法证明这两点，故在这里对真实
+  // ToolRuntime 实跑一次。
+  try {
+    const ctxScope = mount({ withSkills: false });
+    const toolNames = createTools(toolOptions).map((tool) => tool.name);
+
+    let restrictError;
+    try {
+      ctxScope.tools.restrict({ deny: toolNames });
+    } catch (error) {
+      restrictError = error;
+    }
+    if (restrictError === undefined) {
+      problems.push('§7.7⑦ tools.restrict() 在根 ctx 上未抛错——"per-agent 才能收窄"的护栏失效');
+    } else if (!/scoped context/i.test(String(restrictError.message))) {
+      problems.push(`§7.7⑦ tools.restrict() 根 ctx 抛错文案不含 "scoped context": ${firstLine(restrictError)}`);
+    }
+
+    let guardDisposer;
+    try {
+      guardDisposer = ctxScope.tools.guard(() => undefined);
+    } catch (error) {
+      problems.push(`§7.7⑦ tools.guard() 在普通 ctx 上不可用: ${firstLine(error)}`);
+    }
+    if (guardDisposer !== undefined && typeof guardDisposer !== 'function') {
+      problems.push('§7.7⑦ tools.guard() 未返回 disposer');
+    } else if (typeof guardDisposer === 'function') {
+      guardDisposer();
+      notes.push(
+        '§7.7⑦ 工具可见范围宿主契约: 真实 ToolRuntime 上 tools.restrict() 在根 ctx 按预期抛 "scoped context"'
+          + '（收窄必须装在 agent.ctx）；tools.guard() 在普通 ctx 可安装且返回 disposer',
+      );
+    }
+  } catch (error) {
+    problems.push(`§7.7⑦ 工具可见范围宿主契约探针失败: ${firstLine(error)}`);
+  }
+
   // ── 3. ToolRuntime register 验证：createTools() 真实三工具产物（方法形态）──
   try {
     const ctxTools = mount({ withSkills: false });

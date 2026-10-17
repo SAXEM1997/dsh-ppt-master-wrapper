@@ -138,6 +138,8 @@ This plugin registers its three `ppt_master_*` tools **globally** — by default
 - Only **tools** are narrowed; the `ppt-master` skill entry stays callable in every workspace (the host has no per-agent channel for skills).
 - Judgement uses the session's `cwd` at creation time; switching the working directory mid-session does not re-judge.
 - Ids of deleted workspaces are ignored (the card shows them as "no longer exists" and lets you uncheck them).
+- If the host throws while a restriction layer is being released, that layer may stay in effect — restart DSH to clear it (one warning naming the agent is logged).
+- The marketplace screenshot `assets/screenshot-1-config-card.png` has not been regenerated yet (the card gained this section); it will be refreshed in the next release.
 
 ### Configuration via profile patch (the equivalent channel)
 

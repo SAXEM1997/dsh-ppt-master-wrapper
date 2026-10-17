@@ -511,6 +511,17 @@ async function makeStubSdk({
       '    registerLog.push(definition.name);',
       '    return () => {};',
       '  }',
+      '  // 工具可见范围（2026-10-18）依赖的两条契约，逐字复刻真宿主：',
+      '  // ① restrict 只能在 agent 作用域调用（根 ctx 调用抛错）；② guard 在普通 ctx 可装、返回 disposer。',
+      '  restrict() {',
+      '    throw new Error("tools.restrict() requires a scoped context (agent.ctx): a context-global restriction would mask every agent");',
+      '  }',
+      '  guard(fn) {',
+      '    if (typeof fn !== "function") throw new TypeError("stub: guard expects a function");',
+      '    this.guards = this.guards ?? [];',
+      '    this.guards.push(fn);',
+      '    return () => { this.guards = this.guards.filter((item) => item !== fn); };',
+      '  }',
       '}',
       '',
     ].join('\n'),
@@ -886,7 +897,7 @@ test('runCompatCheck §7.7 五项: ns.Config volatile(恰 3 + 另含非 volatile
     assert.deepEqual(result.warnings, []);
 
     const joined = result.notes.join('\n');
-    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤']) {
+    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤', '§7.7⑦']) {
       assert.ok(
         result.notes.some((note) => note.includes(marker)),
         `compat 输出缺 ${marker} 断言行（实际 notes:\n${joined}）`,
@@ -1079,7 +1090,7 @@ test('CLI: §7.7 五项断言行（无 --skill-roots → 生产根形态）→ e
       [scriptPath, '--dsh-modules', sdk.modules],
       { env: stubLoadEnv(sdk) },
     );
-    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤']) {
+    for (const marker of ['§7.7①', '§7.7②', '§7.7③', '§7.7④', '§7.7⑤', '§7.7⑦']) {
       assert.ok(stdout.includes(marker), `CLI stdout 缺 ${marker} 断言行（实际 stdout:\n${stdout}）`);
     }
     assert.match(stdout, /OK/);
