@@ -268,7 +268,10 @@ export function apply(ctx, opts) {
     throw new Error(`${name}: ctx.skills.registerProvider is required`);
   }
 
-  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。装配带异常包装
+  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。
+  // **例外（2026-10-18 工具可见范围）**：`opts.scope` 不走这里——它必须保持 volatile 引用，
+  // 由 `mountToolScope` 每轮现读（宿主对 volatile-only 变更不重挂插件，见文件末尾）。
+  // 装配带异常包装
   // （spec §6.1③ / Gate 3 G3-12）：入参是宿主/嵌入方给的**任意形状**，"异常形态视为关闭"不得
   // 靠"叶子缺省补默认"静默达成——装配抛错时回落 `VENV_DEFAULTS`（经 `snapshotVenvConfig(undefined)`
   // 取得，默认值仍只有 `lib/venv.js` 一份字面量）、保留 `skillRoots` 原样透传语义、把异常送进
