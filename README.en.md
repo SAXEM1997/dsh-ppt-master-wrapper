@@ -250,6 +250,12 @@ dsh-ppt-master-wrapper/
 └── LICENSE
 ```
 
+## Development workflow (GitHub Flow)
+
+`main` is protected and never pushed to directly. Every change goes **Issue → branch → PR → squash merge**: open an issue stating the motivation and acceptance criteria, branch off `main` as `feat/…`, `fix/…`, `chore/…` or `docs/…`, run the three verification commands below and paste the results into the PR, then squash-merge and delete the branch. Commit messages use conventional prefixes (`feat:`, `fix:`, `docs:`, `chore:`, …).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the details, the red lines and the version policy; issue and PR templates ship with the repository.
+
 ## Local verification (development)
 
 ```bash

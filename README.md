@@ -254,6 +254,12 @@ dsh-ppt-master-wrapper/
 └── LICENSE
 ```
 
+## 开发流程（GitHub Flow）
+
+`main` 受保护，**不直接推送**。每次改动走 **Issue → 分支 → PR → Squash merge**：先开 issue 说明动机与验收标准，从 `main` 拉 `feat/…` / `fix/…` / `chore/…` / `docs/…` 分支，本地跑完下方三项校验后在 PR 里贴结果，评审通过后 squash 合入并删除分支。提交信息用约定式前缀（`feat:` / `fix:` / `docs:` / `chore:` …）。
+
+细节、红线与版本策略见 [CONTRIBUTING.md](CONTRIBUTING.md)；Issue / PR 模板已随仓库提供。
+
 ## 本地校验（开发）
 
 ```bash
