@@ -2131,3 +2131,39 @@ test('工具可见范围: ops 路径首段 ≡ 宿主 Config 顶层键（静态�
   assert.match(hostSource, /scope:\s*z\s*\.object\(\{/, '宿主 Config 应有 scope 顶层键');
   assert.match(clientSource, /const SCOPE_KEY = 'scope'/, '卡片应保留同名顶层键字面量');
 });
+
+test('工具可见范围: 清单 state=error 显示"不可用"，不得说成"没有工作区"', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const zh = zhDictOf(face);
+  const form = makeFakeForm({ snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] }) });
+  const { ctx, calls } = makeCtx({ form, workspaces: { items: [] } });
+  ctx.workspaces.list.getSnapshot = () => ({ items: [], state: 'error' });
+  face.apply(ctx);
+  const Card = calls.slotRegisters[0].Component;
+  const rendered = renderCard(Card);
+
+  assert.ok(rendered.text.includes(zh['scope.list.unavailable']), `应显示不可用文案：${rendered.text}`);
+  assert.equal(rendered.text.includes(zh['scope.list.none']), false, '列表故障不得显示成"宿主没有工作区"');
+});
+
+test('工具可见范围: workspaceHolder 在同一代内引用稳定（不触发无谓的退订重订）', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { ctx, calls } = makeCtx({ form: makeFakeForm({ snapshot: scopeSnapshot() }) });
+  face.apply(ctx);
+  const Card = calls.slotRegisters[0].Component;
+
+  // 同一代内两次读取必须拿到**同一个函数引用**（否则 useEffect 依赖每次都变）
+  assert.equal(
+    Card.forwarder.workspaceHolder,
+    Card.forwarder.workspaceHolder,
+    'workspaceHolder 必须是同一代稳定依赖',
+  );
+  // 换代后必须换新引用（卡片据此重新订阅）
+  const before = Card.forwarder.workspaceHolder;
+  face.apply(makeCtx({ form: makeFakeForm({ snapshot: scopeSnapshot() }) }).ctx);
+  assert.notEqual(Card.forwarder.workspaceHolder, before, '换代后必须换引用');
+});

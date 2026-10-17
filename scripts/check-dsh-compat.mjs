@@ -758,14 +758,48 @@ export async function runCompatCheck(options = {}) {
     } catch (error) {
       problems.push(`§7.7⑦ tools.guard() 在普通 ctx 上不可用: ${firstLine(error)}`);
     }
-    if (guardDisposer !== undefined && typeof guardDisposer !== 'function') {
-      problems.push('§7.7⑦ tools.guard() 未返回 disposer');
-    } else if (typeof guardDisposer === 'function') {
+    // `guard()` 返回 undefined 正是"契约破裂"的形态——必须报 problem，不能静默通过。
+    if (typeof guardDisposer !== 'function') {
+      problems.push('§7.7⑦ tools.guard() 未返回 disposer（返回 undefined 时 scope-host 会重复安装 guard）');
+    } else {
       guardDisposer();
       notes.push(
         '§7.7⑦ 工具可见范围宿主契约: 真实 ToolRuntime 上 tools.restrict() 在根 ctx 按预期抛 "scoped context"'
           + '（收窄必须装在 agent.ctx）；tools.guard() 在普通 ctx 可安装且返回 disposer',
       );
+    }
+
+    // ── 正向路径：在**真 agent 作用域**里实跑一次 restrict ──
+    // 否定路径只证明"根 ctx 不行"，本特性真正依赖的是"作用域里行"。
+    // `@deepseek-ai/dsh-scope` 是可选的（老宿主可能没有）⇒ 缺失只记 note，不判失败。
+    let scopeModule;
+    try {
+      const scopeEntry = entryOf(resolved.path, '@deepseek-ai/dsh-scope');
+      if (scopeEntry !== null) scopeModule = await importModule(scopeEntry.url);
+    } catch {
+      scopeModule = undefined;
+    }
+    if (typeof scopeModule?.createScope !== 'function') {
+      notes.push('§7.7⑦ 正向路径未验证：本环境无 @deepseek-ai/dsh-scope（或不可导入）');
+    } else {
+      for (const tool of createTools(toolOptions)) ctxScope.tools.register(tool);
+      const scopeHandle = scopeModule.createScope(ctxScope, 'compat-probe');
+      try {
+        const release = scopeHandle.ctx.tools.restrict({ deny: [toolNames[0]] });
+        if (typeof release !== 'function') {
+          problems.push('§7.7⑦ agent 作用域的 tools.restrict() 未返回 disposer');
+        } else {
+          release();
+          notes.push(
+            `§7.7⑦ 正向路径: 真实 ToolRuntime 上 agent 作用域 tools.restrict({deny:["${toolNames[0]}"]}) `
+              + '返回可调用 disposer（装配层收窄成立）',
+          );
+        }
+      } catch (error) {
+        problems.push(`§7.7⑦ agent 作用域的 tools.restrict() 抛错: ${firstLine(error)}`);
+      } finally {
+        if (typeof scopeHandle.dispose === 'function') scopeHandle.dispose();
+      }
     }
   } catch (error) {
     problems.push(`§7.7⑦ 工具可见范围宿主契约探针失败: ${firstLine(error)}`);

@@ -621,7 +621,7 @@ test('F3: selected + 缺 ctx.on ⇒ warn 点明只判定一次', async () => {
   handle.dispose();
 });
 
-test('F6: ctx.inject 抛错 ⇒ 立即撤掉 guard 与 denyAll（不残留全拒）', async () => {
+test('F6+R2-1: 能力缺失是粘性的——global 一圈回来仍是 fail-closed', async () => {
   const hostCase = makeHost({ agents: [] });
   hostCase.ctx.inject = () => {
     throw new Error('inject exploded');
@@ -631,13 +631,103 @@ test('F6: ctx.inject 抛错 ⇒ 立即撤掉 guard 与 denyAll（不残留全拒
   await handle.whenIdle();
 
   assert.ok(hostCase.calls.warnings.some((line) => /inject/.test(line)), '要有一条点名 inject 的 warn');
-  assert.equal(hostCase.calls.guards.length, 0, '注入失败后 guard 必须撤掉（否则 global 下也会全拒）');
+  assert.equal(hostCase.calls.guards.length, 1, 'selected 下必须留着 guard 才拦得住');
+  assert.equal(
+    typeof hostCase.calls.guards[0]({ name: 'ppt_master_info', agent: { id: 'x' } }),
+    'string',
+    '能力缺失 ⇒ fail-closed 全拒',
+  );
 
-  // 切回 global 再切回 selected：不得残留任何拒绝面
+  // 切回 global：guard 释放，工具应完全可用
   config.mode = { get: () => 'global' };
   await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
   await handle.whenIdle();
-  assert.equal(hostCase.calls.guards.length, 0);
+  assert.equal(hostCase.calls.guards.length, 0, 'global 下不得残留 guard');
+
+  // 再切回 selected：能力缺失仍是粘性事实 ⇒ 必须重新全拒（R2-1 回归）
+  config.mode = { get: () => 'selected' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.guards.length, 1, '回到 selected 必须重新装 guard');
+  assert.equal(
+    typeof hostCase.calls.guards[0]({ name: 'ppt_master_info', agent: { id: 'x' } }),
+    'string',
+    'fail-closed 不得因 global 走一圈而丢失',
+  );
+  handle.dispose();
+});
+
+test('R2-1b: 注入到的服务不可用同样粘住 fail-closed', async () => {
+  const hostCase = makeHost({ agents: [] });
+  // 让注入回调拿到一个缺 agents 的 child
+  hostCase.ctx.inject = (keys, cb) => {
+    hostCase.calls.injectKeys.push(keys);
+    return cb({ workspaceRegistry: hostCase.child.workspaceRegistry, tools: hostCase.child.tools, on: () => () => {} });
+  };
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await handle.whenIdle();
+  assert.equal(typeof hostCase.calls.guards[0]({ name: 'ppt_master_info', agent: { id: 'x' } }), 'string');
+
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  config.mode = { get: () => 'selected' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  await handle.whenIdle();
+
+  assert.equal(typeof hostCase.calls.guards[0]({ name: 'ppt_master_info', agent: { id: 'x' } }), 'string');
+  handle.dispose();
+});
+
+test('R2-3: 在飞轮次回来时若已切回 global，不得把层装回去', async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    resolve: async () => {
+      await gate; // 卡住 resolveByPath，制造"在飞轮次"
+      return W2;
+    },
+  });
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  // 轮次停在 await resolveByPath
+  await new Promise((resolve) => setImmediate(resolve));
+
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  release();
+  await handle.whenIdle();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(record.installed, 0, 'global 下在飞轮次不得再装层');
+  handle.dispose();
+});
+
+test('R2-2: 持续失败时复检有上限（不退化成 1Hz 轮询）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  let calls = 0;
+  const hostCase = makeHost({ agents: [{ agent, record }] });
+  hostCase.child.workspaceRegistry.list = () => {
+    calls += 1;
+    throw new Error('registry down');
+  };
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  // 观察 3.6s（够跑完 MAX_RETRIES=3 次复检），然后**再等 1.5s 看它是否停下**
+  await new Promise((resolve) => setTimeout(resolve, 3600));
+  await handle.whenIdle();
+  const settled = calls;
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await handle.whenIdle();
+
+  assert.equal(calls, settled, `复检必须停下，但仍在增长：${settled} → ${calls}`);
+  assert.ok(settled <= 12, `3.6s 内的 list() 调用应有上限，实际 ${settled} 次`);
   handle.dispose();
 });
 

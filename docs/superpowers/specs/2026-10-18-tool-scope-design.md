@@ -314,3 +314,12 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | GF10 | P2 | **采纳**：补"注入尚未到达 ⇒ 不 warn、不判定"用例 |
 | GF11 | P2 | **采纳**：`Promise.race` 的超时定时器在正常返回时 `clearTimeout` |
 | GF12 | P2 | **采纳**：`WorkspaceSnapshot.state === 'error'` 归到 error 态，不再被显示成"宿主没有工作区" |
+### Gate 3 第 2 轮（复审修复波）裁决
+
+| 编号 | 严重度 | 裁决 |
+|---|---|---|
+| GR2-1 | P1 | **采纳**：`denyAll` 不得在 global 分支清零——它承载"能力缺失"这一**粘性**事实，清零会让 `global → selected` 一圈把 fail-closed 反转成 fail-open。改为 `state.capabilityLost`（粘性结论）+ 每次进入 selected 时 `denyAll = capabilityLost`；global 分支只挂起与释放层/guard（`verdict` 已被 `suspended` 短路）。`ctx.inject` 抛错改为**保持 guard + 全拒**，与"宿主无 `ctx.inject`"同口径 |
+| GR2-2 | P2 | **采纳**：复检必须"有界且可自愈"——`MAX_RETRIES = 3`，且只有**完整成功**的一轮（注册表读成功 + agent 列表读成功）才清零计数。此前每轮清零会退化成 1Hz 轮询 |
+| GR2-3 | P2 | **采纳**：加代际令牌 `state.epoch`（`syncMode` 挂起与 `dispose` 时自增），`judgeOne` 在 `await` 回来后校验——否则在飞轮次会把刚释放的层装回去（global 下该会话继续被隐藏；`dispose` 后留下永不释放的层） |
+| GR2-4 | P2 | **采纳**：§7.7⑦ 探针补两个盲点——`guard()` 返回 `undefined` 必须报 problem（此前静默通过）；新增**正向路径**：在真 `agent` 作用域里实跑 `tools.restrict({deny})` 并断言返回可调用 disposer（依赖可选包 `@deepseek-ai/dsh-scope`，缺失只记 note） |
+| GR2-5 | P2 | **采纳**：客户端 F8/F12 补回归用例（`state:'error'` 文案分支、`workspaceHolder` 同代引用稳定 + 换代换引用） |
