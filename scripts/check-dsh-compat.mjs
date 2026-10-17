@@ -118,15 +118,23 @@ const ENTRY_SKILL_NAME = 'ppt-master-env';
 // ─── §7.7 六项设计成立性前置检查的判据锚（Task 10 + Task 4）───────
 
 /**
- * ① 的遍历口径锚：Config 三叶子 volatile，**且**必须另有 ≥1 个非 volatile 叶。
+ * ① 的遍历口径锚：Config **五**叶子 volatile（venv 三 + scope 两），**且**必须另有 ≥1 个非 volatile 叶。
  *
  * 本机宿主实测：`Config.toJSON()` 为 `{uid, refs}` 引用图（**顶层无属性对象**），
- * 7 个 refs = 3 volatile（`enabled` boolean 叶、`path` string 叶、`oldPathPolicy`
- * union 叶）+ 4 非 volatile（root/venv 两个 object 容器 + union 内两个 const 叶）。
+ * 9 个 refs = 5 volatile（venv 的 `enabled` boolean 叶、`path` string 叶、
+ * `oldPathPolicy` union 叶；scope 的 `mode` union 叶、`workspaceIds` list 叶）
+ * + 4 非 volatile（root/venv/scope 三个 object 容器 + `oldPathPolicy` 的两个 const 叶；
+ * scope 的 `mode` 两个 const 叶与 `workspaceIds` 的 string 叶随其父叶一并计入 volatile 侧，
+ * 口径由下方动态遍历决定，此处只记录期望总数）。
  * 只数 volatile 而不要求非 volatile 叶在场，会让替身/真实包"把所有叶都标 volatile"
  * 时同样全绿——即自我印证。
  */
-const VOLATILE_LEAF_COUNT = 3;
+/**
+ * volatile 叶的期望条数：`venv.{enabled,path,oldPathPolicy}` 三叶 + `scope.{mode,workspaceIds}`
+ * 两叶（2026-10-18 工具可见范围特性新增）。少一个 ⇒ 宿主不出该字段的编辑面；多一个 ⇒ 说明
+ * 有叶子被误标（volatile 会让宿主原地改引用而不重挂插件，语义必须逐叶确认）。
+ */
+const VOLATILE_LEAF_COUNT = 5;
 
 /** ②/⑤ 判据锚：vendor 主技能名（生产包内根读回的在场证据）。 */
 const VENDOR_PRIMARY_SKILL = 'ppt-master';
@@ -933,7 +941,7 @@ export async function runCompatCheck(options = {}) {
         if (volatileRefs.length !== VOLATILE_LEAF_COUNT) {
           problems.push(
             `§7.7① Config volatile 声明异常: toJSON() refs 内 volatile 叶 ${volatileRefs.length} ≠ ${VOLATILE_LEAF_COUNT}`
-              + '（三字段 enabled/path/oldPathPolicy 须逐个 .volatile()）',
+              + '（五字段 venv.enabled/path/oldPathPolicy + scope.mode/workspaceIds 须逐个 .volatile()）',
           );
         } else if (nonVolatileLeaves.length === 0) {
           problems.push(

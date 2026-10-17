@@ -216,7 +216,7 @@ function makeRequire() {
  * - `ctx.slots.inject(name, cb)`：记录后立刻调用 cb 并返回其结果
  * - `ctx.slots.register(options, Component)`：记录；返回 disposer
  */
-function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } = {}) {
+function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form, workspaces = 'default' } = {}) {
   // `activeLocale` 用**持有器**而非裸参数：`setActiveLocale` 要能改到 `bind` 现读的那个变量
   // （模块级/参数级解构都改不到），宿主语言切换形态即此。
   const localeState = { current: activeLocale };
@@ -320,6 +320,32 @@ function makeCtx({ configForms = true, namespaces, activeLocale = 'zh', form } =
   };
 
   if (configForms) ctx.configForms = formsService;
+
+  // 客户端 `workspaces` 服务（`@deepseek-ai/dsh-api-workspace-controller` 的 client 面）。
+  // `'default'`＝两份工作区；`'unavailable'`＝服务缺席（卡片应降级为只读回显）；
+  // 也可直接传 `{ items }` 自定义。
+  if (workspaces !== 'unavailable') {
+    const items =
+      workspaces === 'default'
+        ? [
+            // 路径刻意避开**本仓库根**：既有契约"卡片不得泄漏 PACKAGE_ROOT_ABS"是按
+            // 插件包根判定的，夹具若用仓库根同名路径会把那条契约误判成回归。
+            { workspaceId: 'w1', title: 'ppt-master', path: '/srv/work/ppt-master', sessionIds: ['s1', 's2'] },
+            { workspaceId: 'w2', title: 'hermes', path: '/srv/work/hermes', sessionIds: [] },
+          ]
+        : (workspaces?.items ?? []);
+    const listeners = new Set();
+    ctx.workspaces = {
+      list: {
+        getSnapshot: () => ({ items }),
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      listeners,
+    };
+  }
 
   const disposeAll = () => {
     while (disposers.length > 0) disposers.pop()();
@@ -559,7 +585,7 @@ test('注册面: configForms 经 ctx.inject 回调式接入，不入硬 inject',
   const { ctx, calls } = makeCtx();
   face.apply(ctx);
 
-  assert.deepEqual(calls.injects, [['configForms']]);
+  assert.deepEqual(calls.injects, [['configForms'], ['workspaces']], 'configForms 与 workspaces 都走回调式注入');
   assert.equal(face.inject.includes('configForms'), false);
   assert.deepEqual(calls.formsGet, ['dsh-ppt-master-wrapper']);
   assert.ok(calls.effectLabels.some((label) => String(label).includes('dsh-ppt-master-config')));
@@ -1893,4 +1919,215 @@ test('宿主第三方更新: 未触碰控件时显示跟随新值且脏集为空
     .props.onClick();
   assert.equal(weirdRev.mutates.length, 1, '类型不符 revision 仍应可保存');
   assert.equal(weirdRev.mutates[0][1], undefined, '非 number revision 应收窄为 undefined 透传');
+});
+
+// ─── 工具可见范围（2026-10-18，design §5.5）────────────────────────
+//
+// 这一节覆盖"全局 / 指定工作区"的卡片面：模式单选、工作区勾选、恢复默认、降级回显、
+// 以及"只改 scope 的快照换代必须清脏"（漏了它会让保存按钮常亮、卡片不重渲染）。
+
+/** 带 scope 的齐备快照（venv 三叶取默认，scope 由参数决定）。 */
+function scopeSnapshot({ mode = 'global', workspaceIds = [] } = {}) {
+  return {
+    status: 'ready',
+    writable: true,
+    revision: 7,
+    value: {
+      venv: { enabled: false, path: '/srv/venv', oldPathPolicy: 'keep' },
+      scope: { mode, workspaceIds },
+    },
+  };
+}
+
+/** 渲染一张带 scope 的可写卡片：字典先取，再 apply（与 renderWritable 同序）。 */
+function renderScopeCard(face, { snapshot = scopeSnapshot(), workspaces } = {}) {
+  const zh = zhDictOf(face);
+  const form = makeFakeForm({ snapshot });
+  const { ctx, calls } = makeCtx({ form, ...(workspaces === undefined ? {} : { workspaces }) });
+  face.apply(ctx);
+  const Card = calls.slotRegisters[0].Component;
+  return { form, zh, calls, rendered: renderCard(Card) };
+}
+
+const scopeRadio = (tree, mode) =>
+  find(tree, (el) => el.props?.id === `ppt-master-config-scope-mode-${mode}`);
+const scopeCheckbox = (tree, id) =>
+  find(tree, (el) => el.props?.id === `ppt-master-config-scope-ws-${id}`);
+
+test('工具可见范围: 渲染模式单选与工作区勾选行（id 规则固定）', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { rendered } = renderScopeCard(face);
+
+  assert.ok(
+    find(rendered.tree, (el) => el.props?.className === 'ppt-master-config-scope') !== undefined,
+    '卡片应渲染工具可见范围一节',
+  );
+  assert.equal(scopeRadio(rendered.tree, 'global')?.props?.checked, true, '默认全局');
+  assert.equal(scopeRadio(rendered.tree, 'selected')?.props?.checked, false);
+  assert.equal(scopeCheckbox(rendered.tree, 'w1')?.type, 'input');
+  assert.equal(scopeCheckbox(rendered.tree, 'w1')?.props?.checked, false);
+  assert.ok(rendered.text.includes('ppt-master') && rendered.text.includes('hermes'));
+  assert.ok(rendered.text.includes('技能条目'), '说明块须点明技能条目不受影响');
+});
+
+test('工具可见范围: 切 selected + 勾选工作区 → 保存两条 set op（路径首段 scope）', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { form, zh, rendered } = renderScopeCard(face);
+
+  scopeRadio(rendered.tree, 'selected').props.onChange();
+  scopeCheckbox(rendered.settle(), 'w1').props.onChange();
+
+  const save = buttonByLabel(rendered.settle(), zh['action.save']);
+  assert.ok(save !== undefined, '卡片应渲染保存按钮');
+  await save.props.onClick();
+
+  assert.equal(form.mutates.length, 1, '恰一次 mutate');
+  assert.deepEqual(form.mutates[0][0], [
+    { op: 'set', path: ['scope', 'mode'], value: 'selected' },
+    { op: 'set', path: ['scope', 'workspaceIds'], value: ['w1'] },
+  ]);
+});
+
+test('工具可见范围: 取消勾选只改名单、不动模式', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { form, zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1', 'w2'] }),
+  });
+
+  scopeCheckbox(rendered.tree, 'w1').props.onChange();
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+
+  assert.deepEqual(form.mutates[0][0], [
+    { op: 'set', path: ['scope', 'workspaceIds'], value: ['w2'] },
+  ]);
+});
+
+test('工具可见范围: 恢复默认按钮一次发两条 unset，且不碰 venv', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { form, zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] }),
+  });
+
+  const reset = buttonByLabel(rendered.tree, zh['scope.reset']);
+  assert.ok(reset !== undefined, '卡片应渲染"恢复默认"');
+  await reset.props.onClick();
+
+  assert.equal(form.mutates.length, 1);
+  assert.deepEqual(form.mutates[0][0], [
+    { op: 'unset', path: ['scope', 'mode'] },
+    { op: 'unset', path: ['scope', 'workspaceIds'] },
+  ]);
+});
+
+test('工具可见范围: 既有"重置"仍是三个 venv unset（不被本特性改语义）', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { form, zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] }),
+  });
+
+  await buttonByLabel(rendered.tree, zh['action.reset']).props.onClick();
+
+  assert.deepEqual(form.mutates[0][0], [
+    { op: 'unset', path: ['venv', 'enabled'] },
+    { op: 'unset', path: ['venv', 'path'] },
+    { op: 'unset', path: ['venv', 'oldPathPolicy'] },
+  ]);
+});
+
+test('工具可见范围: workspaces 服务缺席 → 降级提示 + 只读回显已配置 id', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] }),
+    workspaces: 'unavailable',
+  });
+
+  assert.ok(rendered.text.includes(zh['scope.list.unavailable']), '应显示"清单不可用"的降级提示');
+  const echo = scopeCheckbox(rendered.tree, 'w1');
+  assert.ok(echo !== undefined, '降级态仍要回显已配置的 id');
+  assert.equal(echo.props.checked, true);
+  assert.equal(echo.props.disabled, true, '只读回显不可写');
+});
+
+test('工具可见范围: 清单首帧 loading 时显示"正在读取"，不误报"没有工作区"', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const zh = zhDictOf(face);
+  const form = makeFakeForm({ snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] }) });
+  const { ctx, calls } = makeCtx({ form, workspaces: { items: [] } });
+  // 覆写成 loading 首帧形态（真实 `WorkspaceSnapshot` 的 state/phase 字段）
+  ctx.workspaces.list.getSnapshot = () => ({ items: [], state: 'loading', phase: 'pending' });
+  face.apply(ctx);
+  const Card = calls.slotRegisters[0].Component;
+  const rendered = renderCard(Card);
+
+  assert.ok(rendered.text.includes(zh['scope.list.loading']), `应显示 loading 提示：${rendered.text}`);
+  assert.equal(rendered.text.includes(zh['scope.list.none']), false, 'loading 首帧不得误报"没有工作区"');
+});
+
+test('工具可见范围: 名单里已不存在的工作区渲染为 is-missing 且可勾掉', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: ['w1', 'gone'] }),
+  });
+
+  const gone = scopeCheckbox(rendered.tree, 'gone');
+  assert.ok(gone !== undefined, '失效 id 也要出现在列表里');
+  assert.equal(gone.props.checked, true);
+  assert.equal(gone.props.disabled, false, '已勾选的失效 id 必须允许勾掉');
+  assert.ok(rendered.text.includes(zh['scope.item.missing']));
+});
+
+test('工具可见范围: 名单为空且模式为 selected → 提示"谁都看不到"', () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { zh, rendered } = renderScopeCard(face, {
+    snapshot: scopeSnapshot({ mode: 'selected', workspaceIds: [] }),
+  });
+  assert.ok(rendered.text.includes(zh['scope.list.empty']));
+});
+
+test('工具可见范围: 只改 scope 的快照换代必须清脏（sameSnapshot 覆盖新叶）', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  const { form, zh, rendered } = renderScopeCard(face);
+
+  scopeRadio(rendered.tree, 'selected').props.onChange();
+  scopeCheckbox(rendered.settle(), 'w1').props.onChange();
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+
+  const before = buttonByLabel(rendered.settle(), zh['action.save']);
+  assert.equal(before.props.disabled, false, '保存前仍有脏集');
+
+  // 宿主回推同值快照（只把 scope 写进去）：脏集必须清空 ⇒ 保存按钮禁用。
+  form.snapshot = scopeSnapshot({ mode: 'selected', workspaceIds: ['w1'] });
+  form.listeners.forEach((listener) => listener());
+  rendered.settle();
+
+  const after = buttonByLabel(rendered.settle(), zh['action.save']);
+  assert.equal(after.props.disabled, true, '回推后不得残留脏集');
+});
+
+test('工具可见范围: ops 路径首段 ≡ 宿主 Config 顶层键（静态交叉检查）', () => {
+  // 卡片是自包含单文件，无法 import 宿主半边；一致性靠文本断言锁死。
+  const hostSource = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const clientSource = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  assert.match(hostSource, /scope:\s*z\s*\.object\(\{/, '宿主 Config 应有 scope 顶层键');
+  assert.match(clientSource, /const SCOPE_KEY = 'scope'/, '卡片应保留同名顶层键字面量');
 });

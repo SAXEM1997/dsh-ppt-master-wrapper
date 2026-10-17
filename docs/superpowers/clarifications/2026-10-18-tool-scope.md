@@ -68,3 +68,29 @@
 - **C5** 配置面放在插件 cordis `Config`（`scope.*`），不引入独立 JSON 文档：与既有卡片/`configForms` 写通道同源，省掉第二套原子写与文件锁。
 - **C6** 卡片的工作区勾选列表依赖客户端 `workspaces` 服务；该服务不可用时**不给手输 ID 的退路**（手输 UUID 拼错＝静默失效），改为只读展示当前名单 + 提示走 profile 配置。
 - **C7** 工具名清单从 `createTools()` 的产出派生，不写第二份字面量，并由一条测试锁定。
+
+## 5. 修订（Gate 0 审查 + builder check 之后，2026-10-18）
+
+### C1 → C1′（**已改判**）
+
+原 C1：「宿主答不出来 ⇒ fail-open」。Gate 0 对齐审查指出它与 [Q2]「和 cherry 插件一致」冲突（cherry 连读不出/非法都落更严一侧）。**改判为三类分离**：
+
+- **能力缺失**（宿主永远做不到，如无 `ctx.inject`）⇒ **fail-closed**：全局 guard 全拒本插件工具 + warn；
+- **瞬时读失败**（`registry.list()` 抛错）⇒ 本轮不产生新判定：已有判定保留、无判定者放行 + warn + 1s 重试（不拿一次读失败去改写用户的工作区可见性）；
+- **明确回答"无归属"**（无 cwd / `resolveByPath` 返回 undefined）⇒ fail-closed 不可见（即 [Q2]）。
+
+### C6 补全（后半）
+
+服务不可用时不只是"不给手输 ID"，还要**只读回显当前名单**并提示去 profile 配置改——否则降级态用户既看不见也改不了。
+
+### 新增 C8 / C9
+
+- **C8**（builder check Q4）：`cordis.patch.yml` 只加**注释示例**，不写真实 `config` 块——patch 的 `config` 是整体替换而非深合并，写进去等于替所有使用者钉死一份配置。
+- **C9**（builder check Q3 / 结构审查）：市场截图 `assets/screenshot-1-config-card.png` 因卡片新增一节而过时，**不在本特性重制**（需活 GUI），登记为发布后续项。
+
+### 事实补充（实测，非用户选择）
+
+- **volatile-only 配置变更不重挂插件**（`cordis-plugin-loader/lib/index.js:382-424`）⇒ 配置必须惰性读取 + 监听 `loader/volatile-update`。
+- **`agent/created` 监听器会被宿主 await** ⇒ 在监听器里做权威 `resolveByPath` 可保证"首轮工具表即正确"。
+- **`tools.restrict` 在安装与释放两侧都 emit `tools/change`** ⇒ 必须差异式安装，否则合并闸门永久脏。
+- **`venv` 三叶子存在同类陈旧问题**（apply 期快照）：属既有缺陷，本特性不夹带修（设计 R8）。

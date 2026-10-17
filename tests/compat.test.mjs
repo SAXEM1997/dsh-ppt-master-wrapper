@@ -301,7 +301,8 @@ test('挂载入口 = 本插件根 index.js（路径含 /index.js、非 lib/index
  * 真实包本机实测形态：`type:'module'` + `main:'lib/index.cjs'`（故替身一律 `main→.cjs`；
  * 现有 stub 多为包根 `main:'index.mjs'`、superpowers-dsh stub 为 `lib/index.js`，
  * 两形态均非替身所需）；CJS 命名空间**可调用**（`module.exports = Schema`）且含
- * `object/string/boolean/union/const`，无 `z`/`default` 键；`.default()/.description()/
+ * `object/string/boolean/union/const/array`，无 `z`/`default` 键（`array` 是 2026-10-18
+ * 工具可见范围特性新增的消费面：`scope.workspaceIds` 为 `z.array(z.string())`）；`.default()/.description()/
  * .volatile()` 链式；`.volatile()` 二次标注抛 `TypeError("volatile schema is already
  * wrapped")`；按 schema 校验（`schema({})`）产出的 volatile 叶为带 `.get()` 的引用对象；
  * `toJSON()` 返回 `{uid, refs}` 引用图（顶层无 dict，叶在 `refs` 内）。
@@ -350,6 +351,10 @@ const SCHEMASTERY_STUB = [
   "    if (typeof value !== 'boolean') throw new TypeError('stub schemastery: boolean expected');",
   "  } else if (schema.type === 'string') {",
   "    if (typeof value !== 'string') throw new TypeError('stub schemastery: string expected');",
+  "  } else if (schema.type === 'array') {",
+  "    if (!Array.isArray(value)) throw new TypeError('stub schemastery: array expected');",
+  '    // 逐项按元素 schema 校验（元素不标 volatile，故不产生引用对象）。',
+  '    for (const item of value) parse(schema.list[0], item);',
   '  }',
   '  return schema.meta.volatile === true ? { get: () => value } : value;',
   '}',
@@ -380,6 +385,7 @@ const SCHEMASTERY_STUB = [
   "  boolean: () => Schema('boolean'),",
   "  union: (list) => Schema('union', { list }),",
   "  const: (value) => Schema('const', { value }),",
+  "  array: (item) => Schema('array', { list: [item] }),",
   '});',
   '',
   'module.exports = Schema;',
@@ -886,8 +892,9 @@ test('runCompatCheck §7.7 五项: ns.Config volatile(恰 3 + 另含非 volatile
         `compat 输出缺 ${marker} 断言行（实际 notes:\n${joined}）`,
       );
     }
-    // ① 遍历口径与计数落在断言行内：volatile 恰 3 **且**另含非 volatile 叶（防自我印证）
-    assert.match(joined, /§7.7①[^\n]*volatile[^\n]*3/);
+    // ① 遍历口径与计数落在断言行内：volatile 恰 5（venv 三 + scope 两）**且**另含非
+    // volatile 叶（防自我印证）。
+    assert.match(joined, /§7.7①[^\n]*volatile[^\n]*5/);
     assert.match(joined, /§7.7①[^\n]*非 volatile 叶/);
     // 默认值交叉锚定（携入自 Task 5 审查）：schema 校验默认值 ≡ 注入袋缺省默认值
     assert.ok(
