@@ -319,7 +319,13 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | 编号 | 严重度 | 裁决 |
 |---|---|---|
 | GR2-1 | P1 | **采纳**：`denyAll` 不得在 global 分支清零——它承载"能力缺失"这一**粘性**事实，清零会让 `global → selected` 一圈把 fail-closed 反转成 fail-open。改为 `state.capabilityLost`（粘性结论）+ 每次进入 selected 时 `denyAll = capabilityLost`；global 分支只挂起与释放层/guard（`verdict` 已被 `suspended` 短路）。`ctx.inject` 抛错改为**保持 guard + 全拒**，与"宿主无 `ctx.inject`"同口径 |
-| GR2-2 | P2 | **采纳**：复检必须"有界且可自愈"——`MAX_RETRIES = 3`，且只有**完整成功**的一轮（注册表读成功 + agent 列表读成功）才清零计数。此前每轮清零会退化成 1Hz 轮询 |
+| GR2-2 | P2 | **采纳**：复检必须"有界且可自愈"——`MAX_RETRIES = 3`，且只有**完整成功**的一轮（注册表读成功 + agent 列表读成功）才清零计数。此前每轮清零会退化成 1Hz 轮询。**（第 3 轮 GR3-1 修正：轮级清零口径仍漏判定级，见下表）** |
 | GR2-3 | P2 | **采纳**：加代际令牌 `state.epoch`（`syncMode` 挂起与 `dispose` 时自增），`judgeOne` 在 `await` 回来后校验——否则在飞轮次会把刚释放的层装回去（global 下该会话继续被隐藏；`dispose` 后留下永不释放的层） |
 | GR2-4 | P2 | **采纳**：§7.7⑦ 探针补两个盲点——`guard()` 返回 `undefined` 必须报 problem（此前静默通过）；新增**正向路径**：在真 `agent` 作用域里实跑 `tools.restrict({deny})` 并断言返回可调用 disposer（依赖可选包 `@deepseek-ai/dsh-scope`，缺失只记 note） |
 | GR2-5 | P2 | **采纳**：客户端 F8/F12 补回归用例（`state:'error'` 文案分支、`workspaceHolder` 同代引用稳定 + 换代换引用） |
+### Gate 3 第 3 轮裁决
+
+| 编号 | 严重度 | 裁决 |
+|---|---|---|
+| GR3-1 | P1 | **采纳（GR2-2 的修正案）**：复检额度改为**按 key 记账、按该 key 自己的结果清零**——`agents-list` 在读成功的一轮清零；agent 额度只在判定**不再是 `unresolved`** 时清零（`judgeOne`）。GR2-2 的"整轮成功才清零"只覆盖轮级失败（`registry.list` / `agents.list` 抛错），判定级 `unresolved`（cwd 被删 ⇒ realpath ENOENT；挂载点挂死 ⇒ 1500ms 超时）下整轮照样"成功"，额度每轮归零 ⇒ 无界轮询，且每个未决 agent 每轮各排一个 timer ⇒ N 个 agent 轮次按 N^t 放大（实测 2 agent 24s 内 `list()` 调 478 万次）。配套：`scheduleRetry` 同 key 去重（`pendingRetries`，同一波只排一个 timer）。修复后同场景实测 21 次（3 次/轮 × 7 轮）后完全停住；额度耗尽后靠外部事件自愈（`tools/change` / `loader/volatile-update` / `agent/created`，均实测装回层）。**不做指数退避**：去重 + 每 key 上界已把失控增长消灭，退避只改变 3 次复检的间隔分布，却拉长回归测试的收敛窗口，收益不成比例 |
+| GR3-2 | P2 | **采纳**：`installGuard` 自身幂等（`state.releaseGuard !== undefined` 即返回）。GR2-1 把 `ctx.inject` 抛错改为"保持 guard + 全拒"后，激活分支每次 volatile 更新都会重走，若不判重，旧 disposer 被覆盖丢失、宿主 guard 层每次配置编辑 +1 条（实测 3 次更新后 4 条、切 global 仍残留 3 条且每次工具调用都被执行）。修复后实测：3 次 volatile 更新 guard 恒为 1，`inject` 每次仍被重试（自愈语义保留），切 global 归零。测试侧配套把假宿主 guard disposer 从"一刀清空"改为**精确摘除自己**——否则累积型泄漏被静默掩盖 |

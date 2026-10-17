@@ -98,8 +98,11 @@ function makeHost(options = {}) {
   if (canGuard) {
     child.tools.guard = (fn) => {
       calls.guards.push(fn);
+      // 精确摘除**自己这一条**：真宿主 guard 层每条 disposer 只回收自己（R3-2 复审证实）。
+      // 若这里一刀 `length = 0`，"重复注册 guard"这类累积型泄漏会被静默掩盖。
       return () => {
-        calls.guards.length = 0;
+        const index = calls.guards.indexOf(fn);
+        if (index >= 0) calls.guards.splice(index, 1);
       };
     };
   }
@@ -728,6 +731,99 @@ test('R2-2: 持续失败时复检有上限（不退化成 1Hz 轮询）', async 
 
   assert.equal(calls, settled, `复检必须停下，但仍在增长：${settled} → ${calls}`);
   assert.ok(settled <= 12, `3.6s 内的 list() 调用应有上限，实际 ${settled} 次`);
+  handle.dispose();
+});
+
+test('R3-1: 判定级 unresolved 的复检有界（多 agent 不指数放大）', async () => {
+  // 场景：注册表与 agents.list 都健康，唯独 resolveByPath 持续抛错
+  // （现实触发：cwd 被删 ⇒ realpath ENOENT；挂载点挂死 ⇒ 1500ms 超时）。
+  // 修复前：整轮"成功"清零所有额度 ⇒ 每轮每个未决 agent 各排一个 timer，
+  // 2 个 agent 实测 6s 内 list() 调 189 次、24s 达 478 万次（N^t 放大）。
+  const a1 = makeAgent({ id: 'a1', cwd: '/gone/1' });
+  const a2 = makeAgent({ id: 'a2', cwd: '/gone/2' });
+  const hostCase = makeHost({
+    agents: [a1, a2],
+    resolve: async () => {
+      throw new Error('ENOENT: realpath');
+    },
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  // 复检波次 ~1s 一波，每 key 额度 MAX_RETRIES=3，~3.5s 内必须全部耗尽停下。
+  await new Promise((resolve) => setTimeout(resolve, 4200));
+  await handle.whenIdle();
+  const settled = hostCase.calls.listCalls;
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await handle.whenIdle();
+
+  assert.equal(
+    hostCase.calls.listCalls,
+    settled,
+    `复检必须停下，但仍在增长：${settled} → ${hostCase.calls.listCalls}`,
+  );
+  // 修复后上界：每轮 3 次 list()（roundOnce 1 + judgeOne×2），轮次 ≤ 初始 1 + 3 波 × 2 = 7 ⇒ ≤ 21；
+  // 修复前 4.2s 时已 >48。40 给实现留裕量、同时远低于指数失控。
+  assert.ok(settled <= 40, `2 个未决 agent 的复检应有界，实际 ${settled} 次 list()`);
+  handle.dispose();
+});
+
+test('R3-1: unresolved 额度按判定清零——判定恢复后额度回来（外部事件自愈）', async () => {
+  let broken = true;
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    resolve: async (path) => {
+      if (broken) throw new Error('ENOENT: realpath');
+      return W1; // 恢复后解析到**已选**工作区 ⇒ 可见 ⇒ 释放层
+    },
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  // 首轮 unresolved ⇒ 不可见 ⇒ 装层
+  assert.equal(record.installed, 1, 'unresolved 按不可见处理，先装层');
+
+  // resolve 恢复后靠外部事件（tools/change）重判：resolved 也是"判出来了" ⇒ 清额度。
+  broken = false;
+  await hostCase.emit('tools/change', []);
+  await handle.whenIdle();
+  assert.equal(record.released, 1, '重判可见 ⇒ 释放层');
+
+  // 额度已清零 ⇒ 再出一次 unresolved 仍应有复检（不会因早前耗尽而永久哑掉）。
+  broken = true;
+  const before = hostCase.calls.listCalls;
+  await hostCase.emit('tools/change', []);
+  await handle.whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await handle.whenIdle();
+  assert.ok(
+    hostCase.calls.listCalls > before + 1,
+    `判定级失败后仍应有有界复检（额度按判定结果清零）：${before} → ${hostCase.calls.listCalls}`,
+  );
+  handle.dispose();
+});
+
+test('R3-2: inject 抛错期间反复 volatile 更新不得累积 guard', async () => {
+  const { agent } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent }] });
+  hostCase.ctx.inject = () => {
+    throw new Error('inject boom');
+  };
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.guards.length, 1, 'inject 抛错 ⇒ fail-closed 装 guard');
+
+  // selected→selected（只改 workspaceIds）：激活分支每次都会重走，guard 必须幂等。
+  for (let i = 0; i < 3; i += 1) {
+    await hostCase.emit('loader/volatile-update', [['scope', 'workspaceIds']]);
+  }
+  assert.equal(hostCase.calls.guards.length, 1, 'guard 不得累积（修复前 3 次更新后是 4 条）');
+
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  assert.equal(hostCase.calls.guards.length, 0, 'global 释放唯一的 guard，宿主 guard 层零残留');
   handle.dispose();
 });
 
