@@ -66,7 +66,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 710 tests / 708 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 710/710 |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 711 tests / 709 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 711/711 |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -100,7 +100,7 @@
 | `v6.7.0-r2` | UltraReview 两轮修复：规则③自触发锚定排除、push 部分失败 tag 补推、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生、dry-run 状态写门控 |
 | `v6.7.0-r3` | venv 解释器隔离 + 插件页配置卡片（客户端半边）+ GitHub 发布面（双语 README/NOTICE/logo） |
 | `v6.7.1` | 上游同步（规则①）：vendor v6.7.1 逐字节 |
-| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670（r1 时点；现 710） |
+| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670（r1 时点；现 711） |
 | （未发版）| `applyVersionLinkage` 常量联动（#3，PR #8）；CI + 共享 stub SDK 构造器（#4，PR #9）——仓库工具链变更，不改插件产物，不 bump |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、

@@ -22,7 +22,7 @@ jobs:
       - name: Build stub SDK tree
         run: node tests/helpers/stub-sdk.mjs .ci-stub
 
-      # 预期基线：710 tests / 708 pass / 0 fail / 2 skip（2026-10-18 本地 CI 等价环境实测）。
+      # 预期基线：711 tests / 709 pass / 0 fail / 2 skip（2026-10-18 本地 CI 等价环境实测）。
       # 2 条 skip 是显式声明（@deepseek-ai/dsh-tools 经包自身解析不可达——本包零依赖，
       # stub 树不经包解析链，故 skip 非失败）。失败时 TAP 输出逐用例定位。
       - name: Run test suite (stub SDK)

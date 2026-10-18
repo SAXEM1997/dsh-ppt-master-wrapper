@@ -221,7 +221,7 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | 版本/骨架 | `tests/skeleton.test.mjs`（既有） | `6.7.1-r1` 满足 `upstream + -rN`（既有断言） |
 | 版本一致性 | `tests/client-half.test.mjs`（既有断言） | 卡片 `PLUGIN_VERSION` ≡ `package.json.version`、`UPSTREAM_VERSION` ≡ vendor `SKILL.md`（既有，无需新增） |
 
-全量命令：`node --test tests/*.test.mjs`（本机 Node 22 下目录参数失效）。基线 577/577（17s，**设计时点快照**；当前 710/710，CI 等价环境 710/708——2 条 skip 是显式声明）。
+全量命令：`node --test tests/*.test.mjs`（本机 Node 22 下目录参数失效）。基线 577/577（17s，**设计时点快照**；当前 711/711，CI 等价环境 711/709——2 条 skip 是显式声明）。
 
 **人工验收**：① 默认 `global` 下本会话仍见 3 工具；② 切 `selected` 且只勾 `ppt-master` 工作区 → 本会话仍见（**首轮即见**）；③ 在 `hermes` 工作区新开会话 → 工具表无这 3 条；④ 卡片勾选保存后不重启即生效。
 

@@ -216,3 +216,70 @@ test('stub-sdk: M1 相对路径攻击回归——buildStubSdk(\'node_modules\') 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('stub-sdk: M2b execute 行使 guard 拒绝语义——拒绝半零执行 + isError，放行半恰一次执行', async () => {
+  const sdk = await makeStubSdk();
+  try {
+    const base = `file://${sdk.modules}/`;
+    const { Context } = await import(`${base}@deepseek-ai/cordis/index.mjs`);
+    const { ToolRuntime } = await import(`${base}@deepseek-ai/dsh-tools/index.mjs`);
+    const ctx = new Context();
+    new ToolRuntime(ctx);
+
+    // 注册探针工具（经 traceable 代理，与探针同路径），工具体计数。
+    let bodyRuns = 0;
+    ctx.tools.register({
+      name: 'stub-guard-probe',
+      description: 'M2b 探针',
+      parameters: { type: 'object', properties: {} },
+      output: { render: (args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      execute: async () => {
+        bodyRuns += 1;
+        return { ok: true };
+      },
+    });
+
+    const execShape = { callId: 'c1', name: 'stub-guard-probe', arguments: {} };
+
+    // 拒绝半：guard 返回字符串 ⇒ isError、error.message 逐字、content 块前缀、工具体零执行。
+    // 注意 guard 与 execute 是**两次独立的 ctx.tools 读取**（两只 traceable 代理）——
+    // guards 存模块级容器才跨代理可见（M2b 陷阱的回归锁）。
+    const denyGuard = ctx.tools.guard(() => 'scope: not visible');
+    try {
+      const denied = await ctx.tools.execute(execShape);
+      assert.equal(denied.isError, true, 'guard 返回字符串 ⇒ isError=true');
+      assert.equal(denied.error?.message, 'scope: not visible', '拒绝理由逐字一致');
+      assert.deepEqual(
+        denied.content,
+        [{ type: 'text', text: 'Error: scope: not visible' }],
+        '拒绝结果的 content 块形态',
+      );
+      assert.equal(bodyRuns, 0, '拒绝必须短路调度——工具体零执行');
+    } finally {
+      denyGuard();
+    }
+
+    // 放行半：guard 返回 undefined ⇒ 非错误、value 回传、content 经 render、工具体恰一次。
+    const allowGuard = ctx.tools.guard(() => undefined);
+    try {
+      const allowed = await ctx.tools.execute(execShape);
+      assert.equal(allowed.isError, false, 'guard 返回 undefined ⇒ 放行');
+      assert.deepEqual(allowed.value, { ok: true }, '工具体返回值回传');
+      assert.deepEqual(
+        allowed.content,
+        [{ type: 'text', text: '{"ok":true}' }],
+        'content 经 definition.output.render 产出',
+      );
+      assert.equal(bodyRuns, 1, '放行后工具体恰执行一次');
+    } finally {
+      allowGuard();
+    }
+
+    // 兜底：guard 全退订后未知工具名 ⇒ unknown tool 错误（不抛、走 isError 通道）。
+    const unknown = await ctx.tools.execute({ callId: 'c2', name: 'no-such-tool', arguments: {} });
+    assert.equal(unknown.isError, true);
+    assert.equal(unknown.error?.message, 'unknown tool: no-such-tool');
+  } finally {
+    await sdk.cleanup();
+  }
+});
