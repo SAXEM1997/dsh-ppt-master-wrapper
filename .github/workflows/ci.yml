@@ -22,7 +22,7 @@ jobs:
       - name: Build stub SDK tree
         run: node tests/helpers/stub-sdk.mjs .ci-stub
 
-      # 预期基线：688 tests / 686 pass / 0 fail / 2 skip（2026-10-18 本地 CI 等价环境实测）。
+      # 预期基线：711 tests / 709 pass / 0 fail / 2 skip（2026-10-18 本地 CI 等价环境实测）。
       # 2 条 skip 是显式声明（@deepseek-ai/dsh-tools 经包自身解析不可达——本包零依赖，
       # stub 树不经包解析链，故 skip 非失败）。失败时 TAP 输出逐用例定位。
       - name: Run test suite (stub SDK)
@@ -41,3 +41,28 @@ jobs:
       # verify-plugin 不在 CI 跑：其第⑥项全量逐字节比对必须显式 --upstream 比对树
       # （真实上游解压树，GitHub runner 无缓存，缺省即 fail-loud exit 1）；该逻辑已由
       # tests/verify-plugin.test.mjs 用 fixtures 覆盖。本地/同步流程仍照常执行。
+
+  # ─── Node 20 兼容性补充验证（engines >= 20.0.0 防漂移，issue M29）────────
+  # 本 job 是 package.json `engines.node: ">=20.0.0"` 声明的兼容性补充验证，
+  # **不是必需检查**；main 分支保护的必需状态检查仍是上方的 `test`（无矩阵后缀）。
+  # 目的：现有 `test` job 只跑 Node 22，无法发现「代码用到 Node 21+/22+ 才有的 API」
+  # 这类 engines 漂移；此处以 Node 20 复跑同一测试套件，漂移即红灯。
+  # 注意：不得把本 job 改名/合并进 `test` 的 matrix——check 名一旦变为
+  # `test (20)` / `test (22)`，必需检查将永远无法满足。
+  node20-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 与 `test` job 同一 stub 构造路径（详见上方注释），保证两侧测试环境同形态。
+      - name: Build stub SDK tree
+        run: node tests/helpers/stub-sdk.mjs .ci-stub
+
+      - name: Run test suite (stub SDK, Node 20)
+        env:
+          DSH_NODE_MODULES: ${{ github.workspace }}/.ci-stub/node_modules
+        run: node --test tests/*.test.mjs

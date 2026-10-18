@@ -7,6 +7,7 @@ __pycache__/
 sync-report.txt
 .superpowers/
 node_modules/
+.ci-stub/
 .DS_Store
 *.log
 *.tmp

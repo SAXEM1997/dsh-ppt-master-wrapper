@@ -121,6 +121,8 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 
 `selected` 下：会话按「工作区 `sessionIds` 成员 → 会话 `cwd` 规范路径」两级判定归属，命中且 id 在名单里才可见——**不属于任何工作区的会话也看不到**。降级口径（明示收窄意图，答不出来时不静默放宽）：缺判定服务时按最严口径拒绝并 `console.warn`；注册表瞬时读失败维持上一轮判定；宿主缺 `tools.restrict` 时退化为仅执行层拒绝。配置走卡片的模式单选 + 工作区勾选列表（清单来自宿主 `workspaces` 服务），保存即生效。
 
+宿主下限：`scope.mode=selected` 除配置卡片外，还依赖宿主注入 `agents` / `workspaceRegistry` 服务与 `tools.restrict` / `tools.guard` 能力；缺任一时按上述降级口径拒绝或降级（不静默放宽），不影响 `global` 模式与其余功能。
+
 已知限制：只收窄**工具**不收窄技能条目；判定基于会话创建时的 `cwd`；已删除工作区的 id 被忽略；释放限制层时宿主抛错则该层可能残留（重启可清）；市场截图 `assets/screenshot-1-config-card.png` 待重制（卡片新增了可见范围节）。
 
 ### profile patch（等价通道）
@@ -187,9 +189,10 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（688 用例）
+├── tests/                            # node:test 全套（711 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
-└── README / AGENTS.md / NOTICE / LICENSE
+├── .github/                          # CI 与 issue/PR 模板
+└── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
 ```
 
 ## 开发流程（GitHub Flow）
@@ -200,11 +203,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 688/688）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 711/711）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 688/686/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 711/709/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 

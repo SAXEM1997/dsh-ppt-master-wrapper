@@ -10,7 +10,7 @@ Closes #
 
 ## 验证 / Verification
 
-- [ ] `node --test tests/*.test.mjs` → **577/577**（贴实际输出）
+- [ ] `node --test tests/*.test.mjs` → **711/711**（贴实际输出；CI 等价环境为 711/709，2 条 skip 是显式声明）
 - [ ] `node scripts/check-dsh-compat.mjs` → **OK**（spec §7.7 六项齐，warnings 0）
 - [ ] `node scripts/verify-plugin.mjs --upstream <缓存目录>` → **problems 0**
 - [ ] 未触碰 `skills/ppt-master/**`（上游 vendor 树逐字节）

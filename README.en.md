@@ -120,6 +120,8 @@ The three `ppt_master_*` tools are registered **globally** by default. If most o
 
 Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible**. Degradation (an explicit narrowing intent is never silently widened): missing judgement services → deny under the strictest reading plus one `console.warn`; a transient registry read failure keeps the previous round's judgement; a host without `tools.restrict` degrades to execution-layer denial only. Configure via the card's mode radio + workspace checklist (fed by the host `workspaces` service); saving takes effect immediately.
 
+Host floor: besides the config card, `scope.mode=selected` also depends on the host injecting the `agents` / `workspaceRegistry` services and the `tools.restrict` / `tools.guard` capabilities; when any is missing the scope falls back or denies under the readings above (never silently widened), with no impact on `global` mode or the rest of the plugin.
+
 Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; ids of deleted workspaces are ignored; a restriction layer may linger if the host throws during release (a restart clears it); the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
 
 ### Profile patch (the equivalent channel)
@@ -186,9 +188,10 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (688 cases)
+├── tests/                            # full node:test suite (711 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
-└── README / AGENTS.md / NOTICE / LICENSE
+├── .github/                          # CI and issue/PR templates
+└── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
 ```
 
 ## Development flow (GitHub Flow)
@@ -199,11 +202,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (688/688 with a real SDK on the machine)
+node --test tests/*.test.mjs          # full suite (711/711 with a real SDK on the machine)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 688/686/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 711/709/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 

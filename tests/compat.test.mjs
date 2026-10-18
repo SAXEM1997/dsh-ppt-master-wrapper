@@ -70,6 +70,15 @@ async function makeTree(prefix) {
 }
 
 /**
+ * 造一个「真 SDK 安装形态」的 node_modules 夹具（M10 判据：命中须含 @deepseek-ai
+ * 子目录——裸空 node_modules 不再构成命中）。仅替换原裸 mkdir 的建目录方式。
+ */
+async function mkSdkModules(dir) {
+  await mkdir(dir, { recursive: true });
+  await mkdir(join(dir, '@deepseek-ai'), { recursive: true });
+}
+
+/**
  * T3 skills-fixture 的正例子集（剔除 broken——完整根含 broken/ 会触发 provider
  * fail-loud，不适合作 compat 全绿基线）：只拷贝 alpha 的临时树。
  */
@@ -90,7 +99,7 @@ test('resolveDshModules: ① explicit 参数命中 → via explicit（env 其余
     const profileDir = join(tree.base, 'profile');
     const home = join(tree.base, 'home');
     for (const dir of [explicit, level2, join(profileDir, 'node_modules'), join(home, 'profiles', 'web', 'node_modules'), join(home, 'profiles', 'node_modules')]) {
-      await mkdir(dir, { recursive: true });
+      await mkSdkModules(dir);
     }
     const resolved = resolveDshModules(explicit, {
       DSH_NODE_MODULES: level2,
@@ -112,7 +121,7 @@ test('resolveDshModules: ② DSH_NODE_MODULES 命中 → via DSH_NODE_MODULES（
     const profileDir = join(tree.base, 'profile');
     const home = join(tree.base, 'home');
     for (const dir of [level2, join(profileDir, 'node_modules'), join(home, 'profiles', 'web', 'node_modules'), join(home, 'profiles', 'node_modules')]) {
-      await mkdir(dir, { recursive: true });
+      await mkSdkModules(dir);
     }
     const resolved = resolveDshModules(undefined, {
       DSH_NODE_MODULES: level2,
@@ -131,7 +140,7 @@ test('resolveDshModules: ② 空串或不存在 → 探测后级（env 空值视
   const tree = await makeTree('compat-l2miss-');
   try {
     const profileDir = join(tree.base, 'profile');
-    await mkdir(join(profileDir, 'node_modules'), { recursive: true });
+    await mkSdkModules(join(profileDir, 'node_modules'));
     for (const emptyish of ['', join(tree.base, 'no-such')]) {
       const resolved = resolveDshModules(undefined, {
         DSH_NODE_MODULES: emptyish,
@@ -148,7 +157,7 @@ test('resolveDshModules: ③ DSH_PROFILE_DIR/node_modules 命中 → via DSH_PRO
   const tree = await makeTree('compat-l3-');
   try {
     const profileDir = join(tree.base, 'profile');
-    await mkdir(join(profileDir, 'node_modules'), { recursive: true });
+    await mkSdkModules(join(profileDir, 'node_modules'));
     const resolved = resolveDshModules(undefined, { DSH_PROFILE_DIR: profileDir });
     assert.equal(resolved.path, join(profileDir, 'node_modules'));
     assert.equal(resolved.via, 'DSH_PROFILE_DIR');
@@ -161,7 +170,7 @@ test('resolveDshModules: ④ DSH_HOME/profiles/$DSH_PROFILE/node_modules 命中 
   const tree = await makeTree('compat-l4-');
   try {
     const home = join(tree.base, 'home');
-    await mkdir(join(home, 'profiles', 'web', 'node_modules'), { recursive: true });
+    await mkSdkModules(join(home, 'profiles', 'web', 'node_modules'));
     const resolved = resolveDshModules(undefined, { DSH_HOME: home, DSH_PROFILE: 'web' });
     assert.equal(resolved.path, join(home, 'profiles', 'web', 'node_modules'));
     assert.equal(resolved.via, 'DSH_HOME/DSH_PROFILE');
@@ -174,8 +183,8 @@ test('resolveDshModules: ④ DSH_PROFILE 缺失时该级跳过（不拼出 undef
   const tree = await makeTree('compat-l4miss-');
   try {
     const home = join(tree.base, 'home');
-    await mkdir(join(home, 'profiles', 'web', 'node_modules'), { recursive: true });
-    await mkdir(join(home, 'profiles', 'node_modules'), { recursive: true });
+    await mkSdkModules(join(home, 'profiles', 'web', 'node_modules'));
+    await mkSdkModules(join(home, 'profiles', 'node_modules'));
     const resolved = resolveDshModules(undefined, { DSH_HOME: home });
     assert.equal(resolved.via, 'DSH_HOME/profiles', '无 DSH_PROFILE → 第④级不可构成，第⑤级命中');
   } finally {
@@ -187,9 +196,9 @@ test('resolveDshModules: ⑤ DSH_HOME/profiles/node_modules 命中 → via DSH_H
   const tree = await makeTree('compat-l5-');
   try {
     const home = join(tree.base, 'home');
-    await mkdir(join(home, 'profiles', 'node_modules'), { recursive: true });
+    await mkSdkModules(join(home, 'profiles', 'node_modules'));
     // 一个孤立 profile 也存在——第五级命中即用，轮不到无序扫描报多候选
-    await mkdir(join(home, 'profiles', 'p1', 'node_modules'), { recursive: true });
+    await mkSdkModules(join(home, 'profiles', 'p1', 'node_modules'));
     const resolved = resolveDshModules(undefined, { DSH_HOME: home });
     assert.equal(resolved.path, join(home, 'profiles', 'node_modules'));
     assert.equal(resolved.via, 'DSH_HOME/profiles');
@@ -204,7 +213,7 @@ test('resolveDshModules: 有序命中即用——③④⑤同时存在时第③�
     const profileDir = join(tree.base, 'profile');
     const home = join(tree.base, 'home');
     for (const dir of [join(profileDir, 'node_modules'), join(home, 'profiles', 'web', 'node_modules'), join(home, 'profiles', 'node_modules')]) {
-      await mkdir(dir, { recursive: true });
+      await mkSdkModules(dir);
     }
     const resolved = resolveDshModules(undefined, {
       DSH_PROFILE_DIR: profileDir,
@@ -226,7 +235,7 @@ test('resolveDshModules: 无序扫描 >1 命中 → throw 列出全部候选要�
     const home = join(tree.base, 'home');
     const first = join(home, 'profiles', 'p1', 'node_modules');
     const second = join(home, 'profiles', 'p2', 'node_modules');
-    for (const dir of [first, second]) await mkdir(dir, { recursive: true });
+    for (const dir of [first, second]) await mkSdkModules(dir);
     assert.throws(
       () => resolveDshModules(undefined, { DSH_HOME: home }),
       (error) => {
@@ -247,7 +256,7 @@ test('resolveDshModules: 无序扫描恰 1 命中 → 用之（via scan）', asy
   try {
     const home = join(tree.base, 'home');
     const only = join(home, 'profiles', 'only-one', 'node_modules');
-    await mkdir(only, { recursive: true });
+    await mkSdkModules(only);
     const resolved = resolveDshModules(undefined, { DSH_HOME: home });
     assert.equal(resolved.path, only);
     assert.equal(resolved.via, 'scan');
@@ -275,7 +284,7 @@ test('resolveDshModules: env 无 DSH_HOME 但 explicit 命中 → 正常返回�
   const tree = await makeTree('compat-nohome-');
   try {
     const explicit = join(tree.base, 'nm');
-    await mkdir(explicit, { recursive: true });
+    await mkSdkModules(explicit);
     const resolved = resolveDshModules(explicit, {});
     assert.equal(resolved.via, 'explicit');
   } finally {

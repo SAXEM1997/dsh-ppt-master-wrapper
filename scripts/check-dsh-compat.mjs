@@ -13,7 +13,9 @@
  *     前级命中不再探测后级、不报多候选）；第五级不存在时回落**无序扫描**
  *     $DSH_HOME/profiles/<star>/node_modules（唯一入口）：>1 命中 → throw 列出全部
  *     候选要求显式指定；恰 1 → 用之；0 → 全失败报错。「多候选报错」仅适用于
- *     无序扫描场景。
+ *     无序扫描场景。命中判据（M10，单轮严格）：目录存在**且**其下有 @deepseek-ai
+ *     子目录（真 SDK 安装形态，note 附实际包计数）——空 node_modules 不构成命中，
+ *     不再遮蔽后级/扫描里的真 SDK；全失败时 fail-loud 报「五级均未命中」。
  *  2. 动态 import 定位到的 SDK：@deepseek-ai/{cordis,dsh-system-prompt,dsh-skill,
  *     dsh-tools}（入口经各包 package.json exports["."]/main 解析，file URL 导入，
  *     与 Node 自身解析同构）。dsh-system-prompt 是真实 ToolRuntime 构造函数的
@@ -120,12 +122,15 @@ const ENTRY_SKILL_NAME = 'ppt-master-env';
 /**
  * ① 的遍历口径锚：Config **五**叶子 volatile（venv 三 + scope 两），**且**必须另有 ≥1 个非 volatile 叶。
  *
- * 本机宿主实测：`Config.toJSON()` 为 `{uid, refs}` 引用图（**顶层无属性对象**），
- * 9 个 refs = 5 volatile（venv 的 `enabled` boolean 叶、`path` string 叶、
- * `oldPathPolicy` union 叶；scope 的 `mode` union 叶、`workspaceIds` list 叶）
- * + 4 非 volatile（root/venv/scope 三个 object 容器 + `oldPathPolicy` 的两个 const 叶；
- * scope 的 `mode` 两个 const 叶与 `workspaceIds` 的 string 叶随其父叶一并计入 volatile 侧，
- * 口径由下方动态遍历决定，此处只记录期望总数）。
+ * 本机宿主实测（以实跑 `Config.toJSON()` 为准，2026-10-18 复核）：引用图为
+ * `{uid, refs}`（**顶层无属性对象**），refs 共 **13** 项 = 5 volatile + 8 非 volatile：
+ * - 5 volatile：venv 的 `enabled` boolean 叶、`path` string 叶、`oldPathPolicy`
+ *   union，scope 的 `mode` union、`workspaceIds` array——后三个在引用图里是带
+ *   `list` 的**容器节点**形态，动态遍历按 `meta.volatile === true` 将它们计入
+ *   volatile 侧（与下方 VOLATILE_LEAF_COUNT=5 的字段级口径一致）；
+ * - 8 非 volatile：root/venv/scope 三个 object 容器 + `oldPathPolicy`/`mode`
+ *   两 union 的共 4 个 const 子叶 + `workspaceIds` 的 1 个 string 元素叶——
+ *   即「非 volatile **叶**」恰 5 个（实跑 note 同口径报告）。
  * 只数 volatile 而不要求非 volatile 叶在场，会让替身/真实包"把所有叶都标 volatile"
  * 时同样全绿——即自我印证。
  */
@@ -189,10 +194,33 @@ function isDirectory(path) {
 }
 
 /**
+ * 命中判据（M10）：目录存在**且**其下有 `@deepseek-ai` 作用域子目录——
+ * 真 SDK 安装的实际形态。仅目录存在的空 node_modules 不构成命中，
+ * 不再遮蔽后级/扫描里的真 SDK 安装。
+ */
+function isSdkModulesDir(path) {
+  return isDirectory(path) && isDirectory(join(path, '@deepseek-ai'));
+}
+
+/**
+ * 定位命中的证据（M10）：`@deepseek-ai` 作用域内的包计数（子目录或符号链接）。
+ * 读不到（无该作用域）按 0 计——note 以此让「定位成功」名副其实。
+ */
+function countDshScopePackages(modules) {
+  try {
+    return readdirSync(join(modules, '@deepseek-ai'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * 无序扫描 $DSH_HOME/profiles 下一级 profile 的 node_modules。
  *
  * 「多候选 → 报错列出候选」仅适用于本扫描（有序各级天然唯一）。返回结果按路径
- * 字节序排序，报错信息因此确定。
+ * 字节序排序，报错信息因此确定。候选判据与五级一致（{@link isSdkModulesDir}）：
+ * 仅目录存在的空 node_modules 不是候选，不参与「多候选」计数。
  */
 function scanProfileNodeModules(profilesRoot) {
   if (!isDirectory(profilesRoot)) return [];
@@ -200,7 +228,7 @@ function scanProfileNodeModules(profilesRoot) {
   for (const entry of readdirSync(profilesRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const modules = join(profilesRoot, entry.name, 'node_modules');
-    if (isDirectory(modules)) hits.push(resolve(modules));
+    if (isSdkModulesDir(modules)) hits.push(resolve(modules));
   }
   return hits.sort(compareByteOrder);
 }
@@ -214,7 +242,11 @@ function compareByteOrder(left, right) {
  * 定位已安装的 DSH SDK（node_modules 根）。
  *
  * 有序五级，按序探测、命中即用——前级命中不再探测后级、不报多候选（有序优先级
- * 即消歧）。每级判据：目录存在（同步 existsSync）。
+ * 即消歧）。每级判据（M10，单轮严格）：目录存在**且**其下有 `@deepseek-ai`
+ * 子目录（{@link isSdkModulesDir}，真 SDK 安装形态）——仅目录存在的空
+ * node_modules 不构成命中，不再遮蔽后级/扫描里的真 SDK；无序扫描的候选判据
+ * 同步收紧，空目录不参与「多候选」计数。全失败（五级均未命中且扫描 0 命中）
+ * ⇒ fail-loud 报「五级均未命中」。
  *
  * ① explicit 参数（CLI --dsh-modules）
  * ② env.DSH_NODE_MODULES
@@ -255,7 +287,7 @@ export function resolveDshModules(explicit, env = {}) {
   for (const [via, path] of levels) {
     if (path === null) continue;
     attempted.push(`  - ${via}: ${path}`);
-    if (isDirectory(path)) return { path: resolve(path), via };
+    if (isSdkModulesDir(path)) return { path: resolve(path), via };
   }
 
   if (home === null) {
@@ -686,7 +718,14 @@ export async function runCompatCheck(options = {}) {
     problems.push(error.message);
     return { problems, warnings, notes, resolved, entry: PLUGIN_ENTRY };
   }
-  notes.push(`SDK 定位: ${resolved.path}（via ${resolved.via}）`);
+  // M10：note 附 @deepseek-ai 作用域实际包计数，让「定位成功」名副其实；计 0 时
+  // 如实标注该目录非 SDK 安装（后续 entryOf 包解析将 fail-loud 点名缺包）。
+  const scopePackages = countDshScopePackages(resolved.path);
+  notes.push(
+    scopePackages > 0
+      ? `SDK 定位: ${resolved.path}（via ${resolved.via}，@deepseek-ai/* 包 ${scopePackages} 个）`
+      : `SDK 定位: ${resolved.path}（via ${resolved.via}，@deepseek-ai/* 包 0 个——目录存在但非 SDK 安装，后续包解析将 fail-loud）`,
+  );
   notes.push(`挂载入口: ${PLUGIN_ENTRY}（本插件根 index.js，非 lib/index.js）`);
 
   // ── 2. 动态导入 SDK 四包（入口经 package.json 解析，import 走可注入函数）──
@@ -767,6 +806,116 @@ export async function runCompatCheck(options = {}) {
         '§7.7⑦ 工具可见范围宿主契约: 真实 ToolRuntime 上 tools.restrict() 在根 ctx 按预期抛 "scoped context"'
           + '（收窄必须装在 agent.ctx）；tools.guard() 在普通 ctx 可安装且返回 disposer',
       );
+    }
+
+    // ── guard 拒绝语义（M2b）：guard 返回 string ⇒ 该次工具调用被拒绝 ──
+    //
+    // scope 特性的全部 fail-closed 兜底押在 SDK 的这条契约上（dsh-tools ToolRuntime
+    // 的 guard 契约：「a returned string denies the execution」——执行管线在调度前取
+    // guardReason(exec)，非 undefined 即以 `Error: <理由>` 物化成 isError 结果）。
+    // 只验证「可安装 + 返回 disposer」从未行使过拒绝，等于没押契约。观察通道按真实
+    // API 取用：优先公开执行入口 `tools.execute()` 端到端（注册探针工具 → 装返回固定
+    // 字符串的 guard → 真实调度一次调用 → 断言被拒、理由逐字一致、工具体零执行；再装
+    // 返回 undefined 的 guard 反向断言放行）；无该公开面时回落公开方法
+    // `tools.guardReason(exec)`；两路皆无（stub 宿主）→ 只记 note（同 dsh-scope 缺席
+    // 的处理），真实 SDK 环境两条路径至少其一必须在场。
+    const GUARD_DENIAL_REASON = 'scope: not visible';
+    const guardChannel = typeof ctxScope.tools.execute === 'function' ? 'execute'
+      : typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null;
+    if (guardChannel === null) {
+      notes.push(
+        '§7.7⑦ guard 拒绝语义未验证：本环境 ToolRuntime 无 execute/guardReason 公开面'
+          + '（拒绝观察通道缺席，真实 SDK 二者至少其一在场）',
+      );
+    } else {
+      const problemsBeforeGuard = problems.length;
+      try {
+        if (guardChannel === 'execute') {
+          let probeBodyRuns = 0;
+          ctxScope.tools.register({
+            name: 'compat-guard-probe',
+            description: 'check-dsh-compat §7.7⑦ 探针工具：以执行计数观测 guard 的拒绝/放行',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+            output: {
+              schema: { type: 'object', properties: { ok: { type: 'boolean' } }, additionalProperties: false },
+              render: (args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+            },
+            execute: async () => {
+              probeBodyRuns += 1;
+              return { ok: true };
+            },
+          });
+          // 拒绝半：返回固定字符串的 guard ⇒ 调用被拒、error.message 逐字一致、工具体零执行。
+          const denyGuard = ctxScope.tools.guard(() => GUARD_DENIAL_REASON);
+          let denied;
+          try {
+            denied = await ctxScope.tools.execute({
+              callId: 'compat-guard-probe',
+              name: 'compat-guard-probe',
+              arguments: {},
+              signal: new AbortController().signal,
+            });
+          } finally {
+            denyGuard();
+          }
+          if (denied?.isError !== true) {
+            problems.push(
+              `§7.7⑦ guard 返回 "${GUARD_DENIAL_REASON}" 未拒绝工具调用（isError=${String(denied?.isError)}）`
+                + '——scope 的 fail-closed 兜底失效',
+            );
+          } else if (denied.error?.message !== GUARD_DENIAL_REASON) {
+            problems.push(
+              `§7.7⑦ guard 拒绝理由不一致: 期望 "${GUARD_DENIAL_REASON}"、实读 ${JSON.stringify(denied.error?.message)}`,
+            );
+          } else if (probeBodyRuns !== 0) {
+            problems.push('§7.7⑦ guard 拒绝后探针工具体仍被执行（拒绝未短路调度）');
+          }
+          // 放行半：返回 undefined 的 guard ⇒ 调用放行、工具体恰执行一次且非错误结果。
+          const allowGuard = ctxScope.tools.guard(() => undefined);
+          let allowed;
+          try {
+            allowed = await ctxScope.tools.execute({
+              callId: 'compat-guard-probe',
+              name: 'compat-guard-probe',
+              arguments: {},
+              signal: new AbortController().signal,
+            });
+          } finally {
+            allowGuard();
+          }
+          if (allowed?.isError === true || probeBodyRuns !== 1) {
+            problems.push(
+              `§7.7⑦ guard 返回 undefined 未放行工具调用（isError=${String(allowed?.isError)}、`
+                + `探针工具体执行 ${probeBodyRuns} 次）`,
+            );
+          }
+          if (problems.length === problemsBeforeGuard) {
+            notes.push(
+              `§7.7⑦ guard 拒绝语义: 返回 "${GUARD_DENIAL_REASON}" 的 guard 经真实 execute() 拒绝了调用`
+                + '（isError=true、error.message 逐字一致、探针工具体 0 次执行）；'
+                + '返回 undefined 的 guard 放行（工具体恰 1 次执行、非错误结果）',
+            );
+          }
+        } else {
+          const denyGuard = ctxScope.tools.guard(() => GUARD_DENIAL_REASON);
+          try {
+            const reason = ctxScope.tools.guardReason({});
+            if (reason !== GUARD_DENIAL_REASON) {
+              problems.push(
+                `§7.7⑦ guardReason 未逐字回报 guard 返回串: 实读 ${JSON.stringify(reason)}`,
+              );
+            } else {
+              notes.push(
+                `§7.7⑦ guard 拒绝语义: 公开方法 guardReason(exec) 逐字回报 guard 返回的 "${GUARD_DENIAL_REASON}"`,
+              );
+            }
+          } finally {
+            denyGuard();
+          }
+        }
+      } catch (error) {
+        problems.push(`§7.7⑦ guard 拒绝语义探针失败: ${firstLine(error)}`);
+      }
     }
 
     // ── 正向路径：在**真 agent 作用域**里实跑一次 restrict ──

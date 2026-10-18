@@ -1857,11 +1857,11 @@ test('宿主第三方更新: 未触碰控件时显示跟随新值且脏集为空
   };
   host.listeners.forEach((listener) => listener());
 
-  // ① 显示**跟随**宿主新值（暂存态不得把三叶全量影子化）。
+  // ① 显示**跟随**宿主新值（暂存态不得把五叶全量影子化）。
   assert.equal(
     inputOf(rendered.tree).props.value,
     '/HOST_CHANGED',
-    '宿主第三方更新后控件应显示新值（三叶全量种入 staged 会显陈旧）',
+    '宿主第三方更新后控件应显示新值（五叶全量种入 staged 会显陈旧）',
   );
 
   // ② 脏集为空 ⇒ 保存按钮禁用（不得以新 revision 把三个旧值写回）。
@@ -1888,7 +1888,7 @@ test('宿主第三方更新: 未触碰控件时显示跟随新值且脏集为空
   // S5 覆盖：宿主**原地改写**同一快照对象内的 `value`（snapshot 与 value 两个引用都不换，
   // 只换内容、revision 也不动）时，卡片仍须跟随。此断言的可证伪性来自**渲染面**：
   // 归一化快照若原样持有宿主 `value` 引用，`publish` 的两侧会同时看到新值 ⇒ 判等恒真、
-  // React 跳过重渲染；按三叶值比较（且读时取拷贝）则世代变化可见。
+  // React 跳过重渲染；按五叶值比较（且读时取拷贝）则世代变化可见。
   // 注：**仅**"显示跟随"本身不足以证伪——宿主对象被别名持有时读值也会跟着变；故本用例
   // 另以 `venv` 读时拷贝的**独立性**断言（见下）承担可证伪性。
   const inPlace = host.snapshot; // 沿用同一快照对象（不换引用）
@@ -1898,7 +1898,7 @@ test('宿主第三方更新: 未触碰控件时显示跟随新值且脏集为空
 
   // S5 覆盖的**如实边界**：上面的原地改写断言在"引用判等"实现下**同样通过**——因为
   // `publish` 的 `previous` 与宿主 `value` 是同一对象，渲染重读 `valueOf` 时也会看到新值，
-  // 该路径无法区分两种判等实现。故 S5 的三叶值比较是**无独立可证伪断言**的加固（严格更安全：
+  // 该路径无法区分两种判等实现。故 S5 的五叶值比较是**无独立可证伪断言**的加固（严格更安全：
   // 一旦后续改为读写时拷贝/不可变快照，引用判等就会漏判世代）；此处如实登记，不谎称已覆盖。
 
   // S7 覆盖：`revision` 非 number（敌意类型）⇒ 收窄为 `undefined`，渲染不抛且透传 undefined。
@@ -2090,6 +2090,51 @@ test('工具可见范围: 名单里已不存在的工作区渲染为 is-missing 
   assert.equal(gone.props.checked, true);
   assert.equal(gone.props.disabled, false, '已勾选的失效 id 必须允许勾掉');
   assert.ok(rendered.text.includes(zh['scope.item.missing']));
+});
+
+test('工具可见范围: 名单基值缺失 ⇒ 勾选框禁用，且不产出 workspaceIds op', async () => {
+  installHookRuntime();
+  const { factory } = loadEntry();
+  const face = factory(makeRequire());
+  // 部分 overlay 快照形态：ready + 可写，但 scope 只带 mode、缺 workspaceIds
+  // （readScope 对缺字段/非全字符串数组一律判 undefined ＝ 名单基值缺失）。
+  const { form, zh, rendered } = renderScopeCard(face, {
+    snapshot: {
+      status: 'ready',
+      writable: true,
+      revision: 7,
+      value: {
+        venv: { enabled: false, path: '/srv/venv', oldPathPolicy: 'keep' },
+        scope: { mode: 'selected' },
+      },
+    },
+  });
+
+  const box = scopeCheckbox(rendered.tree, 'w1');
+  assert.ok(box !== undefined, '清单服务可用时工作区行应在场');
+  assert.equal(
+    box.props.disabled,
+    true,
+    '名单基值缺失 ⇒ 勾选框必须禁用（与 venv 三控件、模式单选同一范式）',
+  );
+
+  // 程序化直达 onChange（真实 DOM 不派发禁用控件的 change，测试可绕过）也不得
+  // 产出 workspaceIds op：buildSetOps 守卫①是结构性保证，禁用只是第一道闸。
+  box.props.onChange();
+  assert.equal(
+    buttonByLabel(rendered.settle(), zh['action.save']).props.disabled,
+    true,
+    '只暂存名单（基值缺失）⇒ 无 op ⇒ 保存恒灰，不得"可暂存却被静默丢弃"',
+  );
+
+  // 同时改 mode ⇒ 只写 mode op：勾进暂存的 w1 不被写回，名单也不被静默清成 []。
+  scopeRadio(rendered.settle(), 'global').props.onChange();
+  await buttonByLabel(rendered.settle(), zh['action.save']).props.onClick();
+
+  assert.equal(form.mutates.length, 1, 'mode 基值在场，应照常可写');
+  assert.deepEqual(form.mutates[0][0], [
+    { op: 'set', path: ['scope', 'mode'], value: 'global' },
+  ]);
 });
 
 test('工具可见范围: 名单为空且模式为 selected → 提示"谁都看不到"', () => {
