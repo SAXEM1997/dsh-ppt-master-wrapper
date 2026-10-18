@@ -1762,3 +1762,34 @@ test('setup_deps venv: ensureVenv 的 abort rejection 原样传播（不得折�
     restore();
   }
 });
+
+// ─── R8（issue #16）：venv 现读 ───────────────────────────────────
+//
+// setup_deps 是 venv 创建/删除的**唯一**副作用面，其分支判定（系统模式 vs venv 模式）
+// 必须读当前配置而不是 apply 期快照——否则「卡片里打开 venv 后立刻安装依赖」仍会走系统
+// pip，产生用户完全没预期的副作用。系统模式下 `venv.path` 原样回显，是最轻的观测面。
+
+test('setup_deps: venv 引用袋现读——系统模式下 path 换代后 payload 跟随', async () => {
+  const { root, remove } = makeSkillDir();
+  try {
+    const state = { enabled: false, path: '/tmp/setup-deps-venv-a', oldPathPolicy: 'keep' };
+    const bag = {
+      enabled: { get: () => state.enabled },
+      path: { get: () => state.path },
+      oldPathPolicy: { get: () => state.oldPathPolicy },
+    };
+    const tool = createTools({ skillRoots: [root], venv: bag })[2];
+
+    const before = await tool.execute({}, { ...recordingExec().exec });
+    assert.equal(before.venv.enabled, false, '系统模式');
+    assert.equal(before.venv.path, '/tmp/setup-deps-venv-a', 'path 按配置原样回显');
+
+    // 模拟宿主 updateVolatile：引用不变、值原地换代（仍关态，故无真实创建副作用）。
+    state.path = '/tmp/setup-deps-venv-b';
+
+    const after = await tool.execute({}, { ...recordingExec().exec });
+    assert.equal(after.venv.path, '/tmp/setup-deps-venv-b', 'payload 跟随换代（拍平快照则仍为旧值）');
+  } finally {
+    remove();
+  }
+});

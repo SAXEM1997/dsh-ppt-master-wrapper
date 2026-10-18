@@ -90,7 +90,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 
 ## 配置
 
-插件声明原生 cordis Config，两组键、全部叶子 `.volatile()`——经**插件页卡片**保存后走宿主 volatile 快路径，**免重启生效**；经 profile `cordis.patch.yml` 手工编辑则**需重启 DSH**。两通道等价、先写者为准。
+插件声明原生 cordis Config，两组键、全部叶子 `.volatile()`——经**插件页卡片**保存后走宿主 volatile 快路径，**免重启生效**（三个工具每轮现读配置，`venv.*` 与 `scope.*` 同等；唯一例外是合成入口技能 `ppt-master-env` 的正文，它是注册期快照，正文自带脚注指向两个实时工具）；经 profile `cordis.patch.yml` 手工编辑则**需重启 DSH**。两通道等价、先写者为准。
 
 ### 插件页卡片（首选入口）
 
@@ -108,6 +108,7 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 - **容器建议**：把 `venv.path` 显式配置到持久卷（如 `/dsh-home/.ppt-master/venv`）——venv 内符号链接指向容器内绝对路径，跨镜像重建是否可用依赖镜像不变。
 - **损坏恢复**：删除重建（`rm -rf <venv.path>` 后重跑 `setup_deps`）；半成品（缺 `bin/pip3`）同样删除重建，系统缺 ensurepip 时先装 `python3-venv`。
 - **删除安全**：自动删除只碰**带所有权标记**且满足安全条件的旧 venv；`enabled=false` 不删除任何东西；**不要往 venv 目录里放用户数据**。两类孤儿目录（无标记 / 有标记无登记）均需手动 `rm -rf`。
+- **配置热更新**：三个工具每轮现读 `venv.*`，卡片保存即生效（无需重启）；合成入口技能 `ppt-master-env` 的正文是**注册期快照**，改了 `venv.*` 后它仍显示旧的路由指引——以其脚注指向的 `ppt_master_info` / `ppt_master_check_env` 输出为准（重启 DSH 可让正文也刷新）。
 - 完整判定条件与实现细节见 [AGENTS.md](AGENTS.md) §6。
 
 ### 工具可见范围（全局 / 指定工作区）
@@ -148,7 +149,7 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 
 **哪些改动需要重启**：
 
-- 卡片保存配置——**不需要**（volatile 快路径）；
+- 卡片保存配置——**不需要**（volatile 快路径；工具侧立即生效，含 `venv.*`）。合成入口技能 `ppt-master-env` 的**正文**是注册期快照，保存后不会自己改写——正文自带脚注，实时状态以 `ppt_master_info` / `ppt_master_check_env` 为准；
 - 只改 `lib/client.js`——**不需要**（宿主 stat 轮询热更新，约 500ms）；
 - 改 `package.json` 的 `dsh.client` / `exports["./client"]` 声明面、或手工编辑 profile patch——**需要**。
 

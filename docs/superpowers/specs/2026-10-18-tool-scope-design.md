@@ -239,6 +239,12 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 | R8 | **既有缺陷（不属本特性）**：`venv` 三叶子在 apply 期被拍平，卡片改 venv 后工具侧可能仍读旧值（与 R1 同源） | 本特性不动 venv 路径；在交付报告里登记，不夹带修改 |
 | R9 | 市场截图 `assets/screenshot-1-config-card.png` 因卡片新增一节而过时 | **本特性不重制**（需活 GUI），登记为发布后续项（§9） |
 
+> **R8 后续（issue #16，2026-10-18）**：R8 已修——`venv` 三叶子改经 `lib/venv.js` 的
+> `createVenvReader()` **每次现读**，`index.js` 传**原始** `opts.venv` 而非装配期快照，并补
+> `loader/volatile-update` 订阅使「配置无效」在保存时即报。上表 R8 行的「不夹带修」是 scope
+> 那个 PR 的历史结论，**保留不改**。唯一仍为注册期快照的是合成入口技能正文
+> （`lib/skill-provider.js`：宿主技能目录无更新钩子，正文脚注指向两个实时工具）。
+
 ## 9. 文档与发布
 
 - 版本 `6.7.1 → 6.7.1-r1`（`CONTRIBUTING.md`「版本与发布」：仅包装层自身修订 ⇒ 追加 `-rN`；对应澄清 C4）；同步 `package.json`、`lib/client.js` 的 `PLUGIN_VERSION`（`UPSTREAM_VERSION` 仍 `6.7.1`）、双语 README 版本表与版本历史行。

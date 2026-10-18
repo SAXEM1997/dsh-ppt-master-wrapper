@@ -9,12 +9,15 @@
 - **`skills/` 是 vendor 面**：与上游 release **逐字节一致**，受上游 `attribution_guard.py`
   完整性门校验。任何改动（哪怕一行注释）都会破坏同步与校验链——上游更新只能经
   `scripts/sync-upstream.mjs` 进入。
-- **`lib/venv.js` 的 apply 期快照陈旧性（设计 R8）是已登记的未修项**，刻意不动；
-  `venv` 三叶子共享同一语义，修一处必须三处一起修。R8 的编号与登记面在
-  `docs/superpowers/specs/2026-10-18-tool-scope-design.md`（§8「风险与未知」表的 R8 行，
-  :239；另 :32/:257/:272/:273 引作「既有缺陷、不属本特性、不夹带修」）。venv 设计文档
-  （`2026-10-15-ppt-master-venv-config-design.md`）**未登记**该未修项——其中
-  `grep -E 'R8|快照陈旧|apply 期快照'` 零命中，其 R# 序列（R3–R12）属另一套编号。
+- **`venv` 三叶子必须一起现读**（R8，issue #16 已修）：`venv.enabled` / `path` /
+  `oldPathPolicy` 共享同一语义（`effectiveInterpreter` 一次性吃三个），故任何一处改动都要
+  三处同步、且都经 `lib/venv.js` 的 `createVenvReader()` 现读——**不得**在 apply 期拍平成
+  闭包常量（宿主对 volatile-only 变更不重跑 apply，拍平即永久陈旧）。R8 的原始登记面在
+  `docs/superpowers/specs/2026-10-18-tool-scope-design.md`（§8 表 R8 行，:239；该行的
+  「不夹带修」是 scope 那个 PR 的历史结论，**不要改写**；现行状态见该表后的追加注记）。
+  唯一仍为注册期快照的是合成入口技能 `ppt-master-env` 的**正文**（宿主技能目录无更新钩子，
+  正文自带脚注指向两个实时工具）。venv 设计文档
+  （`2026-10-15-ppt-master-venv-config-design.md`）未登记 R8——其 R# 序列（R3–R12）属另一套编号。
 - 工具名清单**只从 `createTools()` 派生**（`toolNamesOf`），不得写第二份字面量。
 - 零 npm 依赖（`package.json` 无 `dependencies`/`devDependencies`），测试与脚本只用
   Node 内置模块。
@@ -39,9 +42,14 @@
 ## 3. DSH 宿主机制备忘（改插件前必读）
 
 - **volatile 语义**：cordis-plugin-loader 对只改 volatile 叶子的配置变更走
-  `_commitVolatile()`——**原地改引用、不重挂插件、不重跑 apply**，随后 emit
-  `loader/volatile-update`。插件必须持有引用容器、每轮 `ref.get()` 现读，并在该事件上
-  重算（scope 特性即此模式，见 `lib/scope-host.js`）。
+  `_commitVolatile()`（`lib/index.js:395`，`updateVolatile()` 在 :415 原地换代后直接
+  `return`）——**原地改引用、不重挂插件、不重跑 apply**，随后 emit `loader/volatile-update`。
+  插件必须持有引用容器、每轮 `ref.get()` 现读，并在该事件上重算。两处既有实现：
+  `scope` 走 `lib/scope-host.js`（每轮现读 + 事件重算），`venv` 走 `lib/venv.js` 的
+  `createVenvReader()`（每次调用现读，`index.js` 传**原始** `opts.venv` 而非装配期快照）。
+- **工具 `description` 可以是 getter**：宿主 `register()` 按引用存定义对象，模型侧投影
+  `schemaOf()` 在**每次投影**时解构 `definition.description`（`dsh-tools/lib/index.js:3136`），
+  故 `get description()` 能跟上 volatile 换代（`ppt_master_info` / `ppt_master_check_env` 即此写法）。
 - **`agent/created` 监听器会被宿主 await**：reject ⇒ 会话创建失败。放权威判定时必须
   `.catch()` + 超时上界（scope 的 `RESOLVE_TIMEOUT_MS=1500`）。
 - **`tools.restrict()` 只能在 agent 作用域调用**（根 ctx 调用抛
@@ -66,7 +74,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 711 tests / 709 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 711/711 |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 720 tests / 718 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 720/720 |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -123,6 +131,11 @@
 - `sync-upstream.mjs` 不读取本插件产物（scope/venv 与同步零交互面）；
 - 默认 `scope.mode=global` 下**零新增日志**（`apply.test.mjs`「能力齐全时不得输出降级
   日志」用例守护）；默认配置行为与"没有该特性"逐字一致。
+- 默认 `venv` 配置（`enabled=false` + 合法默认路径）下同样**零日志**：`loader/volatile-update`
+  订阅只在 `invalidReason` **变化且非 null** 时报一条（同一原因重放不刷）——由
+  `apply.test.mjs`「配置改成非法路径 → 保存后立即 warn；同一原因不重复刷」用例守护。
+- `createTools()` **无参**时 `venv` 仍是"未配置"（判定落 `invalid`、`path=null`），不得被
+  `createVenvReader` 补成默认三字段——那是 `apply` 装配面才有的"空袋→off 行"语义。
 
 ## 8. 设计文档索引
 

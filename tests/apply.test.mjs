@@ -626,3 +626,98 @@ test('G3-13: loader 形态引用袋经 apply 端到端去引用——正文与 i
     await fixture.cleanup();
   }
 });
+
+// ─── R8（issue #16）：volatile 换代后不重跑 apply，工具仍读新值 ──────────
+//
+// 这是本修复的**端到端判据**：宿主 `_commitVolatile()`（cordis-plugin-loader
+// `lib/index.js:395`）对 volatile-only 变更原地换代引用并**直接 return**，既不重挂
+// 插件也不重跑 apply。故唯一能让工具跟上配置的通道是「现读 + 监听
+// `loader/volatile-update`」。若哪天有人把 venv 又拍平回 apply 期快照，本用例会红。
+
+/** 带事件总线与 effect 收集的 mock ctx：`emit` 手动触发宿主事件。 */
+function makeLiveCtx() {
+  const calls = { providers: [], tools: [], listeners: new Map(), effects: [] };
+  const ctx = {
+    skills: { registerProvider: (factory) => calls.providers.push(factory) },
+    tools: { register: (tool) => calls.tools.push(tool) },
+    on: (event, handler) => {
+      const list = calls.listeners.get(event) ?? [];
+      list.push(handler);
+      calls.listeners.set(event, list);
+      return () => {
+        const at = list.indexOf(handler);
+        if (at >= 0) list.splice(at, 1);
+      };
+    },
+    effect: (register) => calls.effects.push(register),
+  };
+  return {
+    ctx,
+    calls,
+    emit: (event) => {
+      for (const handler of [...(calls.listeners.get(event) ?? [])]) handler();
+    },
+  };
+}
+
+/** 最小 volatile 引用袋：`.get()` 闭包读一个可变的当前值（模拟宿主原地换代）。 */
+function makeVenvBag(initial) {
+  const state = { ...initial };
+  const leaf = (key) => ({ get: () => state[key] });
+  return {
+    state,
+    bag: { enabled: leaf('enabled'), path: leaf('path'), oldPathPolicy: leaf('oldPathPolicy') },
+  };
+}
+
+test('apply + R8: loader/volatile-update 后已注册工具现读新 venv，且 apply 未重跑', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { state, bag } = makeVenvBag({ enabled: false, path: join(root, 'venv-a'), oldPathPolicy: 'keep' });
+    const { ctx, calls, emit } = makeLiveCtx();
+    apply(ctx, { skillRoots: [root], venv: bag });
+
+    assert.equal(calls.tools.length, 3, '三个工具各注册一次');
+    const info = calls.tools.find((tool) => tool.name === 'ppt_master_info');
+    const before = await info.execute({}, {});
+    assert.equal(before.venv.enabled, false, '装配期读到的是引用袋当前值');
+    assert.ok(!info.description.includes('venv 已启用'));
+
+    // 宿主 _commitVolatile：引用不变、值原地换代，随后 emit。
+    state.enabled = true;
+    state.path = join(root, 'venv-b');
+    emit('loader/volatile-update');
+
+    const after = await info.execute({}, {});
+    assert.equal(after.venv.enabled, true, '换代后工具必须现读到 true（快照则仍为 false）');
+    assert.equal(after.venv.path, join(root, 'venv-b'), 'path 同步跟随');
+    assert.ok(info.description.includes('venv 已启用'), 'description 也现读');
+
+    assert.equal(calls.tools.length, 3, '工具未重注册（apply 未重跑）');
+    assert.equal(calls.providers.length, 1, 'provider 未重注册（apply 未重跑）');
+    assert.ok(calls.effects.length > 0, 'disposer 经 ctx.effect 挂上（卸载时可回收）');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('apply + R8: 配置改成非法路径 → 保存后立即 warn；同一原因不重复刷', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { state, bag } = makeVenvBag({ enabled: true, path: join(root, 'venv-ok'), oldPathPolicy: 'keep' });
+    const { ctx, emit } = makeLiveCtx();
+    const warnings = captureWarn(() => {
+      apply(ctx, { skillRoots: [root], venv: bag });
+      state.path = 'relative/venv'; // 相对路径：schema 不拦，插件侧按「配置无效」降级
+      emit('loader/volatile-update');
+      emit('loader/volatile-update'); // 同一原因重放：不得重复刷
+    });
+
+    assert.equal(warnings.length, 1, `应恰有 1 条无效告警，实际：${warnings.join(' | ')}`);
+    assert.match(warnings[0], /venv\.path 无效/, '告警文案锁定');
+    assert.match(warnings[0], /relative-path/, '带具体原因');
+    assert.match(warnings[0], /relative\/venv/, '带当前值（用户据此修正）');
+  } finally {
+    await cleanup();
+  }
+});

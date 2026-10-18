@@ -611,3 +611,44 @@ test('info: 未标记孤儿 venv 目录 → 不增提示/告警字段、不进 p
     box.remove();
   }
 });
+
+// ─── R8（issue #16）：venv 现读 ───────────────────────────────────
+//
+// 宿主对 volatile-only 变更走 `_commitVolatile()`：**原地换代引用、不重跑 apply**。
+// 故 `createTools({venv})` 收到的若是引用袋，必须每次现 `.get()`，否则工具侧永久陈旧。
+// 本用例同时锁两面：
+// - payload：`execute` 现读（`infoVenvSection`）；
+// - description：`get description()` 现读——宿主 `schemaOf()` 在**每次投影**时解构
+//   `definition.description`（`@deepseek-ai/dsh-tools/lib/index.js:3136`），故 getter 是活的。
+
+test('info: venv 引用袋现读——两次 execute 之间换代，payload 与 description 同步跟随', async () => {
+  const box = makeBox();
+  try {
+    const state = { enabled: false, path: join(box.parent, 'venv-a'), oldPathPolicy: 'keep' };
+    const bag = {
+      enabled: { get: () => state.enabled },
+      path: { get: () => state.path },
+      oldPathPolicy: { get: () => state.oldPathPolicy },
+    };
+    const tool = createTools({ skillRoots: [box.skillsRoot], venv: bag })[INFO_INDEX];
+
+    const before = await tool.execute({}, {});
+    assert.equal(before.venv.enabled, false, '首读＝引用袋当前值（关态）');
+    assert.equal(before.venv.path, join(box.parent, 'venv-a'), '关态 path 按配置原样');
+    assert.ok(!tool.description.includes('venv 已启用'), '关态描述不带解释器提示');
+
+    // 模拟宿主 updateVolatile：引用对象不变、值原地换代。
+    state.enabled = true;
+    state.path = join(box.parent, 'venv-b');
+
+    const after = await tool.execute({}, {});
+    assert.equal(after.venv.enabled, true, 'payload 跟随换代（拍平快照则仍为 false）');
+    assert.equal(after.venv.path, join(box.parent, 'venv-b'), 'path 同样跟随');
+    assert.ok(
+      tool.description.includes('venv 已启用'),
+      'description getter 现读：开态必须出现解释器提示，否则模型会被旧提示误导',
+    );
+  } finally {
+    box.remove();
+  }
+});
