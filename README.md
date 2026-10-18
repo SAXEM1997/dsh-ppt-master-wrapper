@@ -317,6 +317,20 @@ node --test tests/*.test.mjs
 > `schemastery 定位失败` 那一串：`apply(ctx, { skillRoots }) 驱动 …index.js 失败: @deepseek-ai/schemastery
 > 未能解析: 定位链四级均未命中`；其余 29 例（含全部 CLI 子进程用例，它们自带 stub 树注入
 > `DSH_NODE_MODULES=<stub 树>/node_modules` 与 `{env:{}}` 失败态分组）不受此限，照常绿。
+>
+> **无宿主 SDK 的机器（含 GitHub Actions CI，issue #4）**：不必安装 DSH 运行时——仓库自带 stub SDK
+> 构造器（`tests/helpers/stub-sdk.mjs`，即 `tests/compat.test.mjs` 造 stub 树的同一实现），
+> 两条命令即可在干净环境跑全套：
+>
+> ```bash
+> node tests/helpers/stub-sdk.mjs .ci-stub      # 建默认形态 stub node_modules
+> DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node --test tests/*.test.mjs
+> DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node scripts/check-dsh-compat.mjs
+> ```
+>
+> 预期基线：**688 tests / 686 pass / 0 fail / 2 skip**（2 条 skip 为显式声明：`@deepseek-ai/dsh-tools`
+> 经包自身解析不可达，本包零依赖，skip 非失败）。CI 工作流见 `.github/workflows/ci.yml`（push `main`
+> 与全部 PR 触发；`verify-plugin` 因第⑥项需真实上游比对树不在 CI 跑，该逻辑由 fixtures 用例覆盖）。
 
 ## 版本历史
 
