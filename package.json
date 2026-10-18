@@ -1,6 +1,6 @@
 {
   "name": "dsh-ppt-master-wrapper",
-  "version": "6.7.1-r1",
+  "version": "6.7.1-r2",
   "description": "DeepSeek Harness plugin wrapping the upstream ppt-master skill set: byte-for-byte vendored skills, zero runtime dependencies, optional venv isolation and a Plugins-page configuration card.",
   "keywords": [
     "dsh",
