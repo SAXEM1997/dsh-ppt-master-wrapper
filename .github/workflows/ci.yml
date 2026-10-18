@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 零 npm 依赖（package.json 无 dependencies/devDependencies）——无需 npm install。
+      # 宿主 SDK（@deepseek-ai/*）以 stub 树供给：构造默认形态 stub node_modules，
+      # 经 DSH_NODE_MODULES（resolveDshModules 定位链第②级，优先于一切目录探测）
+      # 同时服务测试进程与子进程的模块加载期受控解析（issue #4）。
+      - name: Build stub SDK tree
+        run: node tests/helpers/stub-sdk.mjs .ci-stub
+
+      # 预期基线：687 tests / 685 pass / 0 fail / 2 skip（2026-10-18 本地 CI 等价环境实测）。
+      # 2 条 skip 是显式声明（@deepseek-ai/dsh-tools 经包自身解析不可达——本包零依赖，
+      # stub 树不经包解析链，故 skip 非失败）。失败时 TAP 输出逐用例定位。
+      - name: Run test suite (stub SDK)
+        env:
+          DSH_NODE_MODULES: ${{ github.workspace }}/.ci-stub/node_modules
+        run: node --test tests/*.test.mjs
+
+      # 契约探针在 stub 形态下同样可跑（SkillRegistry 挂载/ToolRuntime register/
+      # §7.7①-⑥ 静态与实跑断言）；§7.7⑦ 正向路径在无 @deepseek-ai/dsh-scope 时
+      # 只记 note（problems 0，不判失败）。
+      - name: check-dsh-compat (stub SDK)
+        env:
+          DSH_NODE_MODULES: ${{ github.workspace }}/.ci-stub/node_modules
+        run: node scripts/check-dsh-compat.mjs
+
+      # verify-plugin 不在 CI 跑：其第⑥项全量逐字节比对必须显式 --upstream 比对树
+      # （真实上游解压树，GitHub runner 无缓存，缺省即 fail-loud exit 1）；该逻辑已由
+      # tests/verify-plugin.test.mjs 用 fixtures 覆盖。本地/同步流程仍照常执行。

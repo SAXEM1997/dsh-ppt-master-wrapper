@@ -315,6 +315,22 @@ node --test tests/*.test.mjs
 > are red and 29 green** (7 of the 13 in-process ones), **not** a wholesale red. The identifiable red signature is
 > the `schemastery 定位失败` string; the other 29 cases (including every CLI subprocess case, which injects a stub
 > tree via `DSH_NODE_MODULES=<stub tree>/node_modules` and its own `{env:{}}` failure grouping) stay green.
+>
+> **Machines without the host SDK (including GitHub Actions CI, issue #4)**: no DSH runtime needed — the repo
+> ships a stub SDK builder (`tests/helpers/stub-sdk.mjs`, the exact implementation `tests/compat.test.mjs` uses to
+> build its stub trees). Two commands run the full suite on a clean machine:
+>
+> ```bash
+> node tests/helpers/stub-sdk.mjs .ci-stub      # build the default-shaped stub node_modules
+> DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node --test tests/*.test.mjs
+> DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node scripts/check-dsh-compat.mjs
+> ```
+>
+> Expected baseline: **687 tests / 685 pass / 0 fail / 2 skipped** (both skips are declared explicitly:
+> `@deepseek-ai/dsh-tools` is unreachable via package-self resolution — this package has zero npm dependencies,
+> so a skip is not a failure). The CI workflow lives at `.github/workflows/ci.yml` (runs on pushes to `main` and
+> all PRs; `verify-plugin` is not run in CI because its item ⑥ needs a real upstream comparison tree — that
+> logic is covered by fixture-based cases).
 
 ## Version history
 
