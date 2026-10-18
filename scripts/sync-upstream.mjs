@@ -1422,8 +1422,10 @@ function escapeRegExp(text) {
  * 四态语义（幂等、fail-loud）：
  *  - `'missing'`：`lib/client.js` 不存在——调用方记 🟡 提示、不判失败（仓库形态
  *    异常不该卡死同步，但必须可见）；
- *  - `'problem'`：目标值非法（空/缺失）、或任一常量的 `const NAME = '…';` 匹配数
- *    ≠ 1（形态漂移）、或写回自检不符——**文件不写**（部分改写比不改更糟）；
+ *  - `'problem'`：目标值非法（空/缺失/含引号或反斜杠）、或任一常量的
+ *    `const NAME = '…';` 匹配数 ≠ 1（形态漂移）——**文件不写**（部分改写比不
+ *    改更糟）；唯一例外是**写回自检失败**分支：此时文件已落盘但未通过验证，
+ *    调用方报告须提示可用 `git checkout -- lib/client.js` 还原（Gate 3 P3-1）；
  *  - `'unchanged'`：两常量均已等于目标——不写（幂等，规则③重跑等场景）；
  *  - `'rewritten'`：有差异 → 整文件一次写回 + 重读自检，`changes` 列出
  *    `{ constant, from, to }` 明细（供同步报告列出被改写的文件与值）。
@@ -1454,6 +1456,12 @@ export function applyVersionLinkage(root, versions) {
   for (const { constant, to } of targets) {
     if (typeof to !== 'string' || to.trim() === '') {
       problems.push(`${constant} 目标值缺失或为空（decideVersion / staging metadata.version 产物异常）`);
+      continue;
+    }
+    // 目标值含引号/反斜杠 → 拒绝（注入面：值被原样写进字符串字面量；现实来源
+    // ——semver 规则 + SKILL.md metadata.version——不可达，纯防御，Gate 3 P3-3）。
+    if (/['\\]/.test(to)) {
+      problems.push(`${constant} 目标值 ${JSON.stringify(to)} 含引号或反斜杠——拒绝注入字符串字面量`);
       continue;
     }
     const pattern = new RegExp(
@@ -2133,8 +2141,16 @@ export async function main(options, deps_) {
   if (existsSync(join(root, CLIENT_REL))) {
     // 未提交变更守卫：lib/client.js 若有未提交的人工改动，git add 会把它们整个
     // 卷进同步 commit——拒绝执行，先请人工提交（fail-loud 优于静默裹挟）。
+    // 守卫自身失败（code≠0，如瞬时 index.lock）同样 fail-loud（Gate 3 P2-1）：
+    // 此守卫的目的就是安全拦截，「查不了」必须当「不能继续」，否则守卫被静默击穿。
     const dirtyClient = await git(['status', '--porcelain', '--', CLIENT_REL]);
-    if (dirtyClient.code === 0 && dirtyClient.stdout.trim() !== '') {
+    if (dirtyClient.code !== 0) {
+      logFail(
+        `git status --porcelain -- ${CLIENT_REL} 失败（环境失败，退出码 5）——无法确认 ${CLIENT_REL} 是否带未提交变更，版本常量联动拒绝继续:\n${dirtyClient.stderr.trim()}`,
+      );
+      return 5;
+    }
+    if (dirtyClient.stdout.trim() !== '') {
       const report = [
         `lib/client.js 存在未提交变更——为避免把人工改动卷进同步 commit，版本常量联动拒绝执行（vendor 面与版本号均未改动）。`,
         `后续指引: 先提交 lib/client.js 的变更（或 git stash），再重跑同步。退出码 2。`,
@@ -2151,7 +2167,8 @@ export async function main(options, deps_) {
     const report = [
       'lib/client.js 版本常量联动失败（vendor 面与版本号均未改动）:',
       ...linkage.problems.map((problem) => `  ✗ ${problem}`),
-      '后续指引: 人工核对 lib/client.js 的常量形态（恰一处 const PLUGIN_VERSION / UPSTREAM_VERSION 字面量声明）后重跑同步。退出码 2。',
+      '后续指引: 人工核对 lib/client.js 的常量形态（恰一处 const PLUGIN_VERSION / UPSTREAM_VERSION 字面量声明）后重跑同步。',
+      '注: 若失败发生在写回自检阶段，lib/client.js 可能已写入未验证内容——git checkout -- lib/client.js 可还原后重试。退出码 2。',
     ].join('\n');
     logFail(report);
     writeReport(report);
@@ -2161,6 +2178,8 @@ export async function main(options, deps_) {
     logInfo(
       `联动改写: ${CLIENT_REL}（${linkage.changes.map((change) => `${change.constant} → ${change.to}`).join('、')}）`,
     );
+  } else if (linkage.status === 'unchanged') {
+    logInfo(`联动改写: ${CLIENT_REL} 无变化（两常量已与目标一致）`);
   }
 
   // 替换 skill 面（单向 上游→vendor：vendor 多出的 skill 目录属包装层人工变更，保留）。
@@ -2262,6 +2281,7 @@ export async function main(options, deps_) {
             .join('、')}）`,
         ]
       : []),
+    ...(linkage.status === 'unchanged' ? [`联动改写: ${CLIENT_REL} 无变化（两常量已与目标一致）`] : []),
     ...(linkage.status === 'missing' ? ['联动改写: 跳过（lib/client.js 不存在，见 🟡 提示）'] : []),
     '待人工: README.md / README.en.md 版本历史表与「本地校验」--upstream 示例路径（脚本不自动改写文档）',
     `commit: ${commitMessage}`,

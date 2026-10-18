@@ -1707,3 +1707,51 @@ test('联动：client.js 不存在 → 🟡 提示跳过，同步照常成功（
     s.cleanup();
   }
 });
+
+test('联动：常量已与目标一致 → unchanged，报告记录「无变化」且文件零改动', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    // 规则④（上游 6.7.0 → 6.8.0、无 vendor diff）→ 目标 6.8.0；常量预先写 6.8.0。
+    const clientFile = commitClientConstants(s, '6.8.0', '6.8.0');
+    const before = readFileSync(clientFile, 'utf8');
+    const { deps } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(readFileSync(clientFile, 'utf8'), before, 'unchanged 态文件零改动');
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: s.root, encoding: 'utf8' });
+    assert.equal(dirty.trim(), '');
+    assert.match(
+      readFileSync(join(s.root, 'sync-report.txt'), 'utf8'),
+      /联动改写: lib\/client\.js 无变化（两常量已与目标一致）/,
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('联动守卫：git status 自身失败（code≠0）→ fail-loud 退出码 5（Gate 3 P2-1）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    commitClientConstants(s, '6.7.0', '6.7.0');
+    // 只对守卫那条 status 调用注入 128（index.lock 类瞬时故障），其余委托真实 git。
+    const { deps } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: async (args, opts) => {
+        if (args[0] === 'status' && args.includes('--porcelain') && args.includes('lib/client.js')) {
+          return { code: 128, stdout: '', stderr: 'fatal: Unable to create index.lock' };
+        }
+        return realGitResult(args, opts);
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+    assert.equal(
+      JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version,
+      '6.7.0',
+      '守卫失败先于 bump——版本面未动',
+    );
+    assert.equal(commitCount(s.root), 2, '无同步 commit');
+  } finally {
+    s.cleanup();
+  }
+});

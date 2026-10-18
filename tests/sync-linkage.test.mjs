@@ -131,3 +131,18 @@ test('linkage: 目标值非法（空串/缺失）→ problem，不触碰文件',
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('linkage: 目标值含引号/反斜杠 → problem（拒绝注入字符串字面量，Gate 3 P3-3）', () => {
+  const original = clientText('6.7.1', '6.7.1');
+  const root = makeRoot(original);
+  try {
+    const quote = applyVersionLinkage(root, { pluginVersion: "6.8.0'-x", upstreamVersion: '6.8.0' });
+    assert.equal(quote.status, 'problem');
+    assert.ok(quote.problems.some((problem) => problem.includes('引号')));
+    const backslash = applyVersionLinkage(root, { pluginVersion: '6.8.0', upstreamVersion: '6.8.0\\9' });
+    assert.equal(backslash.status, 'problem');
+    assert.equal(readFileSync(CLIENT_PATH(root), 'utf8'), original, '文件不被写');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
