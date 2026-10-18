@@ -119,6 +119,28 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 - **失败呈现**：卡片保存失败按两类呈现（宿主拒绝 / 被更高优先级配置层覆盖 vs 传输失败），"被覆盖"只在文案里给一般化提示。
 - **等价性**：卡片与 profile patch 通道**二者等价、先写者为准**。
 
+## 工具可见范围（全局 / 指定工作区）
+
+本插件把 3 个 `ppt_master_*` 工具注册成**全局工具**——默认每个会话的工具表里都有它们。若你有很多与 PPT 无关的工作区（如 `hermes` / `oa` / `llm`），可用 `scope` 两个键把它们从这些工作区的工具表里**真正移除**（宿主装配层的 `tools.restrict`，不是前端过滤）。
+
+| 键 | 取值 | 默认 |
+|---|---|---|
+| `scope.mode` | `global`（所有工作区可见） / `selected`（仅名单内可见） | `global` |
+| `scope.workspaceIds` | 工作区 id 字符串数组 | `[]` |
+
+**判定规则**（`selected` 下）：① 工作区的 `sessionIds` 含该会话 ⇒ 命中；② 否则用会话 `cwd` 的**规范路径**（`workspaceRegistry.resolveByPath`）匹配工作区。命中且 id 在名单里 ⇒ 可见，其余一律不可见——**不属于任何工作区的会话在 `selected` 下也看不到**。
+
+**怎么配**：插件页卡片的「工具可见范围」一节——模式单选 + 工作区勾选列表（清单来自宿主的 `workspaces` 服务，无需手输 id），保存即生效（走 volatile 快路径 + `loader/volatile-update`，**免重启**）。清单服务不可用时卡片只读回显当前名单，此时请改 profile patch 的 `scope.workspaceIds`（手工通道仍需重启）。
+
+**降级口径**：`selected` 是明示的收窄意图，宿主**答不出来时不静默放宽**——缺 `ctx.inject` / `agents` / `workspaceRegistry` 时按最严口径拒绝本插件工具调用并打一条 `console.warn`；`registry.list()` 瞬时失败则**维持上一轮判定**（不拿一次读失败改写可见性）。宿主缺 `tools.restrict` 时退化为"仅执行层拒绝"（工具仍列出、调用被拒）。
+
+**已知限制**：
+- 只收窄**工具**；`ppt-master` 技能条目在任何工作区仍可被调用（宿主对 skill 没有 per-agent 隐藏通道）。
+- 判定基于会话创建时的 `cwd`；会话中途切换工作目录不会重判。
+- 名单里已删除的工作区 id 会被忽略（卡片显示为"已不存在"并可勾掉）。
+- 释放限制层时若宿主抛错，该层可能仍生效——重启 DSH 可清除（日志里会有一条点名 agent 的 warn）。
+- 市场截图 `assets/screenshot-1-config-card.png` 尚未重制（卡片新增了本节），下次发布时补。
+
 ### 配置指引（profile patch——与卡片等价的通道）
 
 编辑 profile 的 `cordis.patch.yml`，追加：
@@ -130,6 +152,10 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
       enabled: true
       path: /dsh-home/.ppt-master/venv
       oldPathPolicy: keep
+    scope:
+      mode: selected
+      workspaceIds:
+        - b6ef89f7-74a6-4e4f-84eb-07581e390020
 ```
 
 **三个字段写全**——patch 的 `config` 是整体替换语义（缺字段回落默认值）；**保存后须重启 DSH 生效**（这条**手工 patch 通道**无 watcher 热应用；与插件页卡片的免重启快路径不同）。
@@ -300,6 +326,7 @@ node --test tests/*.test.mjs
 | `v6.7.0-r1` | 包装层修订（规则③自动 bump 首跑）：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、spec §4.3 规则③执行主体修订（自动语义） |
 | `v6.7.0-r2` | 包装层修订（规则③）：UltraReview 独立复审两轮修复——规则③自触发锚定排除、push 部分失败 tag 补推（鉴权预判）、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置（`~/.ppt-master/.env`）、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生条目、dry-run 状态写门控、文档四处机制补记 |
 | `v6.7.0-r3` | 包装层修订：**venv 解释器隔离**（`venv.enabled` / `venv.path` / `venv.oldPathPolicy` + 入口技能 `ppt-master-env` + 安全删除四条件）+ **插件页配置卡片**（客户端半边，中英双语、版本信息块、volatile 快路径免重启保存）+ 配置卡片外观对齐宿主设计语汇；本次同时补齐 GitHub 发布面（双语 README / NOTICE / logo / 包元数据） |
+| `v6.7.1-r1` | 工具可见范围（全局 / 指定工作区）：`scope.mode` + `scope.workspaceIds`，插件页卡片新增勾选列表；宿主侧 per-agent `tools.restrict` 装配层移除 + 全局 `tools.guard` 兜底；上游 6.7.1 未变（仅包装层自身修订） |
 | `v6.7.1` | 上游同步（规则①：上游版本变化 ⇒ base 6.7.1、`-r` 归零）：vendor 上游 v6.7.1（逐字节，完整性门通过）；包装层此前 3 次修订（r1–r3）针对的是 6.7.0 base |
 
 > 版本规则：`base` 镜像上游 release；包装层修订追加 `-rN`（无后缀视为 r0）。

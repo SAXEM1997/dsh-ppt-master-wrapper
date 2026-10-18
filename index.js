@@ -19,6 +19,8 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { toolNamesOf } from './lib/scope.js';
+import { mountToolScope } from './lib/scope-host.js';
 import { createSkillProvider, parseFrontmatter } from './lib/skill-provider.js';
 import { createTools } from './lib/tools.js';
 import { assembleInjectionBag, effectiveInterpreter, snapshotVenvConfig } from './lib/venv.js';
@@ -214,6 +216,24 @@ export const Config = z.object({
       )
       .volatile(),
   }).description('venv 隔离与旧路径清理策略。'),
+  scope: z.object({
+    mode: z
+      .union([z.const('global'), z.const('selected')])
+      .default('global')
+      .description(
+        '工具可见范围：global（默认）＝所有工作区都能看到 ppt_master_* 三个工具；'
+          + 'selected＝只有下方名单里的工作区能看到（不属于任何工作区的会话也看不到）。',
+      )
+      .volatile(),
+    workspaceIds: z
+      .array(z.string())
+      .default([])
+      .description(
+        'selected 模式下可见的工作区 id 列表（工作区 id 可在插件页卡片的勾选列表里取，'
+          + '无需手输）。名单为空时谁都看不到这三个工具。',
+      )
+      .volatile(),
+  }).description('工具可见范围：仅影响 ppt_master_info / ppt_master_check_env / ppt_master_setup_deps 三个工具；技能条目不受影响。'),
 }).description(CONFIG_ANNOTATION);
 
 // ─── apply ───────────────────────────────────────────────────────
@@ -248,7 +268,10 @@ export function apply(ctx, opts) {
     throw new Error(`${name}: ctx.skills.registerProvider is required`);
   }
 
-  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。装配带异常包装
+  // 统一注入包：唯一形态差转换点（volatile 引用 → 普通值），下游只见普通值。
+  // **例外（2026-10-18 工具可见范围）**：`opts.scope` 不走这里——它必须保持 volatile 引用，
+  // 由 `mountToolScope` 每轮现读（宿主对 volatile-only 变更不重挂插件，见文件末尾）。
+  // 装配带异常包装
   // （spec §6.1③ / Gate 3 G3-12）：入参是宿主/嵌入方给的**任意形状**，"异常形态视为关闭"不得
   // 靠"叶子缺省补默认"静默达成——装配抛错时回落 `VENV_DEFAULTS`（经 `snapshotVenvConfig(undefined)`
   // 取得，默认值仍只有 `lib/venv.js` 一份字面量）、保留 `skillRoots` 原样透传语义、把异常送进
@@ -308,7 +331,25 @@ export function apply(ctx, opts) {
   // subset travels the same bag; the test-only `testSeams` channel is deliberately
   // omitted on the production path (Task 9 consumes it through `createTools`).
   // Method form here too, for the same traceable-`this` reason as above.
-  for (const tool of createTools({ skillRoots: bag.skillRoots, venv: bag.venv })) {
+  const toolDefinitions = createTools({ skillRoots: bag.skillRoots, venv: bag.venv });
+  for (const tool of toolDefinitions) {
     tools.register(tool);
+  }
+
+  // 工具可见范围（`docs/superpowers/specs/2026-10-18-tool-scope-design.md`）。
+  // 名字清单从**注册产出**派生（不写第二份字面量）：`tools.restrict()` 对未知全局工具名会
+  // 直接抛错，名字与注册一旦漂移，限制层就装不上而失败只表现为"没隐藏"。
+  // `scopeConfig` 传的是**原始 volatile 引用容器**：宿主对 volatile-only 配置变更不重挂插件
+  // （`cordis-plugin-loader` 的 `_commitVolatile()`），所以必须让子系统每轮现读，
+  // 这也是上面"唯一形态差转换点 / 下游只见普通值"不变量在 `scope` 上的**唯一例外**。
+  // 在 tools.register 之后挂载：`restrict()` 只接受已注册的全局工具名。
+  const scopeHandle = mountToolScope(ctx, {
+    scopeConfig: opts?.scope,
+    toolNames: toolNamesOf(toolDefinitions),
+    warn: (message) => console.warn(message),
+  });
+  // 限制层与 guard 装在**别人**（agent / 根 ctx）身上，插件卸载不会自动回收，必须显式拆。
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(() => () => scopeHandle.dispose(), `${name}: tool scope`);
   }
 }

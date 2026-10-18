@@ -111,6 +111,39 @@ test('apply: skills+tools 齐全 → provider 注册一次且 tools.register 恰
   }
 });
 
+test('apply: scope.mode=selected 且宿主缺 ctx.inject ⇒ 降级日志且不崩（工具仍注册）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const registered = [];
+    const ctx = {
+      skills: { registerProvider: () => {} },
+      tools: { register: (tool) => registered.push(tool.name) },
+    };
+    const warnings = captureWarn(() =>
+      apply(ctx, { skillRoots: [root], scope: { mode: 'selected', workspaceIds: [] } }),
+    );
+
+    assert.equal(registered.length, 3, '工具注册不受 scope 降级影响');
+    assert.ok(
+      warnings.some((line) => /inject/.test(line)),
+      `缺 ctx.inject 时须有一条点名 inject 的降级日志，实际：${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test('apply: 未配置 scope ⇒ 零降级日志（默认 global 整段短路）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx } = makeCtx();
+    const warnings = captureWarn(() => apply(ctx, { skillRoots: [root] }));
+    assert.deepEqual(warnings, []);
+  } finally {
+    await cleanup();
+  }
+});
+
 // ─── 分支三：tools 不可用 → 降级 ─────────────────────────────────
 
 test('apply: 仅 ctx.skills → 不 throw、provider 注册、单行降级日志', async () => {

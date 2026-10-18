@@ -119,6 +119,28 @@ The plugin declares a native cordis Config (`venv.enabled` / `venv.path` / `venv
 - **Failures**: save failures are presented in two classes (host rejection / overridden by a higher-priority configuration layer vs. transport failure); the "overridden" case is described only in general terms.
 - **Equivalence**: the card and the profile patch channel are **equivalent — whichever writes first wins**.
 
+## Tool visibility scope (global / selected workspaces)
+
+This plugin registers its three `ppt_master_*` tools **globally** — by default every session sees them. If you keep many PPT-unrelated workspaces (`hermes` / `oa` / `llm` …), the two `scope` keys remove them from those workspaces' tool tables **for real** (the host's assembly-layer `tools.restrict`, not a front-end filter).
+
+| Key | Values | Default |
+|---|---|---|
+| `scope.mode` | `global` (every workspace sees them) / `selected` (only the listed ones) | `global` |
+| `scope.workspaceIds` | array of workspace id strings | `[]` |
+
+**Resolution rules** (under `selected`): ① the workspace whose `sessionIds` contains the session wins; ② otherwise the session's `cwd` is matched by **canonical path** (`workspaceRegistry.resolveByPath`). Visible only when a workspace was resolved *and* its id is listed — everything else is hidden, including **sessions that belong to no workspace**.
+
+**How to configure**: the plugin-page card's "Tool visibility scope" section — a mode radio plus a workspace checklist (the list comes from the host's `workspaces` service, no hand-typed ids). Saving takes effect immediately (volatile fast path + `loader/volatile-update`, **no restart**). When that service is unavailable the card shows the current selection read-only; edit `scope.workspaceIds` in the profile patch instead (that manual channel still needs a restart).
+
+**Degradation**: `selected` is an explicit narrowing intent, so the host **never silently widens** it. Without `ctx.inject` / `agents` / `workspaceRegistry` the plugin denies its own tool calls under the strictest reading and logs one `console.warn`; a transient `registry.list()` failure **keeps the previous round's judgement** (one failed read never rewrites visibility). Without `tools.restrict` it degrades to "execution-layer denial only" (tools stay listed, calls are refused).
+
+**Known limitations**:
+- Only **tools** are narrowed; the `ppt-master` skill entry stays callable in every workspace (the host has no per-agent channel for skills).
+- Judgement uses the session's `cwd` at creation time; switching the working directory mid-session does not re-judge.
+- Ids of deleted workspaces are ignored (the card shows them as "no longer exists" and lets you uncheck them).
+- If the host throws while a restriction layer is being released, that layer may stay in effect — restart DSH to clear it (one warning naming the agent is logged).
+- The marketplace screenshot `assets/screenshot-1-config-card.png` has not been regenerated yet (the card gained this section); it will be refreshed in the next release.
+
 ### Configuration via profile patch (the equivalent channel)
 
 Edit the profile's `cordis.patch.yml` and append:
@@ -130,6 +152,10 @@ Edit the profile's `cordis.patch.yml` and append:
       enabled: true
       path: /dsh-home/.ppt-master/venv
       oldPathPolicy: keep
+    scope:
+      mode: selected
+      workspaceIds:
+        - b6ef89f7-74a6-4e4f-84eb-07581e390020
 ```
 
 **Write all three fields** — a patch `config` replaces wholesale (missing fields fall back to defaults) — and **restart DSH afterwards** (this **manual patch channel** has no hot-apply watcher, unlike the card's no-restart fast path).
@@ -298,6 +324,7 @@ node --test tests/*.test.mjs
 | `v6.7.0-r1` | Wrapper revision (the first automatic rule-③ bump): Gate 3 review fixes — `mapDistToImport` prototype-key hardening, branch-ref last-sync readability, three `envFileExists` probes, spec §4.3 rule-③ actor revision (automatic semantics) |
 | `v6.7.0-r2` | Wrapper revision (rule ③): two rounds of independent UltraReview fixes — rule-③ self-trigger anchoring exclusion, tag re-push after partial push failure (auth pre-check), branch sha caching, git/tar toolchain absence mapped to exit 7, marketplace version-check layer correction, the 4th `env` probe location (`~/.ppt-master/.env`), dependency mapping 19/19, an independent `${SKILL_DIR}` criterion, `.gitignore` hygiene entries, dry-run state-write gating, four documentation corrections |
 | `v6.7.0-r3` | Wrapper revision: **venv interpreter isolation** (`venv.enabled` / `venv.path` / `venv.oldPathPolicy` + the `ppt-master-env` entry skill + four-condition safe deletion) and the **Plugins-page configuration card** (client half: bilingual, version block, volatile fast-path saves without restart), plus the card's visual alignment with the host design vocabulary; this release also completes the GitHub publishing surface (bilingual README / NOTICE / logo / package metadata) |
+| `v6.7.1-r1` | Tool visibility scope (global / selected workspaces): `scope.mode` + `scope.workspaceIds`, a workspace checklist on the plugin-page card; host side removes the tools per agent via `tools.restrict` with a global `tools.guard` backstop; upstream 6.7.1 unchanged (wrapper-only revision) |
 | `v6.7.1` | Upstream sync (rule ①: the upstream version changed ⇒ base 6.7.1, the `-r` suffix resets to zero): vendored upstream v6.7.1 byte-for-byte, integrity gate passed; the previous three wrapper revisions (r1–r3) applied to the 6.7.0 base |
 
 > Version rule: the `base` mirrors the upstream release; wrapper revisions append `-rN` (no suffix means r0).

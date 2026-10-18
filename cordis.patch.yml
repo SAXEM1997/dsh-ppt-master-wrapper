@@ -1,3 +1,24 @@
+# dsh-ppt-master-wrapper 插件（DSH Bundle patch）
+#
+# 作为 bundle 被合入 profile 时，自动插入本插件行。行内 `id` / `name` 不是自由文本：
+# 宿主 `applyEntryPatches` 只追加顶层 insert 行，再由 `declaredRows` / bundle-in-use 判定
+# "本插件已装配"，两处都要求 `row.id == entry.options.id` 且 `row.name == entry.options.name`；
+# 缺 id 或 name 的行会被**静默跳过**。
 - insert:
     - id: dsh-ppt-master-wrapper
       name: dsh-ppt-master-wrapper
+      # 配置面**故意留空**：patch 的 `config` 是**整体替换**而非与 schema 默认值深合并，
+      # 在这里写死一份等于替所有使用者钉死配置。两个配置面的默认值都由 `index.js` 的
+      # `Config` schema 提供（venv 关闭；工具可见范围 global），需要改时请用插件页卡片，
+      # 或按下面的形状自己写进 profile patch。
+      #
+      # 可用键（完整形状，缺键不等于"沿用默认"——写了的键会整体替换该配置面）：
+      #
+      #   config:
+      #     venv:
+      #       enabled: false              # true ⇒ 用独立 venv 的解释器跑上游脚本
+      #       path: ~/.ppt-master/venv    # ~ 按宿主进程 HOME 展开
+      #       oldPathPolicy: keep         # keep | delete
+      #     scope:
+      #       mode: global                # global（默认，所有工作区可见）| selected（仅名单内）
+      #       workspaceIds: []            # selected 模式下可见的工作区 id 列表
