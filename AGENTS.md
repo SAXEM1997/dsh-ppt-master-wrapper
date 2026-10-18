@@ -47,9 +47,12 @@
 - **schemastery 受控解析**：`index.js` 在模块加载期经「定位宿主 node_modules +
   `createRequire`」取 `@deepseek-ai/schemastery`（禁 ESM 裸导入；锚点必须是定位到的
   node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。解析失败＝整插件
-  不可加载。定位链五级：`--dsh-modules` 参数 > `DSH_NODE_MODULES` >
+  不可加载。定位链**两侧不同，勿混**：脚本侧（`scripts/check-dsh-compat.mjs` 的
+  `resolveDshModules`）五级——`--dsh-modules` 参数 > `DSH_NODE_MODULES` >
   `DSH_PROFILE_DIR/node_modules` > `DSH_HOME/profiles/$DSH_PROFILE/node_modules` >
-  `DSH_HOME/profiles/node_modules`（末级未命中再无序扫描 profiles/*）。
+  `DSH_HOME/profiles/node_modules`（末级未命中再无序扫描 profiles/*）；**插件装载侧**
+  （`index.js` 的 `locateDshModules`）有意收窄为 **env 四级**——无 explicit 参数级、
+  无扫描回落，未命中即 fail-loud（§4 的红灯签名「定位链四级均未命中」即出此侧）。
 - **客户端卡片**：槽位 `plugins.bundle.config`；`configForms` 等可选服务必须
   `ctx.inject([...], cb)` 回调式接入（硬注入会让 apply 挂起 pending）；CSS 设计令牌是
   `--dsw-*`，一律写 `var(--token, 兜底)`（令牌名写错且无兜底 ⇒ 整条声明被静默丢弃）。

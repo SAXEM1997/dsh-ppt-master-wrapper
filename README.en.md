@@ -68,15 +68,13 @@ dsh plugin --profile <name> add https://github.com/SAXEM1997/dsh-ppt-master-wrap
 dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 ```
 
-Option 3 — intranet mirror (optional, same source as GitHub): replace the URL with this repository's address on your intranet GitLab.
-
-Restart the session after installing and the `ppt-master` skill becomes visible to agents. The current package ships a client half (config card) that the host loads **once after a restart** — afterwards saving configuration **takes effect without restarts**.
+Option 3 — intranet mirror (optional, same source as GitHub): replace the URL with this repository's address on your intranet GitLab. Restart the session after installing and the `ppt-master` skill becomes visible to agents; the client half (config card) is loaded by the host **once after a restart** — afterwards saving configuration **takes effect without restarts**.
 
 ### First run
 
 1. **Environment check**: call `ppt_master_check_env` — confirms python3 readiness, the integrity gate, and installed Python dependencies.
 2. **Install Python dependencies**: call `ppt_master_setup_deps` (idempotent), or run `pip3 install -r skills/ppt-master/requirements.txt` manually.
-3. **Configure `.env` (as needed)**: upstream image-generation scripts need an image backend. In your **session working directory** run
+3. **Configure `.env` (as needed)**: upstream image-generation scripts need an image backend. In your **session working directory** (position 1 of upstream's `.env` lookup order; the package root is the position-3 fallback) run
    `cp skills/ppt-master/.env.example .env` and fill in `IMAGE_BACKEND` plus the provider key/model per the comments inside (process environment variables work too). `.env` is gitignored; plugin tools never read or echo its contents.
 
 ## Lifecycle tools
@@ -87,7 +85,7 @@ Restart the session after installing and the `ppt-master` skill becomes visible 
 | `ppt_master_check_env` | none | Environment check: python3 readiness; runs `attribution_guard.py`; probes Python dependency state; hints whether `.env` exists. Read-only. |
 | `ppt_master_setup_deps` | `user?`, `breakSystemPackages?` | Idempotent `requirements.txt` install, re-runs the check afterwards. **The only tool with side effects**; venv creation/removal happens only here. |
 
-All three tools are **venv-aware** (payloads carry a `venv` section; with `venv.enabled=true` the tool descriptions gain an interpreter hint).
+All three tools are **venv-aware** (payloads carry a `venv` section; with `venv.enabled=true` the tool descriptions gain an interpreter hint). `user` / `breakSystemPackages` are **effective in system mode only** — ignored in venv mode, noted in the response.
 
 ## Configuration
 
@@ -120,9 +118,9 @@ The three `ppt_master_*` tools are registered **globally** by default. If most o
 | `scope.mode` | `global` (every workspace) / `selected` (only the listed ones) | `global` |
 | `scope.workspaceIds` | array of workspace id strings | `[]` |
 
-Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible** (an explicit narrowing intent is never silently widened). Configure via the card's mode radio + workspace checklist (fed by the host `workspaces` service); saving takes effect immediately.
+Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible**. Degradation (an explicit narrowing intent is never silently widened): missing judgement services → deny under the strictest reading plus one `console.warn`; a transient registry read failure keeps the previous round's judgement; a host without `tools.restrict` degrades to execution-layer denial only. Configure via the card's mode radio + workspace checklist (fed by the host `workspaces` service); saving takes effect immediately.
 
-Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; ids of deleted workspaces are ignored; a restriction layer may linger if the host throws during release (a restart clears it).
+Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; ids of deleted workspaces are ignored; a restriction layer may linger if the host throws during release (a restart clears it); the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
 
 ### Profile patch (the equivalent channel)
 
@@ -149,11 +147,11 @@ After a plugin upgrade adds new configuration fields, compare and complete exist
 
 - Saving configuration on the card — **no** (volatile fast path);
 - Editing only `lib/client.js` — **no** (host hot-updates via stat polling, ~500 ms);
-- Editing `package.json`'s `dsh.client` / `exports` declarations, or the profile patch by hand — **yes**.
+- Editing `package.json`'s `dsh.client` / `exports["./client"]` declarations, or the profile patch by hand — **yes**.
 
 **Card missing / unavailable** — check in order: ① just edited the `package.json` declaration surface? restart DSH (most common); ② does the host Plugins page provide the `plugins.bundle.config` slot; ③ the card shows "configuration channel not connected" = host lacks the `configForms` service (optional wiring, everything else unaffected); ④ old hosts that ignore `dsh.client` degrade quietly — plugin functionality is unaffected, configure via profile patch or upgrade the host.
 
-**Other**: a failed plugin load that takes the skill surface down with it is usually `@deepseek-ai/schemastery` controlled-resolution failure — confirm the package exists in the host profile's `node_modules` and that `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` point at it (details in [AGENTS.md](AGENTS.md) §3).
+**Other**: a failed plugin load that takes the skill surface down with it is usually `@deepseek-ai/schemastery` controlled-resolution failure — confirm the package exists in the host profile's `node_modules` and that `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` point at it (details in [AGENTS.md](AGENTS.md) §3). **Missing entry skill**: if the host rejects the synthetic candidate without `resourceBase`, only the entry skill is absent — the vendored skill and the tools are unaffected.
 
 ## Syncing a new upstream release
 
@@ -171,7 +169,7 @@ node scripts/sync-upstream.mjs [options]
 | `--no-push` | Local commit + tag only, no push |
 | `--dry-run` | Print what would happen |
 
-Flow: resolve the latest tag → download (or reuse cache) → integrity gate → structural-change detection → automatic path: verification precedes replacement → replace `skills/` → bump the version (auto-rewriting the `lib/client.js` version constants) → commit + tag `v<version>` → push. **Structural changes 🔴** (skill dirs added/removed, renamed, `metadata.version` missing …) stop the run with a report (exit code 2); assess manually and re-run with `--confirm-structural`.
+Flow: resolve the latest tag → download (or reuse cache) → integrity gate → structural-change detection → automatic path: verification precedes replacement → replace `skills/` → bump the version (auto-rewriting the `lib/client.js` version constants) → commit + tag `v<version>` → push. **Structural changes 🔴** (skill dirs added/removed, renamed, `metadata.version` missing …) stop the run with a report (exit code 2, written to `sync-report.txt` at the repo root); assess manually and re-run with `--confirm-structural`.
 
 **Push credentials**: set `DSH_PPT_GITLAB_PAT` (GitLab mirror) or configure a git credential helper; if missing, the push step fails with exit code 6 and prints guidance.
 
@@ -200,13 +198,12 @@ dsh-ppt-master-wrapper/
 ## Local verification (development)
 
 ```bash
-node scripts/check-dsh-compat.mjs     # contract check against the installed DSH SDK
+node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
 node --test tests/*.test.mjs          # full suite (688/688 with a real SDK on the machine)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with
-`DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 688 tests / 686 pass / 2 skipped — skips are declared explicitly). Mechanisms and red-light signatures: [AGENTS.md](AGENTS.md) §4; CI: `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 688/686/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 
