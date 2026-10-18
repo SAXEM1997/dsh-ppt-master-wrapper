@@ -239,6 +239,19 @@ export const Config = z.object({
 // ─── apply ───────────────────────────────────────────────────────
 
 /**
+ * 组装「venv.path 无效」的降级日志正文（纯函数，apply 期与 volatile 更新期共用同一文案，
+ * 保证两条通道不会各自漂移）。措辞与 R8 之前逐字一致——本修复只改**何时**报，不改**报什么**。
+ *
+ * @param {*} venv 已去引用的普通值（可能是 `undefined`：未配置）。
+ * @param {string} reason `effectiveInterpreter` 给出的 `invalidReason`。
+ * @returns {string} 单行告警正文。
+ */
+function invalidVenvWarning(venv, reason) {
+  return `${name}: venv.path 无效（${reason}）——venv 视为关闭，按系统模式运行；`
+    + `请在设置页修正 venv.path（当前值：${String(venv?.path)}）`;
+}
+
+/**
  * Assemble the plugin.
  *
  * The skill provider is mandatory: without `ctx.skills.registerProvider` there
@@ -250,7 +263,10 @@ export const Config = z.object({
  * (Task 5): on the loader path it is the cordis-validated config (`venv` leaves are
  * `.volatile()` reference objects, defaults already filled by the schema); on the
  * test/embedding path it is `{ skillRoots }` or omitted, and `venv` defaults are
- * filled here. Everything below the boundary sees plain values only.
+ * filled here. Below the boundary everything sees plain values **except `venv`**: the
+ * tools receive the original source (`venvSource`) and re-read it per call, because the
+ * host does not re-run `apply` for volatile-only changes (design R8 / issue #16) —
+ * `scope` is the other such exception, handled by `mountToolScope`.
  *
  * @param {object} ctx Registrant context carrying the skill and tool registries.
  * @param {{ skillRoots?: string[], venv?: object }} [opts] Unified injection bag:
@@ -294,6 +310,17 @@ export function apply(ctx, opts) {
     bag = { skillRoots, venv: snapshotVenvConfig(undefined) };
   }
 
+  // R8（issue #16）：工具侧必须**现读**，故把原始来源传下去——loader 形态下 `opts.venv`
+  // 是 volatile 引用袋（宿主 `_commitVolatile()` 对 volatile-only 变更原地换代引用且不重跑
+  // apply，拍平即永久陈旧）；测试/嵌入形态下没有引用袋，退回 `bag.venv` 这份装配期快照，
+  // 与旧行为逐字相同。`opts.venv` 读取本身抛错时同样保持快照（与上面装配降级同口径）。
+  let venvSource = bag.venv;
+  try {
+    if (opts?.venv !== undefined && opts?.venv !== null) venvSource = opts.venv;
+  } catch {
+    // 保持装配期快照
+  }
+
   // 降级视图（spec §6 配置无效行）：与消费方**同一次** `effectiveInterpreter` 求值取
   // `invalidReason` 供 warn——本 Task 不替消费方判定 `state`、不另立判定路径。
   // `invalid × disabled`（enabled:false + 相对路径）的 invalidReason 沿用
@@ -301,12 +328,28 @@ export function apply(ctx, opts) {
   // `null`，不 warn（默认配置因此静默）。console.warn 仅作日志补充——可见反馈通道是
   // 入口 skill「配置无效」态与 check_env 的 `venv.path=null`。注入包保留原值：此处
   // **不改写** venv 值，行为层降级归各消费方。
-  const { invalidReason } = effectiveInterpreter(bag.venv);
-  if (invalidReason !== null) {
-    console.warn(
-      `${name}: venv.path 无效（${invalidReason}）——venv 视为关闭，按系统模式运行；`
-        + `请在设置页修正 venv.path（当前值：${String(bag.venv.path)}）`,
-    );
+  //
+  // R8（issue #16）：这条告警原先只在 apply 期报一次——用户在卡片里把路径改坏后，直到
+  // 下次启动才看得见。现补一条 `loader/volatile-update` 订阅：保存即报。同一原因不重复刷。
+  const applied = effectiveInterpreter(bag.venv);
+  let lastInvalidReason = applied.invalidReason;
+  if (lastInvalidReason !== null) console.warn(invalidVenvWarning(bag.venv, lastInvalidReason));
+  if (typeof ctx.on === 'function') {
+    const off = ctx.on('loader/volatile-update', () => {
+      let live;
+      try {
+        live = snapshotVenvConfig(venvSource);
+      } catch {
+        return; // 引用袋读不出当前值就没有可信结论：不告警（工具侧另有回落快照的兜底）
+      }
+      const reason = effectiveInterpreter(live).invalidReason;
+      if (reason !== lastInvalidReason) {
+        lastInvalidReason = reason;
+        if (reason !== null) console.warn(invalidVenvWarning(live, reason));
+      }
+    });
+    // 订阅装在根 ctx 上，插件卸载不会自动回收：与 scope 的 disposer 同样显式挂 effect。
+    if (typeof ctx.effect === 'function') ctx.effect(() => off, `${name}: venv config watch`);
   }
 
   // The registry takes a factory, matching the upstream reference shape. The second
@@ -331,7 +374,7 @@ export function apply(ctx, opts) {
   // subset travels the same bag; the test-only `testSeams` channel is deliberately
   // omitted on the production path (Task 9 consumes it through `createTools`).
   // Method form here too, for the same traceable-`this` reason as above.
-  const toolDefinitions = createTools({ skillRoots: bag.skillRoots, venv: bag.venv });
+  const toolDefinitions = createTools({ skillRoots: bag.skillRoots, venv: venvSource });
   for (const tool of toolDefinitions) {
     tools.register(tool);
   }

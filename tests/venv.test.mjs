@@ -1948,3 +1948,71 @@ test('cleanupOldVenv: 段边界——兄弟目录 `venv` vs `venv-older` 仍 del
     restore();
   }
 });
+
+// ─── R8（issue #16）：配置现读 ─────────────────────────────────────
+//
+// 卡片保存走宿主 `_commitVolatile()`：**原地换代引用、不重跑 apply**。因此凡把 volatile
+// 叶子在 apply 期拍平成普通值并闭包捕获的路径都会永久陈旧（设计 R8 的机制）。
+// `createVenvReader` 是这个边界的**唯一现读入口**：每次调用现 `.get()`，读失败回落创建期
+// 快照——工具调用永远拿得到三字段普通值，且永远不会比 apply 时更差。
+
+/** 最小 volatile 引用袋：`.get()` 闭包读一个可变的当前值（模拟宿主原地换代）。 */
+function makeVenvRefBag(initial) {
+  const state = { ...initial };
+  const leaf = (key) => ({ get: () => state[key] });
+  return {
+    state,
+    bag: {
+      enabled: leaf('enabled'),
+      path: leaf('path'),
+      oldPathPolicy: leaf('oldPathPolicy'),
+    },
+  };
+}
+
+test('createVenvReader: 引用袋原地换代后，每次调用都读到新值（R8 的核心判据）', () => {
+  const { state, bag } = makeVenvRefBag({ enabled: false, path: '/tmp/venv-a', oldPathPolicy: 'keep' });
+  const read = venv.createVenvReader(bag);
+
+  assert.deepEqual(read(), { enabled: false, path: '/tmp/venv-a', oldPathPolicy: 'keep' }, '首读＝当前值');
+  state.enabled = true; // 模拟 updateVolatile：引用不变、值原地换代
+  state.path = '/tmp/venv-b';
+  state.oldPathPolicy = 'delete';
+  assert.deepEqual(
+    read(),
+    { enabled: true, path: '/tmp/venv-b', oldPathPolicy: 'delete' },
+    '同一 reader 第二次读必须看到换代后的值（拍平快照则恒为旧值）',
+  );
+});
+
+test('createVenvReader: 缺省 / null 保持「未配置」语义，不补默认三字段', () => {
+  assert.equal(venv.createVenvReader(undefined)(), undefined, 'undefined 原样（判定落 invalid）');
+  assert.equal(venv.createVenvReader(null)(), null, 'null 是配置值而非缺省，原样保留');
+});
+
+test('createVenvReader: 普通值形态经归一化（非字面 true 的 enabled 一律 false）', () => {
+  assert.deepEqual(
+    venv.createVenvReader({ path: '/tmp/venv-c' })(),
+    { enabled: false, path: '/tmp/venv-c', oldPathPolicy: 'keep' },
+    '缺 enabled 的部分对象不得被当成已启用（G3-09 同判）',
+  );
+});
+
+test('createVenvReader: 叶子 .get() 抛错 → 回落创建期快照，不把异常带进工具调用', () => {
+  const state = { enabled: true, path: '/tmp/venv-d', oldPathPolicy: 'keep' };
+  let boom = false;
+  const bag = {
+    enabled: { get: () => { if (boom) throw new Error('volatile leaf exploded'); return state.enabled; } },
+    path: { get: () => state.path },
+    oldPathPolicy: { get: () => state.oldPathPolicy },
+  };
+  const read = venv.createVenvReader(bag);
+
+  assert.equal(read().enabled, true, '首次读成功');
+  boom = true;
+  assert.deepEqual(
+    read(),
+    { enabled: true, path: '/tmp/venv-d', oldPathPolicy: 'keep' },
+    '读失败沿用创建期快照（total 函数：不得让配置读取异常打断工具执行）',
+  );
+});

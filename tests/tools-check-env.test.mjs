@@ -1923,3 +1923,53 @@ test('check_env：description 的 venv 提示语切换——enabled=true 才追�
   assert.match(parts[0], /解释器/, '提示语点明解释器契约');
   assert.ok(!parts[0].includes('/tmp/venv-on'), '提示语不复述配置路径（不泄漏配置值）');
 });
+
+// ─── R8（issue #16）：venv 现读 ───────────────────────────────────
+//
+// check_env 是「入口技能正文指向的权威工具」（skill-provider 脚注：「实时以两个工具的
+// 输出为准」）。若它自己也读 apply 期快照，那条逃生门就是坏的——本用例锁住它必须现读。
+// 同时锁 description getter（宿主每次投影时解构 `definition.description`）。
+
+test('check_env: venv 引用袋现读——换代后 venv 小节与 description 同步跟随', async () => {
+  const { root, remove } = makeSkillRoot({ withGuard: false });
+  const home = isolateHome();
+  try {
+    const state = { enabled: false, path: join(tmpdir(), 'check-env-venv-a'), oldPathPolicy: 'keep' };
+    const bag = {
+      enabled: { get: () => state.enabled },
+      path: { get: () => state.path },
+      oldPathPolicy: { get: () => state.oldPathPolicy },
+    };
+    const tool = createTools({ skillRoots: [root], venv: bag })[CHECK_ENV_INDEX];
+
+    // 注入的 run 恒 ENOENT：本用例只测 venv 现读，不测探测面（探测面另有专例）。
+    const exec = {
+      skillRoots: [root],
+      run: async (command) => {
+        throw enoentError(command);
+      },
+    };
+
+    const before = await tool.execute({}, exec);
+    assert.equal(before.venv.enabled, false, '首读＝引用袋当前值（关态）');
+    assert.equal(before.venv.path, state.path, '关态 path 按配置原样');
+    assert.ok(!tool.description.includes('venv 已启用'), '关态描述不带解释器提示');
+
+    // 模拟宿主 updateVolatile：引用不变、值原地换代（开态 + 未创建的路径 → on-missing）。
+    state.enabled = true;
+    state.path = join(tmpdir(), 'check-env-venv-b');
+
+    const after = await tool.execute({}, exec);
+    assert.equal(after.venv.enabled, true, 'venv 小节跟随换代（拍平快照则仍为 false）');
+    assert.equal(after.venv.path, state.path, 'path 同样跟随');
+    assert.deepEqual(
+      after.venv.python,
+      { found: false, version: null, meetsSkillRequirement: null },
+      'on-missing → 探的是 venv 解释器（注入 run 恒 ENOENT ⇒ found=false），不回退系统 python3',
+    );
+    assert.ok(tool.description.includes('venv 已启用'), 'description getter 现读');
+  } finally {
+    home.restore();
+    remove();
+  }
+});

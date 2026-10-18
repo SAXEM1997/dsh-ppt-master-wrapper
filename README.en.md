@@ -89,7 +89,7 @@ All three tools are **venv-aware** (payloads carry a `venv` section; with `venv.
 
 ## Configuration
 
-The plugin declares a native cordis Config — two key groups, every leaf `.volatile()`. Saving through the **Plugins-page card** takes the host's volatile fast path and **takes effect without a restart**; hand-editing the profile `cordis.patch.yml` **requires restarting DSH**. The two channels are equivalent — whichever writes first wins.
+The plugin declares a native cordis Config — two key groups, every leaf `.volatile()`. Saving through the **Plugins-page card** takes the host's volatile fast path and **takes effect without a restart** (all three tools re-read the configuration on every call, `venv.*` exactly like `scope.*`; the one exception is the synthesized entry skill `ppt-master-env`, whose body is a registration-time snapshot and whose own footnote points at the two live tools); hand-editing the profile `cordis.patch.yml` **requires restarting DSH**. The two channels are equivalent — whichever writes first wins.
 
 ### The Plugins-page card (preferred entry)
 
@@ -107,6 +107,7 @@ GUI sidebar **Plugins → Installed → `dsh-ppt-master-wrapper`** → the card 
 - **Container advice**: point `venv.path` at a persistent volume (e.g. `/dsh-home/.ppt-master/venv`) — a venv's internal symlinks reference absolute container paths, so whether it survives an image change depends on the image staying the same.
 - **Damage recovery**: delete and recreate (`rm -rf <venv.path>`, then re-run `setup_deps`); a half-built venv (missing `bin/pip3`) likewise — install `python3-venv` first if ensurepip is missing.
 - **Deletion safety**: automatic deletion only touches old venvs that carry an **ownership marker** and satisfy the safety conditions; `enabled=false` deletes nothing; **do not store user data inside the venv directory**. Both kinds of orphan directories (unmarked / marked-but-unregistered) need manual `rm -rf`.
+- **Configuration hot reload**: all three tools re-read `venv.*` on every call, so a card save applies immediately (no restart). The body of the synthesized entry skill `ppt-master-env` is a **registration-time snapshot** — after changing `venv.*` it still shows the old routing guidance; defer to `ppt_master_info` / `ppt_master_check_env`, which its footnote names (restarting DSH refreshes the body too).
 - Full decision criteria and implementation details: [AGENTS.md](AGENTS.md) §6.
 
 ### Tool visibility scope (global / selected workspaces)
@@ -147,7 +148,7 @@ After a plugin upgrade adds new configuration fields, compare and complete exist
 
 **What needs a restart**:
 
-- Saving configuration on the card — **no** (volatile fast path);
+- Saving configuration on the card — **no** (volatile fast path; the tool side applies immediately, `venv.*` included). The **body** of the synthesized entry skill `ppt-master-env` is a registration-time snapshot and does not rewrite itself — its own footnote defers live state to `ppt_master_info` / `ppt_master_check_env`;
 - Editing only `lib/client.js` — **no** (host hot-updates via stat polling, ~500 ms);
 - Editing `package.json`'s `dsh.client` / `exports["./client"]` declarations, or the profile patch by hand — **yes**.
 
