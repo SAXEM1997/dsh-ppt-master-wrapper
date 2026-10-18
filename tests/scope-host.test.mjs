@@ -864,3 +864,412 @@ test('F4: registry.list() 抛错后自动复检（1000ms 内自愈，不必等�
   assert.equal(record.installed, 1, '复检后应自愈装上限制层');
   handle.dispose();
 });
+
+// ─── M5：throwing `toString` 不得让装配期抛错（整插件装载失败）────────
+
+/** 带 throwing `toString` / `valueOf` / `Symbol.toPrimitive` 的敌意对象。 */
+function hostile() {
+  return {
+    toString() {
+      throw new Error('boom');
+    },
+    valueOf() {
+      throw new Error('boom');
+    },
+    [Symbol.toPrimitive]() {
+      throw new Error('boom');
+    },
+  };
+}
+
+test('M5: 敌意 toString 的配置/注册表项 ⇒ mountToolScope 不抛，按既定失败形态处理', async () => {
+  const evil = hostile();
+
+  // ① 配置名单里混入敌意项：名单项取不到文本 ⇒ 丢弃（不是"配置非法"）。
+  const a = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent: a.agent, record: a.record }] });
+  let handle;
+  assert.doesNotThrow(() => {
+    handle = mount(hostCase, { mode: 'selected', workspaceIds: [evil, 'w1'] });
+  });
+  await handle.whenIdle();
+  assert.equal(a.record.installed, 1, 'w2 不在名单 ⇒ 装层；敌意项被丢弃不影响判定');
+  assert.deepEqual(hostCase.calls.warnings, [], '敌意项不是降级，不得告警');
+  handle.dispose();
+
+  // ② 注册表项的 title/sessionIds 带敌意 toString：归一化不抛，判定照常。
+  const b = makeAgent({ id: 'b', cwd: '/workspace/hermes' });
+  const evilWorkspaces = [
+    { id: 'w1', title: evil, path: '/workspace/ppt-master', sessionIds: [evil] },
+    { id: 'w2', title: 'hermes', path: '/workspace/hermes', sessionIds: [] },
+  ];
+  const hostCase2 = makeHost({ agents: [{ agent: b.agent, record: b.record }], workspaces: evilWorkspaces });
+  let handle2;
+  assert.doesNotThrow(() => {
+    handle2 = mount(hostCase2, SELECTED_W1);
+  });
+  await handle2.whenIdle();
+  assert.equal(b.record.installed, 1, '注册表照常可读 ⇒ 判定照常（w2 不可见）');
+  handle2.dispose();
+});
+
+// ─── M6：注入永久 pending ⇒ 看门狗点名告警（只补可诊断性）────────────
+
+/** 等到给定毫秒（看门狗 5000ms，这里留裕量）。 */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('M6: selected + 注入回调永不到达 ⇒ 看门狗 warn 恰一次，且不改变 fail 语义', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }], injectNeverResolves: true });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  assert.deepEqual(hostCase.calls.warnings, [], '到点之前不得告警');
+  await sleep(5200);
+  const watchdogLines = hostCase.calls.warnings.filter((line) => /注入未到达|判定未生效/.test(line));
+  assert.equal(watchdogLines.length, 1, `看门狗应恰告警一次，实际：${JSON.stringify(hostCase.calls.warnings)}`);
+  assert.match(watchdogLines[0], /selected/, '告警必须点名 selected');
+  assert.match(watchdogLines[0], /agents|workspaceRegistry/, '告警必须点名缺失的注入服务');
+
+  // 只补可诊断性：不因此置 denyAll，也不因告警而多装层/多装 guard。
+  assert.equal(record.installed, 0, '不改 fail 语义（仍是不判定、不装层）');
+  assert.equal(hostCase.calls.guards.length, 1, 'guard 数量不变');
+  assert.equal(
+    hostCase.calls.guards[0]({ name: 'ppt_master_info', agent: { id: 'a' } }),
+    undefined,
+    '不置 denyAll：verdict 不得因看门狗转为拒绝',
+  );
+
+  // 再多等一个周期：warnOnce 去重 + timer 已到期，不得重复告警。
+  await sleep(1200);
+  assert.equal(
+    hostCase.calls.warnings.filter((line) => /注入未到达|判定未生效/.test(line)).length,
+    1,
+    '重复告警（warnOnce 失效或 timer 未清理）',
+  );
+  handle.dispose();
+});
+
+test('M6: global 模式 ⇒ 看门狗不启动，任何时刻都零日志', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }], injectNeverResolves: true });
+  const handle = mount(hostCase, GLOBAL);
+  await handle.whenIdle();
+  assert.deepEqual(hostCase.calls.injectKeys, [], 'global 不注入');
+
+  await sleep(5200);
+  assert.deepEqual(hostCase.calls.warnings, [], 'global 下看门狗必须完全不启动（红线：零新增日志）');
+  handle.dispose();
+});
+
+test('M6: selected 期间切回 global ⇒ 到点后不得冒出看门狗日志', async () => {
+  const hostCase = makeHost({ injectNeverResolves: true });
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await handle.whenIdle();
+  assert.deepEqual(hostCase.calls.injectKeys, [['agents', 'workspaceRegistry']]);
+
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  await sleep(5200);
+
+  assert.deepEqual(hostCase.calls.warnings, [], '切回 global 必须清掉看门狗 timer');
+  handle.dispose();
+});
+
+test('M6: 注入回落到达 ⇒ 看门狗已清，不得再告警', async () => {
+  let deliver;
+  const hostCase = makeHost({ agents: [] });
+  hostCase.ctx.inject = (keys, cb) => {
+    hostCase.calls.injectKeys.push(keys);
+    deliver = () => cb(hostCase.child);
+    return undefined;
+  };
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  deliver(); // 5000ms 之前到达
+  await handle.whenIdle();
+  await sleep(5200);
+
+  assert.deepEqual(hostCase.calls.warnings, [], '注入到达后看门狗必须已被清理');
+  handle.dispose();
+});
+
+// ─── M19：agent/disposed 清理 per-agent 记账 ────────────────────
+
+test('M19: agent/disposed 清掉该 agent 的 retries 与 warned 键（不动 agents-list）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    // agent 'a' 的层装不上 ⇒ 产生按 agent 记账的 `restrict-failed:a` 告警键（warned 侧）。
+    restrictThrows: true,
+    // 判定永远 unresolved ⇒ 产生 per-agent 复检额度键 `a`（retries 侧）。
+    resolve: async () => {
+      throw new Error('ENOENT: realpath');
+    },
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.ok(
+    hostCase.calls.warnings.some((line) => /restrict/.test(line)),
+    `前置：需要 restrict-failed:a 告警键，实际：${JSON.stringify(hostCase.calls.warnings)}`,
+  );
+
+  // 让 agents.list() 抛一次 ⇒ 记下**非 agent 键** `agents-list`（不得被 disposed 误删）。
+  hostCase.child.agents.list = () => {
+    throw new Error('registry busy');
+  };
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+
+  // disposed：该 agent 的记账全部清掉。
+  hostCase.child.agents.list = () => [];
+  await hostCase.emit('agent/disposed', { agent });
+  await handle.whenIdle();
+  assert.equal(record.released, 0, '前置：restrict 失败时从未装上限制层');
+
+  // 反证 warned 键 `restrict-failed:a` 已清：同一 agent 再判一次失败必须**再次**告警。
+  // 修复前该键还在 ⇒ warnOnce 吞掉，计数不增。
+  const beforeCount = hostCase.calls.warnings.filter((line) => /restrict/.test(line)).length;
+  hostCase.child.agents.list = () => [agent];
+  await hostCase.emit('agent/created', { agent });
+  await handle.whenIdle();
+  const afterCount = hostCase.calls.warnings.filter((line) => /restrict/.test(line)).length;
+  assert.equal(afterCount, beforeCount + 1, `disposed 后 warned 键必须已清：${beforeCount} → ${afterCount}`);
+
+  // 反证 retries 键 `a` 已清：额度回到满值 ⇒ 1s 后必须有复检（注册表再次被读）。
+  // 修复前额度已耗尽（3/3）⇒ 不排 timer，list() 不再增长。
+  const listCallsBefore = hostCase.calls.listCalls;
+  await sleep(1200);
+  await handle.whenIdle();
+  assert.ok(
+    hostCase.calls.listCalls > listCallsBefore,
+    `disposed 后 retries 键必须已清（额度回来 ⇒ 有复检）：${listCallsBefore} → ${hostCase.calls.listCalls}`,
+  );
+
+  // 非 agent 键 `agents-list` 不得被误删：agents.list() 再抛一次时…
+  const warnedBefore = hostCase.calls.warnings.length;
+  hostCase.child.agents.list = () => {
+    throw new Error('registry busy');
+  };
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+  assert.equal(
+    hostCase.calls.warnings.length,
+    warnedBefore,
+    `non-agent 键 agents-list 不得被 disposed 误删：${JSON.stringify(hostCase.calls.warnings.slice(warnedBefore))}`,
+  );
+  handle.dispose();
+});
+
+// ─── M22：每轮只刷新一次工作区快照（消除 N+1 次 list()）──────────
+
+test('M22: 每轮 registry.list() 恰调用一次（不随 agent 数放大）', async () => {
+  const a1 = makeAgent({ id: 'a1', cwd: '/workspace/hermes' });
+  const a2 = makeAgent({ id: 'a2', cwd: '/workspace/other' });
+  const a3 = makeAgent({ id: 'a3', cwd: '/workspace/ppt-master' });
+  const hostCase = makeHost({ agents: [a1, a2, a3] });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  assert.equal(hostCase.calls.listCalls, 1, `3 个 agent 的一轮只读一次注册表，实际 ${hostCase.calls.listCalls} 次`);
+  assert.equal(a1.record.installed, 1);
+  assert.equal(a2.record.installed, 1);
+  assert.equal(a3.record.installed, 0, '名单内工作区不受影响');
+  assert.equal(hostCase.calls.resolveCalls.length, 3, '每个 agent 仍各判一次（语义不变）');
+
+  // 外部事件再来一轮：仍是一次，而不是 1+N。
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.listCalls, 2, `第二轮也只读一次，实际 ${hostCase.calls.listCalls} 次`);
+  handle.dispose();
+});
+
+test('M22: 读失败时"保留旧快照 + 排复检"语义不变（本轮不产生新判定）', async () => {
+  let broken = false;
+  const a = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent: a.agent, record: a.record }], workspaces: [W1, W2] });
+  const originalList = hostCase.child.workspaceRegistry.list;
+  hostCase.child.workspaceRegistry.list = () => {
+    if (broken) throw new Error('registry down');
+    return originalList();
+  };
+
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.equal(a.record.installed, 1, '首轮：w2 不可见 ⇒ 装层');
+
+  // 读失败的一轮：保留旧快照（不得拆层、不得重装），并排一次有界复检。
+  broken = true;
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+  assert.equal(a.record.released, 0, '瞬时读失败不得拆掉已有层');
+  assert.equal(a.record.installed, 1, '也不得重复安装');
+
+  // 复检自愈：读成功 ⇒ 快照回到正常，层状态不变（差异式安装）。
+  broken = false;
+  await sleep(1200);
+  await handle.whenIdle();
+  assert.equal(a.record.released, 0);
+  assert.equal(a.record.installed, 1, '自愈后仍是 1 层（无先拆后装抖动）');
+  handle.dispose();
+});
+
+// ─── M30：额度耗尽 ⇒ 停排 timer ⇒ 外部事件唤醒 ⇒ 层装回 ─────────
+
+test('M30: unresolved 额度耗尽后停排 timer，tools/change 唤醒新一轮并装回层', async () => {
+  // 分支：GR3-1 说"额度耗尽后靠外部事件自愈"——本用例专测这条，而不是额度耗尽前的复检自愈。
+  let mode = 'unresolved'; // unresolved ⇒ 判不出 ⇒ 不可见
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    resolve: async () => {
+      if (mode === 'unresolved') throw new Error('ENOENT: realpath');
+      if (mode === 'invisible') return W2; // 在登记表里，但不在名单 ⇒ 不可见
+      return W1; // 在名单 ⇒ 可见
+    },
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+  assert.equal(record.installed, 1, '首判 unresolved ⇒ 不可见 ⇒ 装层');
+
+  // 跑满 MAX_RETRIES=3 次复检（~3s）。每波 1 轮，每轮 1 次 list()。
+  await sleep(3600);
+  await handle.whenIdle();
+  const settledCalls = hostCase.calls.listCalls;
+  const settledInstalled = record.installed;
+
+  // ① 额度耗尽 ⇒ 不再排 timer（1.5s 内 list() 不再增长）。
+  await sleep(1500);
+  await handle.whenIdle();
+  assert.equal(
+    hostCase.calls.listCalls,
+    settledCalls,
+    `额度耗尽后必须停排 timer：${settledCalls} → ${hostCase.calls.listCalls}`,
+  );
+
+  // ② 外部事件唤醒：此时 resolveByPath 恢复且命中名单 ⇒ 新一轮判定 ⇒ 层释放。
+  mode = 'visible';
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.listCalls, settledCalls + 1, 'tools/change 必须启动新一轮（恰多读一次注册表）');
+  assert.equal(record.released, 1, '新一轮判定可见 ⇒ 层被释放（可见性恢复）');
+  assert.equal(record.installed, settledInstalled, '不改动安装次数（只释放）');
+
+  // ③ 再变回不可见：外部事件同样能唤醒并**装回层**（这是"额度耗尽后的唯一自愈通道"）。
+  mode = 'invisible';
+  const installedBefore = record.installed;
+  await hostCase.emit('tools/change');
+  await handle.whenIdle();
+  assert.equal(record.installed, installedBefore + 1, '外部事件唤醒后层被重新装回');
+  assert.equal(record.released, 1, '不重复释放');
+  handle.dispose();
+});
+
+test('M30: 额度耗尽后 loader/volatile-update 与 agent/created 同样能唤醒并装回层', async () => {
+  let broken = true;
+  // cwd 取 /workspace/ppt-master：恢复后 resolveByPath 命中 w1（名单内）⇒ 可见 ⇒ 释放层。
+  // 若沿用 /workspace/hermes，即便恢复也只落在 w2（名单外）⇒ 定义上不可能"可见翻转"，测不出唤醒。
+  const a = makeAgent({ id: 'a', cwd: '/workspace/ppt-master' });
+  const hostCase = makeHost({
+    agents: [{ agent: a.agent, record: a.record }],
+    resolve: async (path) => {
+      if (broken) throw new Error('ENOENT: realpath');
+      return path === '/workspace/ppt-master' ? W1 : W2;
+    },
+  });
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await handle.whenIdle();
+  assert.equal(a.record.installed, 1);
+
+  await sleep(3600); // 耗尽额度
+  await handle.whenIdle();
+  const settled = hostCase.calls.listCalls;
+  await sleep(1500);
+  await handle.whenIdle();
+  assert.equal(hostCase.calls.listCalls, settled, '前置：额度已耗尽，timer 已停');
+
+  // ① volatile 更新唤醒：判定翻转为"可见"（命中 w1）⇒ 释放层。
+  broken = false;
+  await hostCase.emit('loader/volatile-update', [['scope', 'workspaceIds']]);
+  await handle.whenIdle();
+  assert.equal(a.record.released, 1, 'volatile 更新唤醒新一轮 ⇒ 命中 w1 ⇒ 释放层');
+
+  // ② agent/created 唤醒：新 agent 落在名单外（w2）⇒ 装层。
+  const b = makeAgent({ id: 'b', cwd: '/workspace/hermes' });
+  hostCase.child.agents.list = () => [a.agent, b.agent];
+  const results = await hostCase.emit('agent/created', { agent: b.agent });
+  await results[0];
+  assert.equal(b.record.installed, 1, 'agent/created 唤醒 ⇒ 新 agent 装层');
+  assert.equal(a.record.installed, 1, 'a 可见：不得被重新装层');
+  assert.equal(a.record.released, 1, 'a 只释放过一次（无抖动）');
+  handle.dispose();
+});
+
+// ─── M25：两类 timer 必须 unref（否则 pending 注入/复检会把进程钉住）─────
+//
+// 纪律来源：`INJECT_WATCHDOG_MS` 与 `RETRY_DELAY_MS` 两条 timer 都是**纯背景**动作
+// （告警 / 补一轮判定）。不 unref 的话，一个"注入永不到达"的宿主实例会让 node 进程
+// 在整个 timer 周期内退不出去；旧的复检 timer 同理。这条纪律此前只有实现、没有守护，
+// 故用一个记录型 `setTimeout` spy 直接断言"unref 被调用过"这一事实。
+
+test('M25: 复检 timer 与注入看门狗 timer 都被 unref()（setTimeout spy）', async (t) => {
+  const realSetTimeout = globalThis.setTimeout;
+  // 记录：{ delay, timer, unrefCalled }。timer 对象本身（真 timer）保持可用，
+  // 以确保被测逻辑行为不变——只在其上挂一个"是否被 unref"的观测钩子。
+  const scheduled = [];
+  const spySetTimeout = (fn, delay, ...rest) => {
+    const timer = realSetTimeout(fn, delay, ...rest);
+    const record = { delay, timer, unrefCalled: false };
+    const realUnref = timer.unref;
+    if (typeof realUnref === 'function') {
+      timer.unref = function unrefPatched() {
+        record.unrefCalled = true;
+        return realUnref.call(this);
+      };
+    }
+    scheduled.push(record);
+    return timer;
+  };
+  t.after(() => {
+    globalThis.setTimeout = realSetTimeout;
+  });
+  globalThis.setTimeout = spySetTimeout;
+
+  // ── 场景 A：selected + 注入回调永不到达 ──
+  // 注入 pending ⇒ `activate` 不执行，唯一该排的 timer 就是看门狗那条。
+  const a = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent: a.agent, record: a.record }],
+    injectNeverResolves: true,
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  const watchdog = scheduled.filter((record) => record.delay === 5000);
+  assert.equal(watchdog.length, 1, `应恰有一条 5000ms 看门狗 timer，实际 ${watchdog.length} 条`);
+  assert.equal(watchdog[0].unrefCalled, true, '注入看门狗 timer 必须 unref()：否则 pending 注入会把进程钉住');
+
+  handle.dispose();
+
+  // ── 场景 B：复检 timer（`scheduleRetry`，1000ms）──
+  scheduled.length = 0;
+  const b = makeAgent({ id: 'b', cwd: '/workspace/hermes' });
+  const retryCase = makeHost({
+    agents: [{ agent: b.agent, record: b.record }],
+    resolve: async () => {
+      throw new Error('ENOENT: realpath'); // 判定级 unresolved ⇒ 每轮排一次复检
+    },
+  });
+  const retryHandle = mount(retryCase, SELECTED_W1);
+  await retryHandle.whenIdle();
+
+  const retries = scheduled.filter((record) => record.delay === 1000);
+  assert.ok(retries.length >= 1, `应至少排出一条 1000ms 复检 timer，实际 ${retries.length} 条`);
+  for (const record of retries) {
+    assert.equal(record.unrefCalled, true, '复检 timer 必须 unref()：否则额度期内进程退不出去');
+  }
+  retryHandle.dispose();
+});

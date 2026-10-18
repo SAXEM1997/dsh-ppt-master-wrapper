@@ -99,7 +99,7 @@ export const Config = z.object({
 
 实测：`z.union([z.const(...)])` + `.default()` + `.volatile()` 可组合；`.volatile()` 包成带 `.get()` 的引用对象；`mode:'nope'` 在**校验期**抛 `ValidationError`。卡片写面只产出合法值（模式单选、名单恒为字符串数组），故装载期拒绝只是纵深防御。
 
-### 5.2 `lib/scope.js`（纯逻辑，已实现并有 34 条单测）
+### 5.2 `lib/scope.js`（纯逻辑，已实现并有 40 条单测）
 
 | 导出 | 契约 |
 |---|---|
@@ -158,7 +158,7 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 
 ### 5.5 卡片（`lib/client.js`）
 
-新增一节，插在**重置说明（`reset.hint`）之后、状态行之前**（实际渲染序：title → intro → 版本块 → venv 三字段 → reset.hint → **本节点** → 状态/提示行），与 venv 区互不影响；venv 字段的 `ready` 门控不适用于本节（模式单选在 `loading`/`unavailable` 下禁用即可）。
+新增一节，插在**重置说明（`reset.hint`）之后、状态行之前**（实际渲染序：title → intro → 版本块 → venv 三字段 → reset.hint → **本节点** → 状态/提示行），与 venv 区互不影响；venv 字段的 `ready` 门控不适用于本节——本节只需"宿主给了 scope 基值"即在 `loading`/`unavailable`/只读形态下渲染：模式单选按写门 `disabled`（悬停可见、点不动）。但**无 `ready` 快照基值时（`baseline === undefined`，连表单值都读不到）整节隐藏**（不是逐控件禁用）：用户在此态看不到 scope 控件，也就不会误操作 [M21 勘误：原措辞为"禁用即可"，实现与测试均为整节隐藏]。
 
 | 控件 | id | 行为 |
 |---|---|---|
@@ -214,14 +214,14 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 
 | 层 | 文件 | 覆盖 |
 |---|---|---|
-| 纯逻辑单测 | `tests/scope.test.mjs`（新，34 条，已绿） | 归一化（缺省/非法/引用解引用/去重排序）、严格序、四态判定、投影与边界归一化、工具名派生 |
+| 纯逻辑单测 | `tests/scope.test.mjs`（新，40 条，已绿） | 归一化（缺省/非法/引用解引用/去重排序）、严格序、四态判定、投影与边界归一化、工具名派生 |
 | 宿主集成（fake host） | `tests/scope-host.test.mjs`（新） | 首轮差异式装/卸；`agent/created` **监听器返回 promise** 且首轮即正确；`agent/disposed`；`tools/change` 幂等（不重复装层）；`loader/volatile-update` 双向切换；guard 四分支 + 同步重判；`global` 零安装零日志；**§6 表逐行一条用例**（含 restrict 安装抛错、释放抛错两条独立行为）；拆除顺序与幂等 |
 | 客户端静态契约 | `tests/client-half.test.mjs`（改） | 字典 zh/en 键集相等；新控件 id；`buildSetOps` 五叶子顺序与数组值比较；`RESET_OPS` **仍为 3 条**；scope 区"恢复默认"两条 unset；ops 路径首段 ≡ 宿主 `Config` 顶层键；**只改 scope 的快照换代必须触发重渲染/清脏**（`sameSnapshot`）；`var()` 兜底与无硬编码颜色；降级/空态/失效 id 渲染 |
 | 装配回归 | `tests/apply.test.mjs`（改） | `makeCtx` 增加一个**永不回调**的 `inject`（模拟注入未到达 ⇒ 不 warn），既有"能力齐全时不得输出降级日志"原样通过；新增：`mode='selected'` 时缺能力会 warn 一次 |
 | 版本/骨架 | `tests/skeleton.test.mjs`（既有） | `6.7.1-r1` 满足 `upstream + -rN`（既有断言） |
 | 版本一致性 | `tests/client-half.test.mjs`（既有断言） | 卡片 `PLUGIN_VERSION` ≡ `package.json.version`、`UPSTREAM_VERSION` ≡ vendor `SKILL.md`（既有，无需新增） |
 
-全量命令：`node --test tests/*.test.mjs`（本机 Node 22 下目录参数失效）。基线 577/577（17s）。
+全量命令：`node --test tests/*.test.mjs`（本机 Node 22 下目录参数失效）。基线 577/577（17s，**设计时点快照**；当前 710/710，CI 等价环境 710/708——2 条 skip 是显式声明）。
 
 **人工验收**：① 默认 `global` 下本会话仍见 3 工具；② 切 `selected` 且只勾 `ppt-master` 工作区 → 本会话仍见（**首轮即见**）；③ 在 `hermes` 工作区新开会话 → 工具表无这 3 条；④ 卡片勾选保存后不重启即生效。
 
@@ -258,6 +258,8 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 - 不重制市场截图（R9）。
 
 ## 11. 审查裁决记录
+
+> 注：本节表内 `F#` 属**对齐审查**序列；正文与各轮记录中出现的 `结构审查 F5`、`SF5`/`RF5`/`GF5` 分属结构/落地/工具面各自的编号序列，与表内 `F5` 不同源，勿混。
 
 | 编号 | 来源 | 裁决 |
 |---|---|---|

@@ -10,8 +10,11 @@
   完整性门校验。任何改动（哪怕一行注释）都会破坏同步与校验链——上游更新只能经
   `scripts/sync-upstream.mjs` 进入。
 - **`lib/venv.js` 的 apply 期快照陈旧性（设计 R8）是已登记的未修项**，刻意不动；
-  `venv` 三叶子共享同一语义，修一处必须三处一起修（见 issue 记录与
-  `docs/superpowers/specs/` 下 venv 设计文档）。
+  `venv` 三叶子共享同一语义，修一处必须三处一起修。R8 的编号与登记面在
+  `docs/superpowers/specs/2026-10-18-tool-scope-design.md`（§8「风险与未知」表的 R8 行，
+  :239；另 :32/:257/:272/:273 引作「既有缺陷、不属本特性、不夹带修」）。venv 设计文档
+  （`2026-10-15-ppt-master-venv-config-design.md`）**未登记**该未修项——其中
+  `grep -E 'R8|快照陈旧|apply 期快照'` 零命中，其 R# 序列（R3–R12）属另一套编号。
 - 工具名清单**只从 `createTools()` 派生**（`toolNamesOf`），不得写第二份字面量。
 - 零 npm 依赖（`package.json` 无 `dependencies`/`devDependencies`），测试与脚本只用
   Node 内置模块。
@@ -63,7 +66,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 688 tests / 686 pass / 0 fail / 2 skip（无宿主 SDK 环境）；本机真实 SDK 环境 688/688 |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 710 tests / 708 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 710/710 |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -92,12 +95,12 @@
 
 | 版本（tag） | 详细说明 |
 |---|---|
-| `v6.7.0` | 首次交付：vendor 上游 v6.7.0（78MB 逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
+| `v6.7.0` | 首次交付：vendor 上游 v6.7.0（约 78 MiB，逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
 | `v6.7.0-r1` | 规则③自动 bump 首跑：Gate 3 审查修复——`mapDistToImport` 原型键防护、branch-ref last-sync 可读性、`envFileExists` 三处探测、规则③执行主体修订 |
 | `v6.7.0-r2` | UltraReview 两轮修复：规则③自触发锚定排除、push 部分失败 tag 补推、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生、dry-run 状态写门控 |
 | `v6.7.0-r3` | venv 解释器隔离 + 插件页配置卡片（客户端半边）+ GitHub 发布面（双语 README/NOTICE/logo） |
 | `v6.7.1` | 上游同步（规则①）：vendor v6.7.1 逐字节 |
-| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670 |
+| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670（r1 时点；现 710） |
 | （未发版）| `applyVersionLinkage` 常量联动（#3，PR #8）；CI + 共享 stub SDK 构造器（#4，PR #9）——仓库工具链变更，不改插件产物，不 bump |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
@@ -124,5 +127,24 @@
 ## 8. 设计文档索引
 
 `docs/superpowers/specs|plans|clarifications/` 按特性归档（OpenSpec CLI 缺席，Phase 1 走
-跳过路径，`.superpowers/.phase1-skipped` 为证）。查机制先读对应特性 design 的 §11 审查
-裁定表——历轮 Gate 3 的 P0/P1/P2 全部裁决在案。
+跳过路径，`.superpowers/.phase1-skipped` 为证）。
+
+§11 审查裁定表**只有一篇 design 有**——`2026-10-18-tool-scope-design.md` §11「审查裁决记录」
+（:260 起），内含 Gate 3 三轮分节裁决；实测 `grep -c '^## 11' docs/superpowers/specs/*.md`
+对其余三篇均为 0，且 `2026-10-16-ppt-master-config-ui-design.md`、venv、base wrapper 三篇
+design 都没有 §11 节。其余三篇的审查记录分散在这些位置，没有统一编号：
+
+- **`2026-10-14-dsh-ppt-master-wrapper`**：`.superpowers/sdd/2026-10-14-dsh-ppt-master-wrapper/`
+  下 `ultra-merged-table.md`（R1）、`ultra-r2-merged-table.md`（R2）是合并判断表，
+  `ultra-raw-findings.md` / `ultra-r2-raw-findings.md` 是原始条目，`progress.md` 是单行小结；
+  其中没有「§11」命名，也没有统一裁定表。
+- **`2026-10-15-ppt-master-venv-config`**：裁定散在
+  `.superpowers/sdd/2026-10-15-ppt-master-venv-config/progress.md`（Gate 3 round=1/2、
+  `Ruling:` 行、`[GATE_PASSED]`）与 `docs/superpowers/plans/2026-10-15-ppt-master-venv-config.md`
+  「spec 偏差登记」（:214 起，标 Gate 3 编号 G3-*）；同目录还有 `gate3-fix-report.md`、
+  `gate3r2-fix-report.md`、`gate3-step1-digest.md`、`gate3r2-digest.md`。没有集中裁定表。
+- **`2026-10-16-ppt-master-config-ui`**：`.superpowers/sdd/2026-10-16-ppt-master-config-ui/progress.md`
+  里有一行 Gate 3 结论（`Gate 3: PASS —`，含 P2/P3 处置），
+  `docs/superpowers/plans/2026-10-16-ppt-master-config-ui.md` 有「存疑点与裁决记录」节
+  （:339，Gate 2 输入），`clarifications/2026-10-16-ppt-master-config-ui.md` 有 1 处终裁。
+  没有集中裁定表。

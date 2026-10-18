@@ -21,7 +21,7 @@
 ## PR 前必须跑的校验
 
 ```bash
-# 1) 全套测试（当前 577 例）
+# 1) 全套测试（当前 710 例；CI 等价环境 710/708，2 条 skip 为显式声明）
 node --test tests/*.test.mjs
 
 # 2) 对照已安装 DSH SDK 的契约检查（spec §7.7 六项，warnings 必须为 0）
@@ -32,6 +32,8 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.1@aabf2a0541d
 ```
 
 > 环境前置：`@deepseek-ai/schemastery` 须可由宿主 profile 的 `node_modules` 解析（详见 README「本地校验」）。若该前置不满足，部分测试文件会在 **import 期**整体失败，而不是单条用例红。
+
+以上 1) 与 2) 同时由 GitHub Actions CI（`.github/workflows/ci.yml`）在每个 PR 与 `main` 的 push 上跑：job id `test`，已设为 `main` 的**必需状态检查**，PR 必须等它通过才能合并。（3) 不入 CI，仍需本地跑。）
 
 ## 红线
 
@@ -56,7 +58,10 @@ node scripts/sync-upstream.mjs --dry-run   # 先看计划
 node scripts/sync-upstream.mjs --no-push   # 本地替换 + commit + tag（推送自行控制）
 ```
 
-同步后**必须**核对：`lib/client.js` 的 `PLUGIN_VERSION` / `UPSTREAM_VERSION` 与 `package.json` 一致（卡片版本块与测试都依赖它），并补双语 README 的版本表。
+同步后**必须**核对两个版本常量各自的对标关系（卡片版本块与测试都依赖它），并补双语 README 的版本表：
+
+- `PLUGIN_VERSION` ≡ `package.json.version`（本插件自身版本，含 `-rN` 后缀，如 `6.7.1-r1`）；
+- `UPSTREAM_VERSION` ≡ vendor `skills/ppt-master/SKILL.md` 的 `metadata.version`（上游版本，如 `6.7.1`）——**不是** `package.json.version`。
 
 ---
 

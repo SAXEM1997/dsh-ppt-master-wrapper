@@ -21,7 +21,7 @@ labels: enhancement
 ## 影响面 / Impact
 
 - 是否触及 `skills/ppt-master/**`（上游 vendor 树）？**不应触及**——如需要，请改上游
-- 是否影响配置 schema（`venv.*`）？是 → 需说明 volatile 语义与升级补全
+- 是否影响配置 schema（`venv.*`、`scope.*`）？是 → 需说明 volatile 语义与升级补全
 - 是否需要宿主新版本？是 → 写明最低 DSH 版本与降级行为
 
 ## 备选方案 / Alternatives

@@ -379,3 +379,113 @@ test('judgeAgent: 判定结果带 agentId 与 cwd（供诊断与 guard 回显）
   assert.equal(judgement.agentId, 'agent-1');
   assert.equal(judgement.cwd, '/tmp/scratch');
 });
+
+// ─── M5：throwing `toString` 不得穿透（「任何函数都不向外抛」不变量）──────
+//
+// 最坏路径：装配期 `syncMode()` → `readScopeConfig` 抛 ⇒ `mountToolScope` 抛 ⇒ `apply` 抛
+// ⇒ 整个插件（含 vendor 技能面）装载失败。敌意对象的 throwing `toString` 是纯逻辑层
+// 唯一还能漏出的转换点，故逐个导出钉死"不抛 + 既定失败形态"。
+
+/** 带 throwing `toString` / `valueOf` / `Symbol.toPrimitive` 的敌意对象。 */
+function hostile() {
+  return {
+    toString() {
+      throw new Error('boom');
+    },
+    valueOf() {
+      throw new Error('boom');
+    },
+    [Symbol.toPrimitive]() {
+      throw new Error('boom');
+    },
+  };
+}
+
+test('M5: readScopeConfig 遇 throwing toString 的名单项 ⇒ 不抛，该项按"取不到文本"丢弃', () => {
+  let read;
+  assert.doesNotThrow(() => {
+    read = scope.readScopeConfig({ mode: 'selected', workspaceIds: [hostile(), 'w1'] });
+  });
+  assert.deepEqual(read.workspaceIds, ['w1'], '转换失败的项被丢弃，其余项照常归一');
+  assert.equal(read.mode, 'selected');
+  assert.equal(read.problem, undefined, '不是"配置非法"，只是该项取不到文本');
+});
+
+test('M5: readScopeConfig 遇 throwing toString ⇒ 全名单转换失败即空名单（仍不抛）', () => {
+  assert.doesNotThrow(() => {
+    const read = scope.readScopeConfig({ mode: 'selected', workspaceIds: [hostile(), hostile()] });
+    assert.deepEqual(read.workspaceIds, []);
+    assert.equal(read.mode, 'selected');
+  });
+});
+
+test('M5: readWorkspaces 遇 throwing toString 的 title/sessionIds ⇒ 不抛，字段退化为既定形态', () => {
+  let list;
+  assert.doesNotThrow(() => {
+    list = scope.readWorkspaces([
+      { id: 'w1', title: hostile(), path: '/w1', sessionIds: ['s1', hostile()] },
+      { id: hostile(), title: 'x', path: '/w2' },
+      { id: 'w3', title: 'T', path: hostile(), sessionIds: hostile() },
+    ]);
+  });
+  assert.deepEqual(
+    list.map((item) => item.id),
+    ['w1', 'w3'],
+    'id 转换失败的项被丢弃（无法与名单比较）；其余项保留',
+  );
+  assert.equal(list[0].title, '', 'title 取不到文本 ⇒ 与"无 title"同形（空串）');
+  assert.deepEqual(list[0].sessionIds, ['s1'], '转换失败的 sessionIds 元素被丢弃');
+  assert.equal(Object.hasOwn(list[0], 'path'), true);
+  assert.equal(list[1].title, 'T');
+  assert.deepEqual(list[1].sessionIds, [], 'sessionIds 非数组 ⇒ 空数组');
+});
+
+test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / projectAgent / toolNamesOf）', () => {
+  const evil = hostile();
+  const selected = { mode: 'selected', workspaceIds: ['w1'] };
+
+  assert.doesNotThrow(() => scope.isVisible(selected, evil));
+  assert.equal(scope.isVisible(selected, evil), false, '取不到文本 ⇒ 不可见（fail-closed）');
+  assert.equal(scope.isVisible({ mode: 'global', workspaceIds: [] }, evil), true, 'global 恒真');
+
+  assert.equal(scope.describeWorkspace({ id: evil, title: 'x' }), '未知工作区');
+  assert.equal(scope.describeWorkspace({ id: 'w1', title: evil }), '工作区 w1', 'title 取不到 ⇒ 只用 id');
+
+  assert.equal(scope.projectAgent({ id: evil, session: { header: { cwd: '/w' } } }), undefined);
+  assert.deepEqual(
+    scope.projectAgent({ id: 'a', session: { header: { cwd: evil } } }),
+    { id: 'a' },
+    'cwd 取不到文本 ⇒ 退化为无 cwd',
+  );
+
+  assert.deepEqual(scope.toolNamesOf([{ name: evil }, { name: 'ok' }]), ['ok']);
+});
+
+test('M5: resolveNow / judgeAgent 遇 throwing toString ⇒ 不抛，返回既定判定形态', async () => {
+  const evil = hostile();
+
+  let sync;
+  assert.doesNotThrow(() => {
+    sync = scope.resolveNow({
+      config: SELECTED_W1,
+      agent: { id: evil, cwd: '/workspace/hermes' },
+      workspaces: WORKSPACES,
+      pathMap: PATH_MAP,
+    });
+  });
+  assert.equal(sync.status, 'resolved', 'agent 身份不可读不改变路径规则的判定');
+  assert.equal(sync.visible, false, 'w2 不在名单 ⇒ 不可见');
+
+  let asyncJudgement;
+  await assert.doesNotReject(async () => {
+    asyncJudgement = await scope.judgeAgent({
+      config: SELECTED_W1,
+      agent: { id: 'a', cwd: '/w' },
+      workspaces: WORKSPACES,
+      pathMap: PATH_MAP,
+      resolveByPath: async () => ({ id: evil, path: '/w' }),
+    });
+  });
+  assert.equal(asyncJudgement.status, 'no-match', '实体 id 取不到文本 ⇒ 不参与匹配');
+  assert.equal(asyncJudgement.visible, false);
+});

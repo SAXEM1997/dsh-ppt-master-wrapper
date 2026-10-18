@@ -1465,7 +1465,7 @@ export function applyVersionLinkage(root, versions) {
       continue;
     }
     const pattern = new RegExp(
-      `(^[ \\t]*const[ \\t]+${constant}[ \\t]*=[ \\t]*)'([^']*)'([ \\t]*;)`,
+      `(^[ \\t]*const[ \\t]+${escapeRegExp(constant)}[ \\t]*=[ \\t]*)'([^']*)'([ \\t]*;)`,
       'gm',
     );
     const matches = [...text.matchAll(pattern)];
