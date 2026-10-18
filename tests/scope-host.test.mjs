@@ -1208,35 +1208,57 @@ test('M30: 额度耗尽后 loader/volatile-update 与 agent/created 同样能唤
   handle.dispose();
 });
 
-// ─── M25：两类 timer 必须 unref（否则 pending 注入/复检会把进程钉住）─────
+// ─── M25：三类 timer 必须 unref（否则 pending 注入/复检/挂死 realpath 会把进程钉住）─────
 //
-// 纪律来源：`INJECT_WATCHDOG_MS` 与 `RETRY_DELAY_MS` 两条 timer 都是**纯背景**动作
-// （告警 / 补一轮判定）。不 unref 的话，一个"注入永不到达"的宿主实例会让 node 进程
-// 在整个 timer 周期内退不出去；旧的复检 timer 同理。这条纪律此前只有实现、没有守护，
-// 故用一个记录型 `setTimeout` spy 直接断言"unref 被调用过"这一事实。
+// 纪律来源：`INJECT_WATCHDOG_MS`、`RETRY_DELAY_MS`、`RESOLVE_TIMEOUT_MS` 三条 timer 都是
+// **纯背景**动作（告警 / 补一轮判定 / 给挂死的 realpath 收口）。不 unref 的话，一个"注入
+// 永不到达"或"realpath 挂死"的实例会让 node 进程在整个 timer 周期内退不出去。这条纪律
+// 此前只有实现、没有守护，故用一个**纯记录型** `setTimeout` 替身直接断言"unref 被调用过"
+// 这一事实。
+//
+// 为什么替身不调度真 timer：① 本用例关心的是"实现是否调用了 `unref()`"，不是计时行为；
+// ② 场景 C 需要宿主 `resolveByPath` 永不平息，若替身返回**真** timer 并在此刻 `unref` 它，
+// 事件循环会因没有活跃句柄而提前判定挂起（`cancelledByParent`）——那正是本测试要守护的
+// 现象，却会把用例本身弄红；③ 纯替身下，任何"漏了 unref"只会体现为断言 `false !== true`，
+// 用例本身仍可正常收尾，失败信号干净。
 
-test('M25: 复检 timer 与注入看门狗 timer 都被 unref()（setTimeout spy）', async (t) => {
+test('M25: 复检 / 注入看门狗 / resolveByPath 超时三类 timer 都被 unref()（setTimeout spy）', async (t) => {
   const realSetTimeout = globalThis.setTimeout;
-  // 记录：{ delay, timer, unrefCalled }。timer 对象本身（真 timer）保持可用，
-  // 以确保被测逻辑行为不变——只在其上挂一个"是否被 unref"的观测钩子。
+  const realClearTimeout = globalThis.clearTimeout;
+  /** 记录：{ delay, unrefCalled, cleared, fired }。 */
   const scheduled = [];
   const spySetTimeout = (fn, delay, ...rest) => {
-    const timer = realSetTimeout(fn, delay, ...rest);
-    const record = { delay, timer, unrefCalled: false };
-    const realUnref = timer.unref;
-    if (typeof realUnref === 'function') {
-      timer.unref = function unrefPatched() {
+    const record = { delay: Number(delay), fn, args: rest, unrefCalled: false, cleared: false, fired: false };
+    const timer = {
+      // 形似 Node Timer：`unref()` 是可选能力，实现用 `typeof timer?.unref === 'function'` 守卫。
+      unref() {
         record.unrefCalled = true;
-        return realUnref.call(this);
-      };
-    }
+        return this;
+      },
+      ref() {
+        return this;
+      },
+      hasRef() {
+        return !record.unrefCalled;
+      },
+      [Symbol.toPrimitive]() {
+        return record.delay;
+      },
+      __record: record,
+    };
     scheduled.push(record);
     return timer;
   };
   t.after(() => {
     globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
   });
   globalThis.setTimeout = spySetTimeout;
+  // 被清的 timer 直接标记：`resolveByPath` 正常返回后的 `finally { clearTimeout(timer) }`
+  // 不应产生任何副作用（本用例不真调度，所以清账只是打点）。
+  globalThis.clearTimeout = (timer) => {
+    if (timer?.__record !== undefined) timer.__record.cleared = true;
+  };
 
   // ── 场景 A：selected + 注入回调永不到达 ──
   // 注入 pending ⇒ `activate` 不执行，唯一该排的 timer 就是看门狗那条。
@@ -1272,4 +1294,44 @@ test('M25: 复检 timer 与注入看门狗 timer 都被 unref()（setTimeout spy
     assert.equal(record.unrefCalled, true, '复检 timer 必须 unref()：否则额度期内进程退不出去');
   }
   retryHandle.dispose();
+
+  // ── 场景 C：`resolveByPath` 超时 timer（`RESOLVE_TIMEOUT_MS`，1500ms）──
+  // 宿主 `resolveByPath` 永不平息 ⇒ 每次判定都排一条 1500ms 超时 timer。它既不在
+  // `state.timers` 里、也不随 dispose 清理，不 unref 就会把进程钉在最长的 realpath 上。
+  scheduled.length = 0;
+  const created = makeAgent({ id: 'late', cwd: '/workspace/hermes' });
+  const timeoutCase = makeHost({
+    agents: [],
+    // 永不 resolve 的 host 调用：触发 timeout 分支（判定按 unresolved 收口）。
+    resolve: () => new Promise(() => {}),
+  });
+  const timeoutHandle = mount(timeoutCase, SELECTED_W1);
+  await timeoutHandle.whenIdle();
+
+  timeoutCase.child.agents.list = () => [created.agent];
+  // 本场景只关心"超时 timer 是否被 unref"，判定能否收口不在断言面内。
+  // 直接驱动监听器（不用 `emit`：它内部 `await Promise.all` 会把挂起的判定一并等死）。
+  // 判定在这里**必然挂起**（宿主 `resolveByPath` 永不平息，而超时 timer 已被替身拦截、不会
+  // 触发），故用一个真 timer 作为上界——等价于生产里 1500ms 超时收口那一步。
+  const listenerPromise = Promise.resolve(
+    timeoutCase.events.get('agent/created')[0]({ agent: created.agent }),
+  ).catch(() => {});
+  let settleTimer;
+  await Promise.race([
+    listenerPromise,
+    new Promise((resolve) => {
+      settleTimer = realSetTimeout(resolve, 20);
+    }),
+  ]);
+  realClearTimeout(settleTimer);
+  const timeouts = scheduled.filter((record) => record.delay === 1500);
+  assert.ok(timeouts.length >= 1, `应至少排出一条 1500ms resolveByPath 超时 timer，实际 ${timeouts.length} 条`);
+  for (const record of timeouts) {
+    assert.equal(
+      record.unrefCalled,
+      true,
+      'resolveByPath 超时 timer 必须 unref()：否则挂死的 realpath 会把进程钉住',
+    );
+  }
+  timeoutHandle.dispose();
 });

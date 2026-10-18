@@ -13,10 +13,9 @@
  *     前级命中不再探测后级、不报多候选）；第五级不存在时回落**无序扫描**
  *     $DSH_HOME/profiles/<star>/node_modules（唯一入口）：>1 命中 → throw 列出全部
  *     候选要求显式指定；恰 1 → 用之；0 → 全失败报错。「多候选报错」仅适用于
- *     无序扫描场景。命中判据为**两轮**（M10）：第一轮「目录存在且其下有
- *     @deepseek-ai 子目录」（真 SDK 安装形态，note 附实际包计数）；全环境无一
- *     命中时第二轮回落「目录存在」（兼容旧行为——此时后续包解析仍 fail-loud
- *     点名缺包）。两轮内部层级顺序不变；含 @deepseek-ai 的目录恒优先于空目录。
+ *     无序扫描场景。命中判据（M10，单轮严格）：目录存在**且**其下有 @deepseek-ai
+ *     子目录（真 SDK 安装形态，note 附实际包计数）——空 node_modules 不构成命中，
+ *     不再遮蔽后级/扫描里的真 SDK；全失败时 fail-loud 报「五级均未命中」。
  *  2. 动态 import 定位到的 SDK：@deepseek-ai/{cordis,dsh-system-prompt,dsh-skill,
  *     dsh-tools}（入口经各包 package.json exports["."]/main 解析，file URL 导入，
  *     与 Node 自身解析同构）。dsh-system-prompt 是真实 ToolRuntime 构造函数的
@@ -195,8 +194,8 @@ function isDirectory(path) {
 }
 
 /**
- * 命中判据第一轮（M10）：目录存在**且**其下有 `@deepseek-ai` 作用域子目录——
- * 真 SDK 安装的实际形态。仅目录存在的空 node_modules 在第一轮不构成命中，
+ * 命中判据（M10）：目录存在**且**其下有 `@deepseek-ai` 作用域子目录——
+ * 真 SDK 安装的实际形态。仅目录存在的空 node_modules 不构成命中，
  * 不再遮蔽后级/扫描里的真 SDK 安装。
  */
 function isSdkModulesDir(path) {
@@ -220,18 +219,16 @@ function countDshScopePackages(modules) {
  * 无序扫描 $DSH_HOME/profiles 下一级 profile 的 node_modules。
  *
  * 「多候选 → 报错列出候选」仅适用于本扫描（有序各级天然唯一）。返回结果按路径
- * 字节序排序，报错信息因此确定。
- *
- * @param {boolean} requireScope true＝第一轮判据（候选须含 @deepseek-ai 子目录），
- *   false＝第二轮旧判据（目录存在即候选）。
+ * 字节序排序，报错信息因此确定。候选判据与五级一致（{@link isSdkModulesDir}）：
+ * 仅目录存在的空 node_modules 不是候选，不参与「多候选」计数。
  */
-function scanProfileNodeModules(profilesRoot, requireScope) {
+function scanProfileNodeModules(profilesRoot) {
   if (!isDirectory(profilesRoot)) return [];
   const hits = [];
   for (const entry of readdirSync(profilesRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const modules = join(profilesRoot, entry.name, 'node_modules');
-    if (requireScope ? isSdkModulesDir(modules) : isDirectory(modules)) hits.push(resolve(modules));
+    if (isSdkModulesDir(modules)) hits.push(resolve(modules));
   }
   return hits.sort(compareByteOrder);
 }
@@ -245,17 +242,11 @@ function compareByteOrder(left, right) {
  * 定位已安装的 DSH SDK（node_modules 根）。
  *
  * 有序五级，按序探测、命中即用——前级命中不再探测后级、不报多候选（有序优先级
- * 即消歧）。**两轮判据**（M10）：
- *
- * - 第一轮每级判据＝「目录存在**且**其下有 `@deepseek-ai` 子目录」（真 SDK 安装
- *   形态；无序扫描的候选判据同步收紧——仅目录存在的空目录不再是候选，不再制造
- *   与真安装之间的假多候选歧义）；
- * - 第一轮全失败（含扫描 0 命中）⇒ 第二轮回落旧判据「目录存在」，完整保留既有
- *   行为与诊断（兼容仅有空目录的环境——后续 `entryOf` 包解析仍 fail-loud 点名
- *   缺包）。
- *
- * 两轮内部的层级顺序不变；含 `@deepseek-ai` 的目录恒优先于不含者，即使后者在
- * 更前级——空 node_modules 不再遮蔽后级/扫描里的真 SDK。
+ * 即消歧）。每级判据（M10，单轮严格）：目录存在**且**其下有 `@deepseek-ai`
+ * 子目录（{@link isSdkModulesDir}，真 SDK 安装形态）——仅目录存在的空
+ * node_modules 不构成命中，不再遮蔽后级/扫描里的真 SDK；无序扫描的候选判据
+ * 同步收紧，空目录不参与「多候选」计数。全失败（五级均未命中且扫描 0 命中）
+ * ⇒ fail-loud 报「五级均未命中」。
  *
  * ① explicit 参数（CLI --dsh-modules）
  * ② env.DSH_NODE_MODULES
@@ -272,25 +263,9 @@ function compareByteOrder(left, right) {
  * @returns {{ path: string, via: string }} 绝对路径与命中级别标签
  *   （'explicit' | 'DSH_NODE_MODULES' | 'DSH_PROFILE_DIR' | 'DSH_HOME/DSH_PROFILE'
  *   | 'DSH_HOME/profiles' | 'scan'）。
- * @throws {Error} 无序扫描多候选 / 全失败 / env 无 DSH_HOME 且无前级命中
- *   （两轮均无 @deepseek-ai 命中时由第二轮按旧形态抛出）。
+ * @throws {Error} 无序扫描多候选 / 全失败 / env 无 DSH_HOME 且无前级命中。
  */
 export function resolveDshModules(explicit, env = {}) {
-  const scoped = locateDshModulesAt(explicit, env, true);
-  if (scoped !== null) return scoped;
-  return locateDshModulesAt(explicit, env, false);
-}
-
-/**
- * 单轮定位（{@link resolveDshModules} 的两轮各执行一次；不直接导出）。
- *
- * @param {boolean} requireScope true＝第一轮严格判据（isSdkModulesDir）；
- *   该轮「无 DSH_HOME / 扫描 0 命中」一律返回 null 让位第二轮，只有**真多候选**
- *   （多个含 @deepseek-ai 的 profile node_modules）才直接 throw——那是真实歧义，
- *   回落旧轮也会以同样形态抛出。false＝第二轮旧判据（isDirectory），抛错形态与
- *   M10 之前逐字一致。
- */
-function locateDshModulesAt(explicit, env, requireScope) {
   const home = nonEmpty(env?.DSH_HOME);
   const levels = [
     ['explicit', nonEmpty(explicit)],
@@ -307,17 +282,15 @@ function locateDshModulesAt(explicit, env, requireScope) {
     ],
     ['DSH_HOME/profiles', home === null ? null : join(home, 'profiles', 'node_modules')],
   ];
-  const hit = requireScope ? isSdkModulesDir : isDirectory;
 
   const attempted = [];
   for (const [via, path] of levels) {
     if (path === null) continue;
     attempted.push(`  - ${via}: ${path}`);
-    if (hit(path)) return { path: resolve(path), via };
+    if (isSdkModulesDir(path)) return { path: resolve(path), via };
   }
 
   if (home === null) {
-    if (requireScope) return null;
     throw new Error(
       '无法定位 DSH SDK：env 无 DSH_HOME（且无 explicit/DSH_NODE_MODULES/DSH_PROFILE_DIR 命中）。'
         + '请传 --dsh-modules <dir>，或设置 DSH_NODE_MODULES / DSH_PROFILE_DIR / DSH_HOME。'
@@ -326,7 +299,7 @@ function locateDshModulesAt(explicit, env, requireScope) {
   }
 
   const profilesRoot = join(home, 'profiles');
-  const candidates = scanProfileNodeModules(profilesRoot, requireScope);
+  const candidates = scanProfileNodeModules(profilesRoot);
   if (candidates.length > 1) {
     throw new Error(
       `无法定位 DSH SDK：无序扫描 ${profilesRoot}/* 发现多个 profile 候选，请显式指定 --dsh-modules：\n`
@@ -335,7 +308,6 @@ function locateDshModulesAt(explicit, env, requireScope) {
   }
   if (candidates.length === 1) return { path: candidates[0], via: 'scan' };
 
-  if (requireScope) return null;
   throw new Error(
     '无法定位 DSH SDK：五级均未命中，且 $DSH_HOME/profiles 下无 node_modules（全失败）。\n'
       + `已探测：\n${attempted.length > 0 ? attempted.join('\n') : '  - （无任何级别可探测）'}\n`
