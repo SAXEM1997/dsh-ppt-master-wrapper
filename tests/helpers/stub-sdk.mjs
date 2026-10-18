@@ -21,7 +21,7 @@
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** schemastery 最小替身（仅本仓库消费面；层①-④ 见 tests/compat.test.mjs）。 */
@@ -105,6 +105,7 @@ export const SCHEMASTERY_STUB = [
   '});',
   '',
   'module.exports = Schema;',
+  '',
 ].join('\n');
 
 /**
@@ -125,7 +126,16 @@ export async function buildStubSdk(modules, {
   rejectBareTools = false,
   omit = [],
 } = {}) {
-  await rm(modules, { recursive: true, force: true });
+  // 病态路径守卫（Gate 3 P3-2）：本函数对目标**先 rm 再建**（幂等语义），必须在动手前
+  // 拒绝可疑路径——modules 须形如 <非根>/node_modules（basename 匹配且父目录不是 `/`），
+  // 否则 `buildStubSdk('/')` 一类的手误会 rm -rf /node_modules。
+  const resolvedModules = resolve(String(modules));
+  if (basename(resolvedModules) !== 'node_modules' || dirname(resolvedModules) === '/') {
+    throw new Error(
+      `拒绝在可疑路径构造 stub 树: ${resolvedModules}（modules 必须形如 <非根>/node_modules）`,
+    );
+  }
+  await rm(resolvedModules, { recursive: true, force: true });
 
   const pkg = async (name, main, files) => {
     if (omit.includes(name)) return;

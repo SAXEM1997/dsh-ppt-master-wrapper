@@ -326,7 +326,7 @@ node --test tests/*.test.mjs
 > DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node scripts/check-dsh-compat.mjs
 > ```
 >
-> Expected baseline: **687 tests / 685 pass / 0 fail / 2 skipped** (both skips are declared explicitly:
+> Expected baseline: **688 tests / 686 pass / 0 fail / 2 skipped** (both skips are declared explicitly:
 > `@deepseek-ai/dsh-tools` is unreachable via package-self resolution — this package has zero npm dependencies,
 > so a skip is not a failure). The CI workflow lives at `.github/workflows/ci.yml` (runs on pushes to `main` and
 > all PRs; `verify-plugin` is not run in CI because its item ⑥ needs a real upstream comparison tree — that

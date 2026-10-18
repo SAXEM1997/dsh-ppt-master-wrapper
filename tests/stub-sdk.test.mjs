@@ -90,3 +90,13 @@ test('stub-sdk: CLI 缺参 → exit 1 且输出用法', async () => {
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('stub-sdk: 病态路径守卫——非 <非根>/node_modules 形态拒收（Gate 3 P3-2）', async () => {
+  for (const bad of ['/', '/node_modules', process.cwd()]) {
+    await assert.rejects(
+      () => buildStubSdk(bad),
+      /拒绝在可疑路径构造 stub 树/,
+      `${bad} 应被守卫拒绝`,
+    );
+  }
+});

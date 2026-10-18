@@ -328,7 +328,7 @@ node --test tests/*.test.mjs
 > DSH_NODE_MODULES=$PWD/.ci-stub/node_modules node scripts/check-dsh-compat.mjs
 > ```
 >
-> 预期基线：**687 tests / 685 pass / 0 fail / 2 skip**（2 条 skip 为显式声明：`@deepseek-ai/dsh-tools`
+> 预期基线：**688 tests / 686 pass / 0 fail / 2 skip**（2 条 skip 为显式声明：`@deepseek-ai/dsh-tools`
 > 经包自身解析不可达，本包零依赖，skip 非失败）。CI 工作流见 `.github/workflows/ci.yml`（push `main`
 > 与全部 PR 触发；`verify-plugin` 因第⑥项需真实上游比对树不在 CI 跑，该逻辑由 fixtures 用例覆盖）。
 
