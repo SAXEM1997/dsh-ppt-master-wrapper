@@ -108,8 +108,9 @@
 | `v6.7.0-r2` | UltraReview 两轮修复：规则③自触发锚定排除、push 部分失败 tag 补推、branch sha 缓存、git/tar 工具链缺失归 7、marketplace 版本校验层级修正、`env` 第 4 探测位置、依赖映射 19/19、`${SKILL_DIR}` 独立判据、`.gitignore` 卫生、dry-run 状态写门控 |
 | `v6.7.0-r3` | venv 解释器隔离 + 插件页配置卡片（客户端半边）+ GitHub 发布面（双语 README/NOTICE/logo） |
 | `v6.7.1` | 上游同步（规则①）：vendor v6.7.1 逐字节 |
-| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670（r1 时点；现 711） |
+| `v6.7.1-r1` | 工具可见范围（`scope.mode`/`scope.workspaceIds`，默认 global）：per-agent `tools.restrict` 装配层移除 + 根 ctx `tools.guard` 兜底；有界复检（额度按 key 记账）+ guard 幂等 + 代际令牌；Gate 3 四轮收敛（F1-F12 / GR2-1..5 / GR3-1..2，裁定表见 design §11）；670/670（r1 时点；现 720） |
 | `v6.7.1-r2` | 审查修复波（#12/PR #13）：P0 stub-sdk 所有权标记守卫（原可删 cwd 真实依赖树）；scope 运行时加固（`safeString` 防装载失败 / 注入看门狗 / disposed 清理 / 每轮单次刷新）；卡片勾选框基值缺失禁用 + `.is-readonly` 样式；compat §7.7⑦ 补 `dsh-scope`/`execute`/`guardReason` 三面与 guard 拒绝语义断言；M10 单轮严格判据；M25 覆盖 1000/1500/5000 三类 timer unref。同时含 #8 常量联动 / #9 CI+stub SDK / #11 README+AGENTS 三批工具链与文档变更 |
+| `v6.7.1-r3` | venv 配置**现读**（#16/PR #17，设计 R8 由「登记未修」转「已修」）：`lib/venv.js` 新增 `createVenvReader()`（每次现 `.get()`、total、不改「未配置」语义）；`lib/tools.js` 三个 builder 改经 accessor、`info`/`check_env` 的 description 改 getter；`index.js` 传原始 `opts.venv` 并订阅 `loader/volatile-update` 使配置无效保存即报；入口技能正文仍为注册期快照（脚注补明配置变化亦可能陈旧）。测试 711 → **720** |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

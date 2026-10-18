@@ -219,6 +219,7 @@ Machines without the host SDK (CI included): build the default stub tree with `n
 | `v6.7.1` | Upstream sync: vendored v6.7.1 (byte-for-byte) |
 | `v6.7.1-r1` | Tool visibility scope (two scope keys + assembly-layer removal + guard backstop) |
 | `v6.7.1-r2` | Review-fix wave: scope runtime hardening (`safeString` / injection watchdog / disposed cleanup / single refresh per round) + card checkbox disabled-on-missing-baseline and read-only styling + stronger contract probes + single-pass strict resolution criterion |
+| `v6.7.1-r3` | venv configuration is now **re-read live**: a card save applies to all three tools immediately instead of an apply-time snapshot (design R8 / issue #16); an invalid path warns at save time |
 
 > Versioning: the `base` mirrors upstream releases; wrapper revisions append `-rN`. Itemized details in [AGENTS.md](AGENTS.md) §5.
 
