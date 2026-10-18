@@ -1401,6 +1401,112 @@ function writePackageVersion(root, version) {
   writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
 }
 
+// ─── 版本常量联动（issue #3）──────────────────────────────────────
+
+/** lib/client.js 相对仓库根路径（联动改写对象，单一字面量来源）。 */
+const CLIENT_REL = join('lib', 'client.js');
+
+/** 正则元字符转义（写后自检用——版本串含 `.` 等通配符字符）。 */
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * lib/client.js 版本常量联动改写（issue #3）。
+ *
+ * 背景：`writePackageVersion` 只 bump `package.json`，而 `tests/client-half.test.mjs`
+ * 断言「`PLUGIN_VERSION` ≡ `package.json.version`」与「`UPSTREAM_VERSION` ≡ vendor
+ * `SKILL.md` `metadata.version`」——不联动则同步后必然变红，此前每次同步需手工补
+ * （6.7.1 同步时即手工补；漏补要等测试才暴露）。
+ *
+ * 四态语义（幂等、fail-loud）：
+ *  - `'missing'`：`lib/client.js` 不存在——调用方记 🟡 提示、不判失败（仓库形态
+ *    异常不该卡死同步，但必须可见）；
+ *  - `'problem'`：目标值非法（空/缺失）、或任一常量的 `const NAME = '…';` 匹配数
+ *    ≠ 1（形态漂移）、或写回自检不符——**文件不写**（部分改写比不改更糟）；
+ *  - `'unchanged'`：两常量均已等于目标——不写（幂等，规则③重跑等场景）；
+ *  - `'rewritten'`：有差异 → 整文件一次写回 + 重读自检，`changes` 列出
+ *    `{ constant, from, to }` 明细（供同步报告列出被改写的文件与值）。
+ *
+ * @param {string} root 仓库根。
+ * @param {{ pluginVersion?: string, upstreamVersion?: string }} versions 目标值
+ *   （pluginVersion = decideVersion 产物；upstreamVersion = staging 主 skill 的
+ *   `metadata.version`——自动路径前置防线已断言非 null）。
+ * @returns {{ status: 'rewritten'|'unchanged'|'missing'|'problem',
+ *   changes?: Array<{ constant: string, from: string, to: string }>,
+ *   problems?: string[] }}
+ */
+export function applyVersionLinkage(root, versions) {
+  const file = join(root, CLIENT_REL);
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return { status: 'missing' };
+  }
+
+  const targets = [
+    { constant: 'PLUGIN_VERSION', to: versions?.pluginVersion },
+    { constant: 'UPSTREAM_VERSION', to: versions?.upstreamVersion },
+  ];
+  const problems = [];
+  const spans = [];
+  for (const { constant, to } of targets) {
+    if (typeof to !== 'string' || to.trim() === '') {
+      problems.push(`${constant} 目标值缺失或为空（decideVersion / staging metadata.version 产物异常）`);
+      continue;
+    }
+    const pattern = new RegExp(
+      `(^[ \\t]*const[ \\t]+${constant}[ \\t]*=[ \\t]*)'([^']*)'([ \\t]*;)`,
+      'gm',
+    );
+    const matches = [...text.matchAll(pattern)];
+    if (matches.length !== 1) {
+      problems.push(
+        `lib/client.js 中 \`const ${constant} = '…';\` 匹配 ${matches.length} 处（期望恰 1 处）——常量形态漂移，拒绝改写`,
+      );
+      continue;
+    }
+    spans.push({ constant, to, match: matches[0], from: matches[0][2] });
+  }
+  if (problems.length > 0) return { status: 'problem', problems };
+
+  const changes = spans
+    .filter(({ from, to }) => from !== to)
+    .map(({ constant, from, to }) => ({ constant, from, to }));
+  if (changes.length === 0) return { status: 'unchanged' };
+
+  // 自右向左替换（span 按出现序互不重叠；逆序改写避免前段偏移影响后段下标）。
+  let updated = text;
+  for (const { match, to } of [...spans].sort((left, right) => right.match.index - left.match.index)) {
+    updated =
+      updated.slice(0, match.index) + `${match[1]}'${to}'${match[3]}` + updated.slice(match.index + match[0].length);
+  }
+  writeFileSync(file, updated, 'utf8');
+
+  // 写后自检：重读并确认两常量逐字等于目标（防写通道损坏静默假绿）。
+  let verifyText;
+  try {
+    verifyText = readFileSync(file, 'utf8');
+  } catch {
+    verifyText = '';
+  }
+  for (const { constant, to } of targets) {
+    const verifyPattern = new RegExp(
+      `^[ \\t]*const[ \\t]+${constant}[ \\t]*=[ \\t]*'${escapeRegExp(to)}'[ \\t]*;`,
+      'm',
+    );
+    if (!verifyPattern.test(verifyText)) {
+      return {
+        status: 'problem',
+        changes,
+        problems: [`写回自检失败：${constant} 写后 ≠ ${to}（写通道异常）`],
+      };
+    }
+  }
+  return { status: 'rewritten', changes };
+}
+
 /**
  * staging 某 skill 的 frontmatter `metadata.version`（decideVersion 的
  * upstreamVersion 数据源）。
@@ -1922,6 +2028,9 @@ export async function main(options, deps_) {
       ...(yellowLines.length > 0 ? [`🟡 提示 ${yellowLines.length} 项:\n${yellowLines.map((line) => `  - ${line}`).join('\n')}`] : []),
       `版本判定: ${versionPlan.note}`,
       `将替换 skill 面: ${stagedSkills.join(', ')}`,
+      ...(existsSync(join(root, CLIENT_REL))
+        ? [`将联动改写: ${CLIENT_REL}（PLUGIN_VERSION → ${versionPlan.decision?.version ?? '<待定>'}、UPSTREAM_VERSION → ${upstreamVersion ?? '<待定>'}）`]
+        : []),
       `将创建 tag v${versionPlan.decision?.version ?? '<待定>'} 并推送（未传 --no-push 时）。`,
     ];
     logInfo(plan.join('\n'));
@@ -2016,6 +2125,44 @@ export async function main(options, deps_) {
     return 0;
   }
 
+  // ── 版本常量联动（issue #3）：bump package.json 之外，lib/client.js 的
+  //    PLUGIN_VERSION / UPSTREAM_VERSION 一并改写。**先于替换/bump 执行**：
+  //    联动失败（形态漂移 / 文件带未提交变更）时 vendor 面与版本面均未触碰，
+  //    干净退出 2；成功则改写结果随后随同步 commit 一起提交。
+  let linkage = { status: 'missing' };
+  if (existsSync(join(root, CLIENT_REL))) {
+    // 未提交变更守卫：lib/client.js 若有未提交的人工改动，git add 会把它们整个
+    // 卷进同步 commit——拒绝执行，先请人工提交（fail-loud 优于静默裹挟）。
+    const dirtyClient = await git(['status', '--porcelain', '--', CLIENT_REL]);
+    if (dirtyClient.code === 0 && dirtyClient.stdout.trim() !== '') {
+      const report = [
+        `lib/client.js 存在未提交变更——为避免把人工改动卷进同步 commit，版本常量联动拒绝执行（vendor 面与版本号均未改动）。`,
+        `后续指引: 先提交 lib/client.js 的变更（或 git stash），再重跑同步。退出码 2。`,
+      ].join('\n');
+      logFail(report);
+      writeReport(report);
+      return 2;
+    }
+    linkage = applyVersionLinkage(root, { pluginVersion: decision.version, upstreamVersion });
+  } else {
+    yellowLines.push('lib/client.js 不存在——版本常量联动跳过（仓库形态异常，请人工确认）');
+  }
+  if (linkage.status === 'problem') {
+    const report = [
+      'lib/client.js 版本常量联动失败（vendor 面与版本号均未改动）:',
+      ...linkage.problems.map((problem) => `  ✗ ${problem}`),
+      '后续指引: 人工核对 lib/client.js 的常量形态（恰一处 const PLUGIN_VERSION / UPSTREAM_VERSION 字面量声明）后重跑同步。退出码 2。',
+    ].join('\n');
+    logFail(report);
+    writeReport(report);
+    return 2;
+  }
+  if (linkage.status === 'rewritten') {
+    logInfo(
+      `联动改写: ${CLIENT_REL}（${linkage.changes.map((change) => `${change.constant} → ${change.to}`).join('、')}）`,
+    );
+  }
+
   // 替换 skill 面（单向 上游→vendor：vendor 多出的 skill 目录属包装层人工变更，保留）。
   for (const skill of stagedSkills) {
     const target = join(vendorSkillsRoot, skill);
@@ -2034,9 +2181,12 @@ export async function main(options, deps_) {
     logInfo([`🟡 提示汇总 ${yellowLines.length} 项（不阻塞自动路径）:`, ...yellowLines.map((line) => `  - ${line}`)].join('\n'));
   }
 
-  // commit（只提交同步面：skills + package.json；包装层人工变更由人工自行提交）。
+  // commit（只提交同步面：skills + package.json + 联动改写的 lib/client.js；
+  // 包装层人工变更由人工自行提交——lib/client.js 的未提交守卫已在联动步拦截）。
   const commitMessage = `chore(sync): 同步上游 ${normalizedRef} → v${decision.version}`;
-  const addResult = await git(['add', 'skills', 'package.json']);
+  const addTargets = ['skills', 'package.json'];
+  if (linkage.status === 'rewritten') addTargets.push(CLIENT_REL);
+  const addResult = await git(['add', ...addTargets]);
   if (addResult.code !== 0) {
     logFail(`git add 失败（环境失败，退出码 5）:\n${addResult.stderr.trim()}`);
     return 5;
@@ -2105,6 +2255,15 @@ export async function main(options, deps_) {
     `上游: ${repo} @ ${normalizedRef}（${refSha ?? 'sha 未知'}）`,
     `结论: 同步完成（规则${decision.rule}，版本 ${currentVersion} → ${decision.version}）`,
     `替换 skill 面: ${stagedSkills.join(', ')}`,
+    ...(linkage.status === 'rewritten'
+      ? [
+          `联动改写: ${CLIENT_REL}（${linkage.changes
+            .map((change) => `${change.constant}: ${change.from} → ${change.to}`)
+            .join('、')}）`,
+        ]
+      : []),
+    ...(linkage.status === 'missing' ? ['联动改写: 跳过（lib/client.js 不存在，见 🟡 提示）'] : []),
+    '待人工: README.md / README.en.md 版本历史表与「本地校验」--upstream 示例路径（脚本不自动改写文档）',
     `commit: ${commitMessage}`,
     `tag: ${tagName}`,
     ...(yellowLines.length > 0 ? ['🟡 提示:', ...yellowLines.map((line) => `  - ${line}`)] : []),
