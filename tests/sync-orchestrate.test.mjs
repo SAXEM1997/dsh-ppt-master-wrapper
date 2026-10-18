@@ -1632,3 +1632,126 @@ test('marketplace 校验豁免（上游无 .claude-plugin/marketplace.json）→
     custom.cleanup();
   }
 });
+
+// ─── 版本常量联动（issue #3）───────────────────────────────────────
+
+/** 场景助手：向仓库写入并提交一个含两版本常量的 lib/client.js（返回文件路径）。 */
+function commitClientConstants(s, plugin, upstream) {
+  const file = join(s.root, 'lib', 'client.js');
+  mkdirSync(join(s.root, 'lib'), { recursive: true });
+  writeFileSync(
+    file,
+    `const PLUGIN_VERSION = '${plugin}';\nconst UPSTREAM_VERSION = '${upstream}';\nexport { PLUGIN_VERSION, UPSTREAM_VERSION };\n`,
+  );
+  gitIn(s.root, ['add', 'lib/client.js']);
+  gitIn(s.root, ['commit', '-q', '-m', 'card constants']);
+  return file;
+}
+
+test('联动：client.js 常量随同步改写并进同步 commit，报告列出改写明细（issue #3）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    const clientFile = commitClientConstants(s, '6.7.0', '6.7.0');
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    // 常量已改写（规则④：上游 6.7.0 → 6.8.0）。
+    const text = readFileSync(clientFile, 'utf8');
+    assert.match(text, /const PLUGIN_VERSION = '6\.8\.0';/);
+    assert.match(text, /const UPSTREAM_VERSION = '6\.8\.0';/);
+    // 改写已随同步 commit 提交（工作区干净），commit 数 = init + 常量 commit + 同步 commit。
+    assert.equal(commitCount(s.root), 3);
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: s.root, encoding: 'utf8' });
+    assert.equal(dirty.trim(), '', 'client.js 改写不残留未提交状态');
+    // 报告：联动改写明细 + README 待人工提示。
+    const report = readFileSync(join(s.root, 'sync-report.txt'), 'utf8');
+    assert.match(report, /联动改写: lib\/client\.js（PLUGIN_VERSION: 6\.7\.0 → 6\.8\.0、UPSTREAM_VERSION: 6\.7\.0 → 6\.8\.0）/);
+    assert.match(report, /待人工: README/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('联动：client.js 带未提交变更 → 退出码 2，vendor 面与版本号均不改动', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    const clientFile = commitClientConstants(s, '6.7.0', '6.7.0');
+    // 制造未提交变更（联动守卫应拒绝执行，避免人工改动被卷进同步 commit）。
+    writeFileSync(clientFile, `const PLUGIN_VERSION = '6.7.0'; // 手工注释（未提交）\nconst UPSTREAM_VERSION = '6.7.0';\n`);
+    const { deps } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 2);
+    assert.equal(
+      JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version,
+      '6.7.0',
+      '联动守卫先于 bump——版本面未动',
+    );
+    assert.equal(commitCount(s.root), 2, '无同步 commit');
+    assert.match(readFileSync(join(s.root, 'sync-report.txt'), 'utf8'), /未提交变更/);
+    assert.match(readFileSync(clientFile, 'utf8'), /手工注释/, '人工改动原样保留');
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('联动：client.js 不存在 → 🟡 提示跳过，同步照常成功（既有场景兼容）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    const { deps, calls } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.match(calls.output(), /lib\/client\.js 不存在——版本常量联动跳过/);
+    const report = readFileSync(join(s.root, 'sync-report.txt'), 'utf8');
+    assert.match(report, /联动改写: 跳过/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('联动：常量已与目标一致 → unchanged，报告记录「无变化」且文件零改动', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    // 规则④（上游 6.7.0 → 6.8.0、无 vendor diff）→ 目标 6.8.0；常量预先写 6.8.0。
+    const clientFile = commitClientConstants(s, '6.8.0', '6.8.0');
+    const before = readFileSync(clientFile, 'utf8');
+    const { deps } = stubDeps({ tarballPath: s.tarballPath });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 0);
+    assert.equal(readFileSync(clientFile, 'utf8'), before, 'unchanged 态文件零改动');
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: s.root, encoding: 'utf8' });
+    assert.equal(dirty.trim(), '');
+    assert.match(
+      readFileSync(join(s.root, 'sync-report.txt'), 'utf8'),
+      /联动改写: lib\/client\.js 无变化（两常量已与目标一致）/,
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+test('联动守卫：git status 自身失败（code≠0）→ fail-loud 退出码 5（Gate 3 P2-1）', async () => {
+  const s = makeScenario({ vendorFrom: UPSTREAM_SKILLS, version: '6.7.0' });
+  try {
+    commitClientConstants(s, '6.7.0', '6.7.0');
+    // 只对守卫那条 status 调用注入 128（index.lock 类瞬时故障），其余委托真实 git。
+    const { deps } = stubDeps({
+      tarballPath: s.tarballPath,
+      runGit: async (args, opts) => {
+        if (args[0] === 'status' && args.includes('--porcelain') && args.includes('lib/client.js')) {
+          return { code: 128, stdout: '', stderr: 'fatal: Unable to create index.lock' };
+        }
+        return realGitResult(args, opts);
+      },
+    });
+    const code = await main({ root: s.root, repo: s.repoUrl, noPush: true }, deps);
+    assert.equal(code, 5);
+    assert.equal(
+      JSON.parse(readFileSync(join(s.root, 'package.json'), 'utf8')).version,
+      '6.7.0',
+      '守卫失败先于 bump——版本面未动',
+    );
+    assert.equal(commitCount(s.root), 2, '无同步 commit');
+  } finally {
+    s.cleanup();
+  }
+});
