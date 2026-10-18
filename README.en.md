@@ -217,6 +217,7 @@ Machines without the host SDK (CI included): build the default stub tree with `n
 | `v6.7.0-r3` | venv interpreter isolation + Plugins-page config card + GitHub release surface |
 | `v6.7.1` | Upstream sync: vendored v6.7.1 (byte-for-byte) |
 | `v6.7.1-r1` | Tool visibility scope (two scope keys + assembly-layer removal + guard backstop) |
+| `v6.7.1-r2` | Review-fix wave: scope runtime hardening (`safeString` / injection watchdog / disposed cleanup / single refresh per round) + card checkbox disabled-on-missing-baseline and read-only styling + stronger contract probes + single-pass strict resolution criterion |
 
 > Versioning: the `base` mirrors upstream releases; wrapper revisions append `-rN`. Itemized details in [AGENTS.md](AGENTS.md) §5.
 
