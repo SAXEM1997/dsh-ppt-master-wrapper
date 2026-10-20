@@ -162,3 +162,17 @@ design 都没有 §11 节。其余三篇的审查记录分散在这些位置，�
   `docs/superpowers/plans/2026-10-16-ppt-master-config-ui.md` 有「存疑点与裁决记录」节
   （:339，Gate 2 输入），`clarifications/2026-10-16-ppt-master-config-ui.md` 有 1 处终裁。
   没有集中裁定表。
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues（`gh` CLI）。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+默认五角色：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+single-context：根目录一份 `GLOSSARY.md`、`docs/adr/`，均按需创建。See `docs/agents/domain.md`.
