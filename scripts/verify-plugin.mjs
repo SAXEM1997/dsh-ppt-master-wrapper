@@ -47,7 +47,7 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { apply } from '../index.js';
@@ -233,7 +233,10 @@ function checkSkillLinks(skillDir, skillName, skillText) {
     seen.add(path);
 
     const resolved = resolve(skillDir, path);
-    if (resolved !== skillDir && !resolved.startsWith(`${skillDir}/`)) {
+    // 前缀必须带本平台分隔符：Windows 上 `resolve()` 产出 `\`，硬拼 `/` 会让子树内
+    // 链接全部误判为「越出子树」（只降级成 warning，但测试与观测面被污染）。
+    const skillPrefix = skillDir.endsWith(sep) ? skillDir : `${skillDir}${sep}`;
+    if (resolved !== skillDir && !resolved.startsWith(skillPrefix)) {
       warnings.push(`[${skillName}] SKILL.md 链接越出 skill 子树，豁免（警告）: ${path}`);
       continue;
     }
