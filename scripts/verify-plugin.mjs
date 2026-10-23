@@ -389,9 +389,9 @@ function checkAgainstUpstream(root, skillDirs, upstream, problems) {
   }
 }
 
-/** 路径末段（POSIX/绝对路径通吃）。 */
+/** 路径末段（POSIX 与 Windows 分隔符通吃；`\` 不切会让 skill 名退化成整条绝对路径）。 */
 function baseName(path) {
-  const separator = path.lastIndexOf('/');
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   return separator < 0 ? path : path.slice(separator + 1);
 }
 
