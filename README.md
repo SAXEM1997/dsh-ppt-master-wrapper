@@ -221,6 +221,7 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 | `v6.7.1-r1` | 工具可见范围（scope 双键 + 装配层移除 + guard 兜底） |
 | `v6.7.1-r2` | 审查修复波：scope 运行时加固（`safeString` / 注入看门狗 / disposed 清理 / 每轮单次刷新）+ 卡片勾选框基值缺失禁用与只读样式 + 契约探针补强 + 单轮严格定位判据 |
 | `v6.7.1-r3` | venv 配置**现读**：卡片保存后三个工具立即按新 `venv.*` 工作，不再读 apply 期快照（设计 R8 / issue #16）；配置改坏时保存即告警 |
+| `v6.7.3` | 上游同步：vendor v6.7.3（逐字节）。含 v6.7.2 的「不再静默丢失/覆盖内容」一批修复（skill-only 安装的项目落工作目录、PDF 表格不再按单篇样例重写、HTML/`.txt` 按声明编码解码、同名批次互不覆盖、图像检索整词匹配、原生图表 part 名冲突、公式 MCE fallback 让 WPS/LibreOffice 不再空白）与 v6.7.3 的 Edit Native 往返修复；另修 `verify-plugin` 的 `baseName` 反斜杠兼容（Windows 上第⑥项不再误报） |
 
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
