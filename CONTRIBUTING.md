@@ -28,7 +28,7 @@ node --test tests/*.test.mjs
 node scripts/check-dsh-compat.mjs
 
 # 3) vendor 树字节比对（上游完整性；--upstream 取 .upstream/ 缓存目录名 <ref>@<sha>）
-node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.1@aabf2a0541d9d3b0bdb9e8564a0217f0eaff7815
+node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.7.3@622bf0148bca4f697b0184322c7e2aa2a04520a2
 ```
 
 > 环境前置：`@deepseek-ai/schemastery` 须可由宿主 profile 的 `node_modules` 解析（详见 README「本地校验」）。若该前置不满足，部分测试文件会在 **import 期**整体失败，而不是单条用例红。
