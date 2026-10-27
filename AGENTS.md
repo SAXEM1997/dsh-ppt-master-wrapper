@@ -177,3 +177,9 @@ GitHub Issues（`gh` CLI）。See `docs/agents/issue-tracker.md`.
 ### Domain docs
 
 single-context：根目录一份 `GLOSSARY.md`、`docs/adr/`，均按需创建。See `docs/agents/domain.md`.
+
+### Maintainer ops
+
+外部贡献者 PR 的 CI 批准（fork run 停在 `action_required`，`gh` 的凭据调批准端点会 403）、
+`.upstream/<ref>@<sha>` 比对树构建、宿主 SDK 跨版本 tarball diff、合并收尾清单。
+See `docs/agents/maintainer-ops.md`.
