@@ -112,6 +112,7 @@
 | `v6.7.1-r2` | 审查修复波（#12/PR #13）：P0 stub-sdk 所有权标记守卫（原可删 cwd 真实依赖树）；scope 运行时加固（`safeString` 防装载失败 / 注入看门狗 / disposed 清理 / 每轮单次刷新）；卡片勾选框基值缺失禁用 + `.is-readonly` 样式；compat §7.7⑦ 补 `dsh-scope`/`execute`/`guardReason` 三面与 guard 拒绝语义断言；M10 单轮严格判据；M25 覆盖 1000/1500/5000 三类 timer unref。同时含 #8 常量联动 / #9 CI+stub SDK / #11 README+AGENTS 三批工具链与文档变更 |
 | `v6.7.1-r3` | venv 配置**现读**（#16/PR #17，设计 R8 由「登记未修」转「已修」）：`lib/venv.js` 新增 `createVenvReader()`（每次现 `.get()`、total、不改「未配置」语义）；`lib/tools.js` 三个 builder 改经 accessor、`info`/`check_env` 的 description 改 getter；`index.js` 传原始 `opts.venv` 并订阅 `loader/volatile-update` 使配置无效保存即报；入口技能正文仍为注册期快照（脚注补明配置变化亦可能陈旧）。测试 711 → **720** |
 | `v6.7.3` | 上游同步（规则①）：vendor v6.7.3 逐字节（refs/tags/v6.7.3@622bf0148bca4f697b0184322c7e2aa2a04520a2），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.7.3`／`6.7.3`；包装层 `v6.7.1-r1..r3` 三次修订按规则①归零。附带包装层修复：`scripts/verify-plugin.mjs` 的 `baseName` 同时切 `/` 与 `\`（旧实现只切 `/`，Windows 绝对路径下 `upstream/skills/<name>` 拼成整条路径，第⑥项误报并以退出码 4 中断同步） |
+| `v6.8.0` | 上游同步（规则①）：vendor v6.8.0 逐字节（refs/tags/v6.8.0@5e8856be0da8e6bc85c4aa28acc614478f7b7137），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.8.0`／`6.8.0`，`package.json.version` 同为 `6.8.0`；结构分类 🔴 0 项、走自动路径。`requirements.txt` 相对 v6.7.3 **无变化**（仍 19 条依赖，本机 venv 无需重建）；上游支持的 Python 上限改为 3.14（本机 venv 3.11.2 在范围内），`ppt_master_check_env` 仍按 vendor 文件现读。测试保持 720/720 |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

@@ -41,8 +41,8 @@ gh pr checks <PR号> --repo SAXEM1997/dsh-ppt-master-wrapper
 `sync-upstream.mjs` 会自动建；**手工验证**（例如审查外部 PR 的同步）时自己造：
 
 ```bash
-REF=v6.7.3
-SHA=622bf0148bca4f697b0184322c7e2aa2a04520a2
+REF=v6.8.0
+SHA=5e8856be0da8e6bc85c4aa28acc614478f7b7137
 git clone --depth 1 --branch "$REF" https://github.com/hugohe3/ppt-master.git \
   ".upstream/refs/tags/${REF}@${SHA}"
 git -C ".upstream/refs/tags/${REF}@${SHA}" rev-parse HEAD   # 必须等于 $SHA
