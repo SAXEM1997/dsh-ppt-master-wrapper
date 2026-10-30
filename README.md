@@ -190,7 +190,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（711 用例）
+├── tests/                            # node:test 全套（720 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -204,11 +204,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 711/711）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 720/720）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 711/709/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 720/718/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 
