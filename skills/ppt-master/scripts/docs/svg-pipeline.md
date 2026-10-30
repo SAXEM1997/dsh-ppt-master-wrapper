@@ -224,6 +224,11 @@ notes and an absent file keeps them. Deleting inherited source notes only on a
 copy is not supported in v1. The same output-stem rule applies to narration
 audio.
 
+Imported notes Markdown excludes text in author-hidden notes shapes or groups
+and records a `hidden-notes-content` diagnostic. Unchanged round-trip notes
+still retain their original native XML, including its hidden state; editing a
+visible note does not promote the excluded text into the replacement notes.
+
 When a round-trip recorded-narration export omits `--animation-config`, it reads the workspace `animations.json` the importer wrote; that sidecar is part of the workspace contract, so deleting it fails export rather than restoring source motion.
 
 Narration audio is keyed by the output SVG stem. A copied output page uses its
@@ -255,9 +260,11 @@ as the round-trip text-capacity gate. It resolves the output roster from
 font-family, font-size, text-width, and canvas metrics only to new text or
 changed source-ref objects. The gate asserts horizontal capacity: it estimates
 single-line width for each positioned line and does not model vertical
-wrapping. Width beyond an explicit ancestor `data-pptx-frame` is blocking;
-overflow against the nearest-rect-sibling fallback is advisory, while bounds
-leaving the page canvas remain blocking. Other advisories remain non-blocking.
+wrapping. Width beyond the nearest owning `data-pptx-frame` (imported) or
+`data-pptx-bounds` (authored) is blocking. Without explicit bounds, only a rect
+in the text's own group containing its anchor can supply an advisory frame;
+page-level decorations and rectangles beside ancestor groups are excluded.
+Bounds leaving the page canvas remain blocking. Other advisories remain non-blocking.
 Unchanged source refs, source proxies, and generated-project-only spec,
 template, canonical-authoring, and resource-manifest checks are excluded.
 
@@ -971,7 +978,7 @@ Behavior:
   - `--no-merge`: each dy-stacked line becomes an independent frame with its own placement.
   - Detection is conservative: mixed-layout `<text>` falls back to per-line frames. Use `--reflow-text` only for resizable body copy and `--no-merge` only for independent line objects or absolute line positions.
 - Native release export reads `svg_output/`; `-s <directory>` selects another project-relative SVG source. `-s final` remains an explicit diagnostic comparison against post-processed SVGs and does not change artifact ownership. `--enable-dangerous-nonconforming-svg-export` is a separate, explicitly requested flat compatibility path for either the default or selected source; it forces flat structure, restores no imported source object, and cannot combine with `--roundtrip` or `--quick-generate`.
-- `--roundtrip` accepts only `authoring-svg-flat/` and the source/contracts emitted by `pptx_to_svg.py --roundtrip`; predecessor root sidecars and alternate `-s` inputs fail. It restores unchanged refs from `analysis/roundtrip-svg/`, preserves unchanged Slide XML/relationships and source resources byte-for-byte, rebuilds a page whose authoring changed, and rebuilds every output page that references a changed resource. Closed unchanged chart packages recover exactly; editing their fallback disables stale replacement. Optional root `page_plan.json` uses the versioned deck-plan contract above; the no-plan path remains the identity export. Motion fields are compared independently with the import baseline: omitted slide `transition` preserves source motion even when importer defaults say `none`, while changed `defaults.animation` participates in animation replacement. Effect-only changes preserve source `advClick` / `advTm`; explicit advance settings or narration timings replace them. Explicit `-t <effect>` without `--transition-duration` on a source without transitions uses the default duration.
+- `--roundtrip` accepts only `authoring-svg-flat/` and the source/contracts emitted by `pptx_to_svg.py --roundtrip`; predecessor root sidecars and alternate `-s` inputs fail. It restores unchanged refs from `analysis/roundtrip-svg/`, preserves unchanged Slide XML/relationships and source resources byte-for-byte, rebuilds a page whose authoring changed, and rebuilds every output page that references a changed resource. Closed unchanged chart packages recover exactly; editing their fallback disables stale replacement. With `--native-charts-and-tables`, an imported JSON-first chart whose edit changes only numeric data (supported null gaps included), category labels, or series names — types, axis assignments, series/point counts, every non-data JSON field, and its SVG presentation unchanged against the `analysis/roundtrip-svg/` baseline — patches a copy of its source package: only the affected cache entries (`xVal` / `yVal` / `bubbleSize` for XY) and matching workbook cells change (new shared strings when an entry is shared), while `formatCode`, ranges, every other chart byte, and the style/colors/theme-override/workbook relationships stay as imported under independent part names. A data-only edit that cannot be patched safely (workbook reference not a single A1 row or column, formula cell, missing source package) fails with a repair message. Any other chart edit rebuilds from JSON and emits a non-blocking `native-chart-rebuilt` warning listing that object's import diagnostics from `validation/conversion-report.json`; source-only gradients, layouts, text overrides, and extensions can be lost on that path. Optional root `page_plan.json` uses the versioned deck-plan contract above; the no-plan path remains the identity export. Motion fields are compared independently with the import baseline: omitted slide `transition` preserves source motion even when importer defaults say `none`, while changed `defaults.animation` participates in animation replacement. Effect-only changes preserve source `advClick` / `advTm`; explicit advance settings or narration timings replace them. Explicit `-t <effect>` without `--transition-duration` on a source without transitions uses the default duration.
 - `svg_final/` may be opened directly or inserted into PowerPoint as an SVG picture. PowerPoint's manual Convert-to-Shape operation is outside the compatibility contract.
 - On every SVG-authoring route, each file in `svg_output/` is the complete visible
   page-design source. Templates and locks may guide authoring, but finalize/export
@@ -1343,6 +1350,11 @@ Positioned `x`/`y`/nonzero `dy` rows keep the existing split/preserve/reflow
 behavior. A row starter's `dx` is consumed by its resolved line position;
 later inline scalar `dx` stays with its run through flattening.
 
+Split rows retain text names, roles, classes and visibility. The first row
+keeps the original text id; later rows use collision-free `-line-N` ids.
+Inline anchors and id-bearing tspans survive splitting. These preservation
+rules do not broaden the native Generate authoring gate.
+
 Native export represents inline `dx` with a separate NBSP run before the
 affected text. Its `a:rPr@spc`, in hundredths of a point, is
 `round(75 * (dx_px - estimated_space_width_px))`. The space estimate uses the
@@ -1389,6 +1401,10 @@ Replaces project-local `<use data-icon="library/name" .../>` placeholders with
 SVG paths. The exact case-sensitive file must exist under the workspace
 `icons/`; bare, aliased, template-source, and unsynced references fail. Use
 this only for manual checks outside `finalize_svg.py`.
+
+The replacement group retains the placeholder's id, class, style, opacity,
+visibility, clipping/filter context, and `data-pptx-*` / `data-edit-*`
+attributes. Hidden icon placeholders therefore remain hidden after embedding.
 
 ## SVG Compatibility Contract
 
