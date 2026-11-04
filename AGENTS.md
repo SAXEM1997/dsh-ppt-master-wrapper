@@ -83,7 +83,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 724 tests / 722 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 724/724 |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 724 tests / 722 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 724/724。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -122,7 +122,7 @@
 | `v6.7.1-r3` | venv 配置**现读**（#16/PR #17，设计 R8 由「登记未修」转「已修」）：`lib/venv.js` 新增 `createVenvReader()`（每次现 `.get()`、total、不改「未配置」语义）；`lib/tools.js` 三个 builder 改经 accessor、`info`/`check_env` 的 description 改 getter；`index.js` 传原始 `opts.venv` 并订阅 `loader/volatile-update` 使配置无效保存即报；入口技能正文仍为注册期快照（脚注补明配置变化亦可能陈旧）。测试 711 → **720** |
 | `v6.7.3` | 上游同步（规则①）：vendor v6.7.3 逐字节（refs/tags/v6.7.3@622bf0148bca4f697b0184322c7e2aa2a04520a2），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.7.3`／`6.7.3`；包装层 `v6.7.1-r1..r3` 三次修订按规则①归零。附带包装层修复：`scripts/verify-plugin.mjs` 的 `baseName` 同时切 `/` 与 `\`（旧实现只切 `/`，Windows 绝对路径下 `upstream/skills/<name>` 拼成整条路径，第⑥项误报并以退出码 4 中断同步） |
 | `v6.8.0` | 上游同步（规则①）：vendor v6.8.0 逐字节（refs/tags/v6.8.0@5e8856be0da8e6bc85c4aa28acc614478f7b7137），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.8.0`／`6.8.0`，`package.json.version` 同为 `6.8.0`；结构分类 🔴 0 项、走自动路径。`requirements.txt` 相对 v6.7.3 **无变化**（仍 19 条依赖，本机 venv 无需重建）；上游支持的 Python 上限改为 3.14（本机 venv 3.11.2 在范围内），`ppt_master_check_env` 仍按 vendor 文件现读。测试保持 720/720 |
-| `v6.8.0-r1` | 包装层修订（#31，无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——`executionModelOf()` 按 `tools.setExecutor` 存在性分流，batch 侧自挂 `@deepseek-ai/dsh-tool-executor-native` 并按 `{calls:[…]}` 调用、结果经 `firstToolResult()` 取 `results[i].result`；single 侧保持 0.2.1 单调用。stub SDK 新增 `executorModel: 'batch'` 形态（`setExecutor` + executor 替身 + `executorLog`），新增 4 例（2 纯函数 + 2 端到端/降级），测试 720 → **724**。同时清 `schemaOf`/loader 行号等陈旧坐标，并在 §3 登记两代执行契约。真机 0.2.1-rc.5 与 npm 0.2.2-rc.1 树双绿；vendor 树仍 v6.8.0 逐字节 |
+| `v6.8.0-r1` | 包装层修订（#31，无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——`executionModelOf()` 按 `tools.setExecutor` 存在性分流，batch 侧自挂 `@deepseek-ai/dsh-tool-executor-native` 并按 `{calls:[…]}` 调用、结果经 `firstToolResult()` 取 `results[i].result`；single 侧保持 0.2.1 单调用。stub SDK 新增 `executorModel: 'batch'` 形态（`setExecutor` + executor 替身 + `executorLog`/`batchCalls`），新增 4 例（2 纯函数 + 2 端到端/降级，含批量入参形状自证与降级 warning），测试 720 → **724**。同时清 `schemaOf`/loader 行号等陈旧坐标，并在 §3 登记两代执行契约。真机 0.2.1-rc.5 与 npm 0.2.2-rc.1 树双绿；vendor 树仍 v6.8.0 逐字节 |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

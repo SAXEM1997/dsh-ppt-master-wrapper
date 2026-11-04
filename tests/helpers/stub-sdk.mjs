@@ -363,6 +363,9 @@ export async function buildStubSdk(modules, {
       '// executorModel=batch 时的 setExecutor 台账（观察探针是否真走外置执行面）与',
       '// 当前选择（模块级：traceable 代理每次读取都是新视图，见下方 guards 注）。',
       'export const executorLog = [];',
+      '// execute({calls}) 的入参形状台账：断言探针真的用了批量形状，而不是靠替身宽容',
+      '// 单调用回落蒙混过关（真实 0.2.2 对非批量入参会直接 TypeError）。',
+      'export const batchCalls = [];',
       'const selectedExecutor = { current: undefined };',
       'export function defineTool(definition) {',
       '  defineLog.push(definition?.name);',
@@ -470,8 +473,12 @@ export async function buildStubSdk(modules, {
             '    selectedExecutor.current = executor;',
             '  }',
             '  async execute(input) {',
-            '    const calls = Array.isArray(input?.calls) ? input.calls : undefined;',
-            '    if (calls === undefined) return this.runCall(input);',
+            '    // 不提供单调用回落：真实 executeToolBatch 对非 {calls} 入参直接抛，',
+            '    // 回落会让「探针退回单调用形状」的回归在 CI 里静默通过。',
+            '    if (!Array.isArray(input?.calls)) {',
+            '      throw new TypeError("stub batch 模型: execute 入参必须是 {calls:[…]}");',
+            '    }',
+            '    batchCalls.push(input.calls.map((call) => ({ id: call?.id, name: call?.name, argType: typeof call?.arguments })));',
             '    const executor = selectedExecutor.current;',
             '    if (executor === undefined) throw new Error("stub: TOOL_EXECUTOR_UNAVAILABLE（未安装 executor）");',
             '    return executor.execute(input);',
@@ -488,8 +495,10 @@ export async function buildStubSdk(modules, {
   });
 
   // 0.2.2+ 外置 executor 的最小替身：与真实包同导出面（`NativeToolExecutor` 可
-  // 直接 `new`，`apply` 走 `tools.setExecutor`），执行体回调 stub 的 runCall，
-  // 使「批量形状 → executor → guard 拒绝」这条链在 CI 里真正被走到。
+  // 直接 `new`，`apply` 走 `tools.setExecutor`），执行体按真实 executeToolBatch 的
+  // calls→exec 映射逐条回调 stub 的 `runCall`（**替身内部接缝**：真实
+  // NativeToolExecutor 走 `ToolExecutionPipeline`，dsh-tools 无 `runCall` 公开面）。
+  // 因此本替身证明的是「探针↔契约」自洽，真机 0.2.2 仍需按 AGENTS §4 手工跑一次。
   if (executorModel === 'batch') {
     await pkg('@deepseek-ai/dsh-tool-executor-native', 'index.mjs', {
       'index.mjs': [

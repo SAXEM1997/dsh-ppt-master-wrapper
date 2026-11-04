@@ -859,7 +859,14 @@ export async function runCompatCheck(options = {}) {
     let executorMounted = false;
     if (executionModel === 'batch') {
       const nativeEntry = entryOf(resolved.path, '@deepseek-ai/dsh-tool-executor-native');
-      if (nativeEntry !== null) {
+      if (nativeEntry === null) {
+        // 0.2.2 宿主组合本应带 native executor（`dsh-base` 的 bundle patch 就装它）。
+        // 缺包 ⇒ 观察通道降级，必须让它在 warnings 里可见，不能只剩一条 note。
+        warnings.push(
+          '§7.7⑦ 0.2.2 执行模型下未找到 @deepseek-ai/dsh-tool-executor-native'
+            + '（宿主组合缺外置执行器）——guard 拒绝语义退回 guardReason/note，端到端未验证',
+        );
+      } else {
         try {
           const native = await importModule(nativeEntry.url);
           if (typeof native?.NativeToolExecutor === 'function') {
@@ -867,6 +874,11 @@ export async function runCompatCheck(options = {}) {
             // fiber 异步激活——探针必须同步可用）。
             ctxScope.tools.setExecutor(new native.NativeToolExecutor(ctxScope));
             executorMounted = true;
+          } else {
+            warnings.push(
+              '§7.7⑦ @deepseek-ai/dsh-tool-executor-native 未导出 NativeToolExecutor 构造函数'
+                + '（导出面变更）——guard 拒绝语义退回 guardReason/note，端到端未验证',
+            );
           }
         } catch (error) {
           // executor 包在场却装不上（构造函数签名变了 / 装载期抛错）——值得一条 warning：
@@ -907,8 +919,10 @@ export async function runCompatCheck(options = {}) {
           const callProbe = async () => {
             const signal = new AbortController().signal;
             if (executionModel === 'batch') {
+              // `arguments` 传 JSON 字符串：真实调用块就是字符串（pipeline 的
+              // parseArguments 对对象只靠 JSON.parse 失败回落，别依赖那条兜底）。
               return firstToolResult(await ctxScope.tools.execute({
-                calls: [{ id: 'compat-guard-probe', name: 'compat-guard-probe', arguments: {} }],
+                calls: [{ id: 'compat-guard-probe', name: 'compat-guard-probe', arguments: '{}' }],
                 signal,
               }));
             }

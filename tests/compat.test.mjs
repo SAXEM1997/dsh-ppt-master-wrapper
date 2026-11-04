@@ -483,6 +483,15 @@ test('runCompatCheck: 0.2.2 执行模型——探针自装 native executor 并�
     // 探针确实安装了 executor（stub 侧台账），证明走的是批量分支而非单调用分支。
     const toolsStub = await stubModule(sdk.modules, '@deepseek-ai/dsh-tools');
     assert.equal(toolsStub.executorLog.length, 1, '探针须恰好安装一个 executor');
+    // 入参形状自证：两次 execute（拒绝半 + 放行半）都必须是 {calls:[{id,name,arguments}]}，
+    // 且 arguments 是 JSON 字符串（真实调用块形态）。替身对非批量入参直接抛，故此断言
+    // 同时钉住「探针不会退回单调用形状」。
+    assert.equal(toolsStub.batchCalls.length, 2, '拒绝半与放行半各一次批量调用');
+    for (const call of toolsStub.batchCalls) {
+      assert.equal(call.length, 1, '每次批量调用只含一个 call');
+      assert.equal(call[0].name, 'compat-guard-probe');
+      assert.equal(call[0].argType, 'string', 'arguments 须为 JSON 字符串');
+    }
   } finally {
     await Promise.all([sdk.cleanup(), fixture.cleanup()]);
   }
@@ -503,6 +512,11 @@ test('runCompatCheck: 有 setExecutor 但缺 executor 包 ⇒ 不误报（降级
     assert.ok(
       result.notes.some((note) => note.includes('guardReason') || note.includes('未验证')),
       `须以 note 说明降级（实际: ${JSON.stringify(result.notes)}）`,
+    );
+    // 降级必须可见：缺 executor 包要在 warnings 里点名，不能只剩一条容易被忽略的 note。
+    assert.ok(
+      result.warnings.some((warning) => warning.includes('dsh-tool-executor-native')),
+      `缺 executor 包须有 warning 点名（实际: ${JSON.stringify(result.warnings)}）`,
     );
   } finally {
     await Promise.all([sdk.cleanup(), fixture.cleanup()]);
