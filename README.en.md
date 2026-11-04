@@ -189,7 +189,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (720 cases)
+├── tests/                            # full node:test suite (724 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -203,11 +203,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (720/720 with a real SDK on the machine)
+node --test tests/*.test.mjs          # full suite (724/724 with a real SDK on the machine)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 720/718/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 724/722/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 
@@ -222,6 +222,7 @@ Machines without the host SDK (CI included): build the default stub tree with `n
 | `v6.7.1-r3` | venv configuration is now **re-read live**: a card save applies to all three tools immediately instead of an apply-time snapshot (design R8 / issue #16); an invalid path warns at save time |
 | `v6.7.3` | Upstream sync: vendored v6.7.3 (byte-for-byte). Carries the v6.7.2 "stop losing or overwriting content silently" batch (skill-only installs place projects in the working folder again, PDF tables no longer rewritten against one sample paper, HTML/`.txt` decoded by declared charset, same-titled batches no longer overwrite each other, whole-word image search, native-chart part-name collisions, formula MCE fallback so WPS/LibreOffice are not blank) and the v6.7.3 Edit Native round-trip fixes; also fixes `verify-plugin`'s `baseName` for backslash paths (no more false failure of check ⑥ on Windows) |
 | `v6.8.0` | Upstream sync: vendored v6.8.0 (byte-for-byte). AI image generation now defaults to `gpt-image-2.5-sunburst` (~¼ the output tokens, ~½ the latency, real RGBA transparency), `aspect_ratio` accepts any positive W:H, and `Retry-After` is honored by every backend and by manifest requeues; Edit Native patches data-only chart edits in place (gradients, legends, per-point labels survive) and merged-cell tables no longer fail `--native-charts-and-tables`; PPTX import no longer hard-fails on zero-size geometry (unrecoverable geometry is kept and reported) and author-hidden content no longer leaks into source Markdown, the Beautify inventory, or rebuilt notes; `source_to_md` keeps Office Math as LaTeX, matches Word's DOCX text, and recovers skipped EPUB/ODT/RTF text; animation timing follows PowerPoint beat semantics; hyperlinks are compared after XML decoding; supported Python is capped at 3.14 |
+| `v6.8.0-r1` | Wrapper revision (no runtime behaviour change): the `check-dsh-compat` guard probe now speaks DSH 0.2.2's executor contract — mount `@deepseek-ai/dsh-tool-executor-native`, then call the batched `tools.execute`; 0.2.1 and earlier keep the single-call shape, and both SDK generations pass. Also clears stale `schemaOf`-era doc coordinates and records both execution contracts in AGENTS §3. Vendored tree stays v6.8.0 byte-for-byte |
 
 > Versioning: the `base` mirrors upstream releases; wrapper revisions append `-rN`. Itemized details in [AGENTS.md](AGENTS.md) §5.
 

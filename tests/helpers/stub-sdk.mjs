@@ -160,7 +160,7 @@ export const SCHEMASTERY_STUB = [
  *
  * 幂等：先整树 rm 再建（重复构造同一目录不留旧文件）。knob 集与 compat.test.mjs
  * 原内联 makeStubSdk 逐字一致（bundledRank/omitBundledRankExport/superpowers/
- * superpowersRank/rejectBareTools/omit）。
+ * superpowersRank/rejectBareTools/executorModel/omit）。
  *
  * @param {string} modules 目标 node_modules 绝对或相对路径。
  * @param {object} [options] 同 makeStubSdk 的 knobs。
@@ -171,6 +171,11 @@ export async function buildStubSdk(modules, {
   superpowers = 'present', // 'present' | 'absent' | 'no-const'
   superpowersRank = 550,
   rejectBareTools = false,
+  // 工具执行模型（issue #31）：'single' = 0.2.1 及更早（tools.execute 自带实现、
+  // 入参 {callId,name,arguments}）；'batch' = 0.2.2+ 外置 executor（tools.setExecutor
+  // 先装 `@deepseek-ai/dsh-tool-executor-native` 替身、execute 入参 {calls:[…]}、结果
+  // 在 results[i].result）。默认 single，保证既有用例与 CI 形态不变。
+  executorModel = 'single',
   omit = [],
 } = {}) {
   // 病态路径守卫（Gate 3 P3-2）：本函数对目标**先 rm 再建**（幂等语义），必须在动手前
@@ -355,6 +360,13 @@ export async function buildStubSdk(modules, {
     'index.mjs': [
       'export const registerLog = [];',
       'export const defineLog = [];',
+      '// executorModel=batch 时的 setExecutor 台账（观察探针是否真走外置执行面）与',
+      '// 当前选择（模块级：traceable 代理每次读取都是新视图，见下方 guards 注）。',
+      'export const executorLog = [];',
+      '// execute({calls}) 的入参形状台账：断言探针真的用了批量形状，而不是靠替身宽容',
+      '// 单调用回落蒙混过关（真实 0.2.2 对非批量入参会直接 TypeError）。',
+      'export const batchCalls = [];',
+      'const selectedExecutor = { current: undefined };',
       'export function defineTool(definition) {',
       '  defineLog.push(definition?.name);',
       '  return { ...definition, builtWith: "defineTool" };',
@@ -432,7 +444,9 @@ export async function buildStubSdk(modules, {
       '  }',
       '  // M2b：真实执行入口的最小复刻——guard 拒绝先于调度，拒绝时绝不执行工具体；',
       '  // 放行时按 name 派发到注册定义（工具体签名 (args, exec)，与真实工具定义一致）。',
-      '  async execute(exec) {',
+      '  // 单条调用的实现独立成 runCall：batch 模型下 executor 替身会回调它（与真实',
+      '  // NativeToolExecutor 把管线交给 executor 同构）。',
+      '  async runCall(exec) {',
       '    const reason = this.guardReason(exec);',
       '    if (reason !== undefined) {',
       '      return {',
@@ -449,10 +463,61 @@ export async function buildStubSdk(modules, {
       '    const value = await definition.execute(args, exec);',
       '    return { isError: false, value, content: definition.output.render(args, value) };',
       '  }',
+      ...(executorModel === 'batch'
+        ? [
+            '  // 0.2.2+：executor 选择面 + 批量执行入口（单调用形状仍保留，供 0.2.1 分支）。',
+            '  // 选择结果落模块级容器——理由同 guards（traceable 代理每次读取都是新视图，',
+            '  // 挂在 this 上会让下一条调用看不到已装的 executor）。',
+            '  setExecutor(executor) {',
+            '    executorLog.push(executor);',
+            '    selectedExecutor.current = executor;',
+            '  }',
+            '  async execute(input) {',
+            '    // 不提供单调用回落：真实 executeToolBatch 对非 {calls} 入参直接抛，',
+            '    // 回落会让「探针退回单调用形状」的回归在 CI 里静默通过。',
+            '    if (!Array.isArray(input?.calls)) {',
+            '      throw new TypeError("stub batch 模型: execute 入参必须是 {calls:[…]}");',
+            '    }',
+            '    batchCalls.push(input.calls.map((call) => ({ id: call?.id, name: call?.name, argType: typeof call?.arguments })));',
+            '    const executor = selectedExecutor.current;',
+            '    if (executor === undefined) throw new Error("stub: TOOL_EXECUTOR_UNAVAILABLE（未安装 executor）");',
+            '    return executor.execute(input);',
+            '  }',
+          ]
+        : [
+            '  async execute(input) {',
+            '    return this.runCall(input);',
+            '  }',
+          ]),
       '}',
       '',
     ].join('\n'),
   });
+
+  // 0.2.2+ 外置 executor 的最小替身：与真实包同导出面（`NativeToolExecutor` 可
+  // 直接 `new`，`apply` 走 `tools.setExecutor`），执行体按真实 executeToolBatch 的
+  // calls→exec 映射逐条回调 stub 的 `runCall`（**替身内部接缝**：真实
+  // NativeToolExecutor 走 `ToolExecutionPipeline`，dsh-tools 无 `runCall` 公开面）。
+  // 因此本替身证明的是「探针↔契约」自洽，真机 0.2.2 仍需按 AGENTS §4 手工跑一次。
+  if (executorModel === 'batch') {
+    await pkg('@deepseek-ai/dsh-tool-executor-native', 'index.mjs', {
+      'index.mjs': [
+        'export class NativeToolExecutor {',
+        '  constructor(ctx) { this.ctx = ctx; }',
+        '  async execute(input) {',
+        '    const results = [];',
+        '    for (const call of input.calls) {',
+        '      const exec = { callId: call.id, name: call.name, arguments: call.arguments, signal: input.signal };',
+        '      results.push({ callId: call.id, result: await this.ctx.tools.runCall(exec) });',
+        '    }',
+        '    return { results };',
+        '  }',
+        '}',
+        'export function apply(ctx) { ctx.tools.setExecutor(new NativeToolExecutor(ctx)); }',
+        '',
+      ].join('\n'),
+    });
+  }
 
   // M2a：最小 @deepseek-ai/dsh-scope 替身——真实导出面的唯一消费点是 `createScope`
   // （scripts/check-dsh-compat.mjs §7.7⑦ 正向路径：compat 在 stub 上运行时，没有它则
