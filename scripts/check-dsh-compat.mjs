@@ -177,6 +177,33 @@ const SDK_PACKAGES = [
   '@deepseek-ai/dsh-tools',
 ];
 
+// ─── tools.execute 的两代契约（0.2.2 起执行外置为 executor）──────────
+
+/**
+ * `ctx.tools` 服务的执行模型：0.2.2 起执行能力从 `dsh-tools` 外置为 executor 插件
+ * （`dsh-tool-executor-native` / `-ptc`），选择面是 `tools.setExecutor()`；此前版本
+ * 没有该方法，`tools.execute()` 自带单调用实现。**能力探测而非版本号比较**——stub 与
+ * 未来版本都不必维护版本表。
+ *
+ * @param {{setExecutor?: unknown}} [tools] 定位到的 SDK 的 `ctx.tools`（或替身）。
+ * @returns {'batch' | 'single'} `batch` = 需先装 executor 且入参为 `{calls:[…]}`。
+ */
+export function executionModelOf(tools) {
+  return typeof tools?.setExecutor === 'function' ? 'batch' : 'single';
+}
+
+/**
+ * 执行结果归一化：批量形状 `{results:[{callId,result}]}` 取首条 result，单调用形状
+ * 原样返回。探针只发一条调用，故首条即被测调用（取不到 ⇒ undefined，由调用方判失败）。
+ *
+ * @param {{results?: Array<{result?: unknown}>} | unknown} outcome 两代 execute 的返回值。
+ * @returns {unknown} 单条调用结果（批量时为其 `result` 字段）。
+ */
+export function firstToolResult(outcome) {
+  if (outcome === null || typeof outcome !== 'object') return outcome;
+  return Array.isArray(outcome.results) ? outcome.results[0]?.result : outcome;
+}
+
 // ─── resolveDshModules：有序五级 + 无序扫描 ──────────────────────
 
 /** 非空字符串 → 原值；否则 null（空串环境变量视为未设置）。 */
@@ -819,18 +846,79 @@ export async function runCompatCheck(options = {}) {
     // 返回 undefined 的 guard 反向断言放行）；无该公开面时回落公开方法
     // `tools.guardReason(exec)`；两路皆无（stub 宿主）→ 只记 note（同 dsh-scope 缺席
     // 的处理），真实 SDK 环境两条路径至少其一必须在场。
+    //
+    // **两代执行契约（0.2.2 起，issue #31）**：0.2.2 把执行外置为 executor 插件——
+    // 必须先 `tools.setExecutor(...)`（宿主默认装 `dsh-tool-executor-native`），且
+    // `tools.execute` 入参是批量 `{calls:[{id,name,arguments}],signal}`、结果在
+    // `results[i].result`；未装 executor 时它直接抛 TOOL_EXECUTOR_UNAVAILABLE。
+    // 按能力探测分流（`executionModelOf`），**不按版本号**；0.2.1 及更早仍走单调用。
+    // 有 setExecutor 却取不到 executor 包时降级到 guardReason/note —— 那是 SDK 组合
+    // 缺失，不是本插件契约破裂，不能误报。
     const GUARD_DENIAL_REASON = 'scope: not visible';
-    const guardChannel = typeof ctxScope.tools.execute === 'function' ? 'execute'
-      : typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null;
+    const executionModel = executionModelOf(ctxScope.tools);
+    let executorMounted = false;
+    if (executionModel === 'batch') {
+      const nativeEntry = entryOf(resolved.path, '@deepseek-ai/dsh-tool-executor-native');
+      if (nativeEntry !== null) {
+        try {
+          const native = await importModule(nativeEntry.url);
+          if (typeof native?.NativeToolExecutor === 'function') {
+            // 与宿主同形：直接实例化并选择（等价于 `ctx.plugin(executor)`，但免去
+            // fiber 异步激活——探针必须同步可用）。
+            ctxScope.tools.setExecutor(new native.NativeToolExecutor(ctxScope));
+            executorMounted = true;
+          }
+        } catch (error) {
+          // executor 包在场却装不上（构造函数签名变了 / 装载期抛错）——值得一条 warning：
+          // 本插件不依赖它，但探针的观察通道会因此降级，别让降级无声发生。
+          warnings.push(
+            `§7.7⑦ 0.2.2 executor 装载失败（${firstLine(error)}）——guard 拒绝语义改走 guardReason/降级`,
+          );
+          executorMounted = false;
+        }
+      }
+    }
+    const guardChannel = executionModel === 'batch'
+      ? (executorMounted
+        ? 'execute'
+        : (typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null))
+      : (typeof ctxScope.tools.execute === 'function'
+        ? 'execute'
+        : (typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null));
+    if (executionModel === 'batch' && !executorMounted && guardChannel === 'guardReason') {
+      notes.push(
+        '§7.7⑦ 0.2.2 执行模型未取得 @deepseek-ai/dsh-tool-executor-native，'
+          + 'guard 拒绝语义改走公开方法 guardReason(exec) 观察（执行面端到端未验证）',
+      );
+    }
     if (guardChannel === null) {
       notes.push(
-        '§7.7⑦ guard 拒绝语义未验证：本环境 ToolRuntime 无 execute/guardReason 公开面'
-          + '（拒绝观察通道缺席，真实 SDK 二者至少其一在场）',
+        '§7.7⑦ guard 拒绝语义未验证：本环境 ToolRuntime 无可用执行面（'
+          + (executionModel === 'batch'
+            ? '0.2.2+ 需 @deepseek-ai/dsh-tool-executor-native，且 guardReason 也缺席'
+            : 'execute/guardReason 均缺席')
+          + '——真实 SDK 二者至少其一在场）',
       );
     } else {
       const problemsBeforeGuard = problems.length;
       try {
         if (guardChannel === 'execute') {
+          // 形状差异只在这里：入参与结果投影随执行模型切换，断言面两代一致。
+          const callProbe = async () => {
+            const signal = new AbortController().signal;
+            if (executionModel === 'batch') {
+              return firstToolResult(await ctxScope.tools.execute({
+                calls: [{ id: 'compat-guard-probe', name: 'compat-guard-probe', arguments: {} }],
+                signal,
+              }));
+            }
+            return ctxScope.tools.execute({
+              callId: 'compat-guard-probe',
+              name: 'compat-guard-probe',
+              arguments: {},
+              signal,
+            });
+          };
           let probeBodyRuns = 0;
           ctxScope.tools.register({
             name: 'compat-guard-probe',
@@ -849,12 +937,7 @@ export async function runCompatCheck(options = {}) {
           const denyGuard = ctxScope.tools.guard(() => GUARD_DENIAL_REASON);
           let denied;
           try {
-            denied = await ctxScope.tools.execute({
-              callId: 'compat-guard-probe',
-              name: 'compat-guard-probe',
-              arguments: {},
-              signal: new AbortController().signal,
-            });
+            denied = await callProbe();
           } finally {
             denyGuard();
           }
@@ -874,12 +957,7 @@ export async function runCompatCheck(options = {}) {
           const allowGuard = ctxScope.tools.guard(() => undefined);
           let allowed;
           try {
-            allowed = await ctxScope.tools.execute({
-              callId: 'compat-guard-probe',
-              name: 'compat-guard-probe',
-              arguments: {},
-              signal: new AbortController().signal,
-            });
+            allowed = await callProbe();
           } finally {
             allowGuard();
           }
@@ -893,7 +971,10 @@ export async function runCompatCheck(options = {}) {
             notes.push(
               `§7.7⑦ guard 拒绝语义: 返回 "${GUARD_DENIAL_REASON}" 的 guard 经真实 execute() 拒绝了调用`
                 + '（isError=true、error.message 逐字一致、探针工具体 0 次执行）；'
-                + '返回 undefined 的 guard 放行（工具体恰 1 次执行、非错误结果）',
+                + '返回 undefined 的 guard 放行（工具体恰 1 次执行、非错误结果）'
+                + `（执行模型 ${executionModel}`
+                + (executorMounted ? '，已挂 @deepseek-ai/dsh-tool-executor-native' : '')
+                + '）',
             );
           }
         } else {
