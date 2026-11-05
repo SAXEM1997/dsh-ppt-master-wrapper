@@ -64,6 +64,13 @@
 - **`tools.restrict()` 只能在 agent 作用域调用**（根 ctx 调用抛
   "requires a scoped context"），且**安装与释放两侧都 emit `tools/change`**——重算必须
   差异式装层，否则自激；`tools.guard()` 装在根 ctx，返回 disposer。
+- **`cannot create effect on inactive context` 的含义是「会话已销毁」**，不是「作用域尚未
+  激活」：cordis `Fiber.assertActive()` 只在 `fiber.uid === null` 时抛 `INACTIVE_EFFECT`，
+  而 `uid` 仅在 fiber **dispose** 时置空（构造期赋 counter 值）。`restrict()` 内部走
+  `this.layers.effect(this.ctx, …)`，`this.ctx` 是**调用方**上下文（Service 的 shadow
+  语义）⇒ 对 `agent.ctx.tools` 调用用的就是该 agent 自己的 fiber。因此 `agent/created`
+  的监听器里做 async 判定后再装层，必须**先经 `agents.get(id)` 判活**（短命子会话——如
+  mnemon idle review——会在 `await` 期间被销毁）；重试对已死会话无意义（issue #33）。
 - **schemastery 受控解析**：`index.js` 在模块加载期经「定位宿主 node_modules +
   `createRequire`」取 `@deepseek-ai/schemastery`（禁 ESM 裸导入；锚点必须是定位到的
   node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。解析失败＝整插件
