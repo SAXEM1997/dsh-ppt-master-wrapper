@@ -13,7 +13,9 @@ const W1 = { id: 'w1', title: 'ppt-master', path: '/workspace/ppt-master', sessi
 const W2 = { id: 'w2', title: 'hermes', path: '/workspace/hermes', sessionIds: [] };
 
 function makeAgent({ id, cwd, restrictable = true }) {
-  const record = { id, cwd, installed: 0, released: 0, filters: [] };
+  // `attempts` 在三条前置检查**之前**自增：`installed` 只在检查全过之后才加，故"restrict 从未
+  // 被调用"只能用 attempts 断言（否则该断言恒真——restrictThrows 在自增前就抛了）。
+  const record = { id, cwd, installed: 0, released: 0, filters: [], attempts: 0 };
   const agent = {
     id,
     session: { header: cwd === undefined ? {} : { cwd } },
@@ -27,6 +29,7 @@ function makeAgent({ id, cwd, restrictable = true }) {
    * 少了这三条，"把 `this` 弄丢"或"名字漂移"这类改动会静默通过全部用例。
    */
   agent.ctx.tools.restrict = function restrict(filter) {
+    record.attempts += 1;
     if (this !== agent.ctx.tools) {
       throw new Error('tools.restrict() requires a scoped context (agent.ctx)');
     }
@@ -1095,6 +1098,7 @@ test('M27: 判定 await 期间会话被销毁 ⇒ 不装层、不告警、判定
   const handle = mount(hostCase, SELECTED_W1);
   await handle.whenIdle();
 
+  assert.equal(record.attempts, 0, '已销毁会话连 restrict 都不该调用（判活必须发生在装层之前）');
   assert.equal(record.installed, 0, '已销毁会话不得装层');
   assert.deepEqual(
     hostCase.calls.warnings.filter((line) => /restrict/.test(line)),
@@ -1138,6 +1142,95 @@ test('M27: 会话仍存活时 restrict 被拒 ⇒ 仍按 agent 告警（不得�
   const failed = hostCase.calls.warnings.filter((line) => /restrict 安装被宿主拒绝/.test(line));
   assert.equal(failed.length, 1, `存活会话的安装失败必须可见：${JSON.stringify(hostCase.calls.warnings)}`);
   assert.match(failed[0], /a/, '告警必须点名 agent');
+  handle.dispose();
+});
+
+test('M27: agents.get 缺席 / 抛错 ⇒ 按仍活跃处理（不得因此不装层）', async () => {
+  // 危险方向：判活的 failure mode 若反过来（查不到就当死），限定工作区会静默失效。
+  // 两条 fallback 各守一遍：接口缺席、查询抛错。
+  for (const breakGet of [
+    (agents) => {
+      delete agents.get;
+    },
+    (agents) => {
+      agents.get = () => {
+        throw new Error('registry busy');
+      };
+    },
+  ]) {
+    const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+    const hostCase = makeHost({ agents: [{ agent, record }] });
+    breakGet(hostCase.child.agents);
+    const handle = mount(hostCase, SELECTED_W1);
+    await handle.whenIdle();
+    assert.equal(record.installed, 1, `agents.get 不可靠时必须按"仍活跃"处理：${String(breakGet)}`);
+    assert.deepEqual(degradations(hostCase.calls.warnings), [], '这不是降级，不得告警');
+    handle.dispose();
+  }
+});
+
+test('M27: 同 id 但对象已换代（clear/compaction/resume）⇒ 旧判定作废，不得落到新体上', async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const { agent: oldAgent, record: oldRecord } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const { agent: newAgent } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent: oldAgent, record: oldRecord }],
+    resolve: async () => {
+      await gate;
+      return W2;
+    },
+  });
+  const handle = mount(hostCase, SELECTED_W1);
+  await tick(); // 旧体的判定已算到一半
+
+  // 同一个 id 换了对象：宿主 store 里现在登记的是 newAgent。
+  hostCase.child.agents.list = () => [newAgent];
+  release();
+  await handle.whenIdle();
+
+  assert.equal(oldRecord.attempts, 0, '旧体的判定必须作废（否则会拿旧归属覆盖新体的缓存、装到已废弃的 ctx 上）');
+  const summary = hostCase.calls.warnings.filter((line) => /scope 已激活/.test(line));
+  assert.equal(summary.length, 1);
+  assert.match(summary[0], /判定 0 个会话/, '换代 ⇒ 本次判定不进缓存（新体会在自己 created 上重判）');
+  handle.dispose();
+});
+
+test('M26: watchdogMs 超出 2^31-1 ⇒ 回落到默认 30s（Node 会把超限延时钳到 1ms 并误报）', async () => {
+  const hostCase = makeHost({ agents: [], injectNeverResolves: true });
+  const handle = mount(hostCase, SELECTED_W1, { watchdogMs: 2 ** 31 });
+  await handle.whenIdle();
+  await sleep(140);
+  assert.deepEqual(hostCase.calls.warnings, [], '超限值必须被拒（否则看门狗在 1ms 就误报）');
+  handle.dispose();
+});
+
+test('M26: 轮次进行中切回 global ⇒ 不得冒出激活摘要（红线：global 零新增日志）', async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    resolve: async () => {
+      await gate; // 卡住首轮，制造"轮次进行中"的窗口
+      return W2;
+    },
+  });
+  const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
+  const handle = mount(hostCase, config);
+  await tick(); // 首轮已进入 await
+
+  config.mode = { get: () => 'global' };
+  await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
+  release();
+  await handle.whenIdle();
+
+  assert.equal(record.installed, 0, '已挂起：不得装层');
+  assert.deepEqual(hostCase.calls.warnings, [], 'global 下连一条"已激活"摘要都不允许（`injected` 永不复位）');
   handle.dispose();
 });
 

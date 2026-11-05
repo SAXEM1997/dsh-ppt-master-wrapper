@@ -66,7 +66,8 @@
   差异式装层，否则自激；`tools.guard()` 装在根 ctx，返回 disposer。
 - **`cannot create effect on inactive context` 的含义是「会话已销毁」**，不是「作用域尚未
   激活」：cordis `Fiber.assertActive()` 只在 `fiber.uid === null` 时抛 `INACTIVE_EFFECT`，
-  而 `uid` 仅在 fiber **dispose** 时置空（构造期赋 counter 值）。`restrict()` 内部走
+  而 `uid` 仅在 fiber **dispose** 时置空（构造期赋 counter 值；`effect()` 另在 `state === 5`
+  卸载中也抛同一错误）。`restrict()` 内部走
   `this.layers.effect(this.ctx, …)`，`this.ctx` 是**调用方**上下文（Service 的 shadow
   语义）⇒ 对 `agent.ctx.tools` 调用用的就是该 agent 自己的 fiber。因此 `agent/created`
   的监听器里做 async 判定后再装层，必须**先经 `agents.get(id)` 判活**（短命子会话——如
@@ -90,7 +91,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 728 tests / 726 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 728/728。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 732 tests / 730 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 732/732。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -130,7 +131,7 @@
 | `v6.7.3` | 上游同步（规则①）：vendor v6.7.3 逐字节（refs/tags/v6.7.3@622bf0148bca4f697b0184322c7e2aa2a04520a2），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.7.3`／`6.7.3`；包装层 `v6.7.1-r1..r3` 三次修订按规则①归零。附带包装层修复：`scripts/verify-plugin.mjs` 的 `baseName` 同时切 `/` 与 `\`（旧实现只切 `/`，Windows 绝对路径下 `upstream/skills/<name>` 拼成整条路径，第⑥项误报并以退出码 4 中断同步） |
 | `v6.8.0` | 上游同步（规则①）：vendor v6.8.0 逐字节（refs/tags/v6.8.0@5e8856be0da8e6bc85c4aa28acc614478f7b7137），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.8.0`／`6.8.0`，`package.json.version` 同为 `6.8.0`；结构分类 🔴 0 项、走自动路径。`requirements.txt` 相对 v6.7.3 **无变化**（仍 19 条依赖，本机 venv 无需重建）；上游支持的 Python 上限改为 3.14（本机 venv 3.11.2 在范围内），`ppt_master_check_env` 仍按 vendor 文件现读。测试保持 720/720 |
 | `v6.8.0-r1` | 包装层修订（#31，无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——`executionModelOf()` 按 `tools.setExecutor` 存在性分流，batch 侧自挂 `@deepseek-ai/dsh-tool-executor-native` 并按 `{calls:[…]}` 调用、结果经 `firstToolResult()` 取 `results[i].result`；single 侧保持 0.2.1 单调用。stub SDK 新增 `executorModel: 'batch'` 形态（`setExecutor` + executor 替身 + `executorLog`/`batchCalls`），新增 4 例（2 纯函数 + 2 端到端/降级，含批量入参形状自证与降级 warning），测试 720 → **724**。同时清 `schemaOf`/loader 行号等陈旧坐标，并在 §3 登记两代执行契约。真机 0.2.1-rc.5 与 npm 0.2.2-rc.1 树双绿；vendor 树仍 v6.8.0 逐字节 |
-| `v6.8.0-r2` | scope 运行时两处收口（#33，运行时行为有变）：① **注入看门狗 5s → 30s**——boot 期 `dsh-workspace` 要开 storageDomain 再扫 session 头，注入回调常在 5s 后才到（本机 33 次启动、跨 0.2.1-rc.5/0.2.2-rc.1 两代），旧值把正常启动写成「判定未生效 ⇒ 工具处处可见」且永不撤回；② **装层前判活**——`cannot create effect on inactive context` 的真含义是「会话已销毁」（cordis `assertActive()` 只在 `fiber.uid === null` 时抛，`uid` 仅 dispose 时置空），mnemon idle review 的短命子会话不再刷 `restrict 安装被宿主拒绝`（本机 700 条 / 670 个 id 全部落在这类会话上）；`judgeOne` 同时不把已销毁会话的判定写进缓存；③ 新增一条 `scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个`。`watchdogMs` 选项**仅供测试与排障**覆盖默认值（M25 spy 守护默认 30s）。新增 4 例（M26 晚到、M27×3 销毁竞态），测试 724 → **728**；默认 `global` 仍零新增日志 |
+| `v6.8.0-r2` | scope 运行时两处收口（#33，运行时行为有变）：① **注入看门狗 5s → 30s**——boot 期 `dsh-workspace` 要开 storageDomain 再扫 session 头，注入回调常在 5s 后才到（本机 33 次启动、跨 0.2.1-rc.5/0.2.2-rc.1 两代），旧值把正常启动写成「判定未生效 ⇒ 工具处处可见」且永不撤回；② **装层前判活**——`cannot create effect on inactive context` 的真含义是「会话已销毁」（cordis `assertActive()` 只在 `fiber.uid === null` 时抛，`uid` 仅 dispose 时置空），mnemon idle review 的短命子会话不再刷 `restrict 安装被宿主拒绝`（本机 701 条 / 670 个 id 中 545 条紧随 mnemon 失败行，属抽样归因、非全量；**预期下次重启后归零，待验证**）；`judgeOne` 同时不把已销毁会话的判定写进缓存，且同 id 换代时旧判定作废；③ 新增一条 `scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个`。`watchdogMs` 选项**仅供测试与排障**覆盖默认值（M25 spy 守护默认 30s）。新增 8 例（M26×3：晚到不告警 / `watchdogMs` 阈值上界 / 轮次中切 global 不得记摘要；M27×5：判定期销毁、restrict 瞬间销毁、存活仍被拒须告警、判活 fallback、同 id 换代旧判定作废），测试 724 → **732**；默认 `global` 仍零新增日志 |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

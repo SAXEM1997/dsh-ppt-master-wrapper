@@ -359,18 +359,23 @@ boot 期 `dsh-workspace` 要开 storageDomain 再扫 session 头，注入回调�
 
 早先的推测是"`agent/created` 回调期作用域尚未激活"，据此想过"延后重试"。**推测是错的**：
 cordis 的 `Fiber.assertActive()` 只在 `fiber.uid === null` 时抛 `INACTIVE_EFFECT`，而 `uid`
-只在 fiber **dispose** 时置空（构造期赋 counter 值）⇒ 该错误表示**对端已经销毁**。
+只在 fiber **dispose** 时置空（构造期赋 counter 值）；同一错误也由 `effect()` 在
+`state === 5`（卸载中）抛出。两者都是"正在/已经销毁"，没有一处表示"尚未激活" ⇒ 该错误表示
+**对端已经销毁**。
 `dsh-tools` 的 `restrict()` 走 `this.layers.effect(this.ctx, …)`，`this.ctx` 是调用方上下文
 （Service 的 shadow 语义），对 `agent.ctx.tools` 调用就是用 agent 自己的 fiber 建 effect。
 
-真机形态：mnemon 的 idle review 建的是**短命子会话**——它的 `agent/created` 监听器同步装完
-`tools.guard` 后失败并立刻销毁会话，而我们的 `judgeOne` 还在 `await resolveByPath`，回来时
-对端 fiber 已经没了。本机 700 条告警 / 670 个 id **全部**落在这种会话上，每条都紧跟一行
-`[dsh-mnemon] idle review failed`。因此修法不是"重试"（对已死会话重试毫无意义），而是
-`isLiveAgent(agentId)` 经 `agents.get(id)` 判活：已销毁就跳过装层、且**不把该判定写进缓存**
-（否则 guard 会拿一个已不存在会话的归属继续裁决）。`get` 缺席或抛错时按"仍活跃"处理
-（不能因一次查询失败把活会话判死）。会话仍存活而 `restrict` 仍被拒时**照旧告警**——真降级
-不得被这条规则吞掉（M27 第三例守护）。
+真机形态（抽样归因，非全量）：mnemon 的 idle review 建的是**短命子会话**——它的
+`agent/created` 监听器同步装完 `tools.guard` 后失败并立刻销毁会话，而我们的 `judgeOne` 还在
+`await resolveByPath`，回来时对端 fiber 已经没了。本机 701 条告警 / 670 个 id 里，408 条的
+上一行就是 `[dsh-mnemon] idle review failed`、545 条在其上一两行内；全日志 678 条 mnemon
+失败与 701 条告警数量同阶。仍有 13 条在近 60 行内找不到 mnemon 行（出现在 boot 期 42 个
+存量会话恢复之后），**未逐条归因**——所以结论按「绝大多数」表述，本修订不声称 100% 覆盖；
+下次重启后该类告警是否归零，是这条归因的最终检验。因此修法不是"重试"（对已死会话重试毫无
+意义），而是 `isLiveAgent(agentId, rawAgent)` 经 `agents.get(id)` 判活：已销毁或**同 id 已换代**
+就跳过装层、且**不把该判定写进缓存**（否则 guard 会拿一个已不存在会话的归属继续裁决）。
+`get` 缺席或抛错时按"仍活跃"处理（不能因一次查询失败把活会话判死）。会话仍存活而
+`restrict` 仍被拒时**照旧告警**——真降级不得被这条规则吞掉（M27 第三例守护）。
 
 > 附带更正：issue 里曾把"700 次失败"读成「per-agent 可见性层从未装上 ⇒ 工具表处处可见」。
 > 那 700 次全来自短命 review 子会话，正常会话的装层路径并未被证伪；该推断在此撤回。
