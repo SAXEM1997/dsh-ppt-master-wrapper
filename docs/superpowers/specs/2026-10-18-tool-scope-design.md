@@ -337,3 +337,48 @@ return judged(agent, 'resolved', entity.id, `规范化路径命中 …`)
 |---|---|---|
 | GR3-1 | P1 | **采纳（GR2-2 的修正案）**：复检额度改为**按 key 记账、按该 key 自己的结果清零**——`agents-list` 在读成功的一轮清零；agent 额度只在判定**不再是 `unresolved`** 时清零（`judgeOne`）。GR2-2 的"整轮成功才清零"只覆盖轮级失败（`registry.list` / `agents.list` 抛错），判定级 `unresolved`（cwd 被删 ⇒ realpath ENOENT；挂载点挂死 ⇒ 1500ms 超时）下整轮照样"成功"，额度每轮归零 ⇒ 无界轮询，且每个未决 agent 每轮各排一个 timer ⇒ N 个 agent 轮次按 N^t 放大（实测 2 agent 24s 内 `list()` 调 478 万次）。配套：`scheduleRetry` 同 key 去重（`pendingRetries`，同一波只排一个 timer）。修复后同场景实测 21 次（3 次/轮 × 7 轮）后完全停住；额度耗尽后靠外部事件自愈（`tools/change` / `loader/volatile-update` / `agent/created`，均实测装回层）。**不做指数退避**：去重 + 每 key 上界已把失控增长消灭，退避只改变 3 次复检的间隔分布，却拉长回归测试的收敛窗口，收益不成比例 |
 | GR3-2 | P2 | **采纳**：`installGuard` 自身幂等（`state.releaseGuard !== undefined` 即返回）。GR2-1 把 `ctx.inject` 抛错改为"保持 guard + 全拒"后，激活分支每次 volatile 更新都会重走，若不判重，旧 disposer 被覆盖丢失、宿主 guard 层每次配置编辑 +1 条（实测 3 次更新后 4 条、切 global 仍残留 3 条且每次工具调用都被执行）。修复后实测：3 次 volatile 更新 guard 恒为 1，`inject` 每次仍被重试（自愈语义保留），切 global 归零。测试侧配套把假宿主 guard disposer 从"一刀清空"改为**精确摘除自己**——否则累积型泄漏被静默掩盖 |
+
+## 12. 运行时修订（issue #33，v6.8.0-r2）
+
+上线后对真机日志做了一次取证，两条结论**修正**了本文早先的假设：
+
+### 12.1 注入看门狗：5s → 30s
+
+§6「能力缺失 ⇒ 全拒」靠 `ctx.inject` 回调触发；回调永不到达（宿主缺 `agents` /
+`workspaceRegistry`）时全子系统静默空转，故 M6 加了看门狗。**但 5s 这个数字是拍的**：
+boot 期 `dsh-workspace` 要开 storageDomain 再扫 session 头，注入回调常在 5s 之后才到
+（本机 33 次启动、跨 0.2.1-rc.5 与 0.2.2-rc.1 两代均如此）。于是每次正常启动都会留下一条
+「判定未生效 ⇒ 工具对所有会话可见」的降级结论，而它**永不撤回**——运维据此误判「限定
+工作区失效」（issue #33 就是这么报上来的）。
+
+修订：上界改 30s（只用于"永远不到达"这一种情况，仍不参与 fail 决策）；文案改为"仍未到达
++ 到达后会记摘要"，不再断言"判定未生效"。`watchdogMs` 选项仅供测试与排障覆盖默认值
+（M6 注小值，M25 用 setTimeout spy 守护默认 30000 与 `unref()`）。
+
+### 12.2 装层前判活：`INACTIVE_EFFECT` 的含义是"会话已销毁"
+
+早先的推测是"`agent/created` 回调期作用域尚未激活"，据此想过"延后重试"。**推测是错的**：
+cordis 的 `Fiber.assertActive()` 只在 `fiber.uid === null` 时抛 `INACTIVE_EFFECT`，而 `uid`
+只在 fiber **dispose** 时置空（构造期赋 counter 值）⇒ 该错误表示**对端已经销毁**。
+`dsh-tools` 的 `restrict()` 走 `this.layers.effect(this.ctx, …)`，`this.ctx` 是调用方上下文
+（Service 的 shadow 语义），对 `agent.ctx.tools` 调用就是用 agent 自己的 fiber 建 effect。
+
+真机形态：mnemon 的 idle review 建的是**短命子会话**——它的 `agent/created` 监听器同步装完
+`tools.guard` 后失败并立刻销毁会话，而我们的 `judgeOne` 还在 `await resolveByPath`，回来时
+对端 fiber 已经没了。本机 700 条告警 / 670 个 id **全部**落在这种会话上，每条都紧跟一行
+`[dsh-mnemon] idle review failed`。因此修法不是"重试"（对已死会话重试毫无意义），而是
+`isLiveAgent(agentId)` 经 `agents.get(id)` 判活：已销毁就跳过装层、且**不把该判定写进缓存**
+（否则 guard 会拿一个已不存在会话的归属继续裁决）。`get` 缺席或抛错时按"仍活跃"处理
+（不能因一次查询失败把活会话判死）。会话仍存活而 `restrict` 仍被拒时**照旧告警**——真降级
+不得被这条规则吞掉（M27 第三例守护）。
+
+> 附带更正：issue 里曾把"700 次失败"读成「per-agent 可见性层从未装上 ⇒ 工具表处处可见」。
+> 那 700 次全来自短命 review 子会话，正常会话的装层路径并未被证伪；该推断在此撤回。
+
+### 12.3 激活摘要
+
+M6 只有单向告警（"5s 没到"），注入晚到后日志里没有任何"其实好了"的证据。新增一条
+`scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个`，在首轮判定结束后经 `warnOnce`
+记一次：一句话同时给出注入是否到达、实测等待、以及 per-agent 层的净效果。仍走 `warn`
+通道（本插件只有这一个输出通道），但文案是中性的、不构成降级结论。`global` 下轮次根本不
+跑 ⇒ 默认配置零新增日志（§7 红线不变）。

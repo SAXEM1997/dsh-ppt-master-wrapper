@@ -69,7 +69,27 @@ function makeHost(options = {}) {
   const calls = { injectKeys: [], warnings: [], guards: [], listCalls: 0, resolveCalls: [] };
 
   const child = {
-    agents: { list: () => agents.map((entry) => entry.agent) },
+    agents: {
+      list: () => agents.map((entry) => entry.agent),
+      /**
+       * 宿主 `agents.get(id)`：注册表**按 id 查询**现存 agent。
+       *
+       * 假宿主刻意从 `list()` 现读（而不是闭包里的 `agents` 数组）：用例普遍用
+       * `hostCase.child.agents.list = () => []` 模拟"会话已销毁"，`get` 必须跟着看见
+       * 同一事实，否则"判定期间被销毁"这条路径根本无法在假宿主上复现。
+       * 读列表抛错时按"未知 ⇒ 仍活跃"处理（与实现在 `get` 抛错时的口径一致）。
+       */
+      get(id) {
+        let list;
+        try {
+          list = child.agents.list();
+        } catch {
+          return { id };
+        }
+        if (!Array.isArray(list)) return { id };
+        return list.find((entry) => entry?.id === id);
+      },
+    },
     workspaceRegistry: {
       list() {
         calls.listCalls += 1;
@@ -153,11 +173,12 @@ function makeHost(options = {}) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 /** 起一个 scope host；`scopeConfig` 用可变容器模拟 volatile 引用。 */
-function mount(hostCase, scopeConfig) {
+function mount(hostCase, scopeConfig, extra = {}) {
   const handle = host.mountToolScope(hostCase.ctx, {
     scopeConfig,
     toolNames: TOOL_NAMES,
     warn: (message) => hostCase.calls.warnings.push(String(message)),
+    ...extra,
   });
   return handle;
 }
@@ -441,8 +462,8 @@ test('selected + 缺 tools.restrict：只装 guard + 一条 warn', async () => {
 
   assert.equal(a.record.installed, 0);
   assert.equal(hostCase.calls.guards.length, 1, '执行层仍拦');
-  assert.equal(hostCase.calls.warnings.length, 1);
-  assert.match(hostCase.calls.warnings[0], /restrict/);
+  assert.equal(degradations(hostCase.calls.warnings).length, 1);
+  assert.match(degradations(hostCase.calls.warnings)[0], /restrict/);
   handle.dispose();
 });
 
@@ -453,8 +474,8 @@ test('selected + 缺 tools.guard：只装 restrict + 一条 warn', async () => {
   await handle.whenIdle();
 
   assert.equal(a.record.installed, 1);
-  assert.equal(hostCase.calls.warnings.length, 1);
-  assert.match(hostCase.calls.warnings[0], /guard/);
+  assert.equal(degradations(hostCase.calls.warnings).length, 1);
+  assert.match(degradations(hostCase.calls.warnings)[0], /guard/);
   handle.dispose();
 });
 
@@ -894,7 +915,7 @@ test('M5: 敌意 toString 的配置/注册表项 ⇒ mountToolScope 不抛，按
   });
   await handle.whenIdle();
   assert.equal(a.record.installed, 1, 'w2 不在名单 ⇒ 装层；敌意项被丢弃不影响判定');
-  assert.deepEqual(hostCase.calls.warnings, [], '敌意项不是降级，不得告警');
+  assert.deepEqual(degradations(hostCase.calls.warnings), [], '敌意项不是降级，不得告警');
   handle.dispose();
 
   // ② 注册表项的 title/sessionIds 带敌意 toString：归一化不抛，判定照常。
@@ -915,18 +936,32 @@ test('M5: 敌意 toString 的配置/注册表项 ⇒ mountToolScope 不抛，按
 
 // ─── M6：注入永久 pending ⇒ 看门狗点名告警（只补可诊断性）────────────
 
-/** 等到给定毫秒（看门狗 5000ms，这里留裕量）。 */
+/** 等到给定毫秒（真实 timer，非 mock）。 */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 看门狗的默认上界是 30s（`M25` 用 setTimeout spy 守护）；用例里改由 `watchdogMs` 注入
+ * 一个小值，避免"注入永不到达"这类用例真等 30 秒。只有**默认值本身**才用 spy 断言。
+ */
+const FAST_WATCHDOG = { watchdogMs: 50 };
+
+/**
+ * 摘掉**激活摘要**（M26 引入的正向 info 面：`scope 已激活（注入等待 Nms）：判定 … 隐藏 …`）。
+ *
+ * 断言"没有降级日志"的用例一律改看这个函数的结果：摘要不是降级，它是"注入到了、判定跑了"
+ * 的证据；把它混进"零告警"里会让两件事互相掩盖（既有用例的本来意图都是"没有降级"）。
+ */
+const degradations = (warnings) => warnings.filter((line) => !/scope 已激活/.test(line));
 
 test('M6: selected + 注入回调永不到达 ⇒ 看门狗 warn 恰一次，且不改变 fail 语义', async () => {
   const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
   const hostCase = makeHost({ agents: [{ agent, record }], injectNeverResolves: true });
-  const handle = mount(hostCase, SELECTED_W1);
+  const handle = mount(hostCase, SELECTED_W1, FAST_WATCHDOG);
   await handle.whenIdle();
 
   assert.deepEqual(hostCase.calls.warnings, [], '到点之前不得告警');
-  await sleep(5200);
-  const watchdogLines = hostCase.calls.warnings.filter((line) => /注入未到达|判定未生效/.test(line));
+  await sleep(140);
+  const watchdogLines = hostCase.calls.warnings.filter((line) => /仍未到达/.test(line));
   assert.equal(watchdogLines.length, 1, `看门狗应恰告警一次，实际：${JSON.stringify(hostCase.calls.warnings)}`);
   assert.match(watchdogLines[0], /selected/, '告警必须点名 selected');
   assert.match(watchdogLines[0], /agents|workspaceRegistry/, '告警必须点名缺失的注入服务');
@@ -941,9 +976,9 @@ test('M6: selected + 注入回调永不到达 ⇒ 看门狗 warn 恰一次，且
   );
 
   // 再多等一个周期：warnOnce 去重 + timer 已到期，不得重复告警。
-  await sleep(1200);
+  await sleep(140);
   assert.equal(
-    hostCase.calls.warnings.filter((line) => /注入未到达|判定未生效/.test(line)).length,
+    hostCase.calls.warnings.filter((line) => /仍未到达/.test(line)).length,
     1,
     '重复告警（warnOnce 失效或 timer 未清理）',
   );
@@ -953,11 +988,11 @@ test('M6: selected + 注入回调永不到达 ⇒ 看门狗 warn 恰一次，且
 test('M6: global 模式 ⇒ 看门狗不启动，任何时刻都零日志', async () => {
   const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
   const hostCase = makeHost({ agents: [{ agent, record }], injectNeverResolves: true });
-  const handle = mount(hostCase, GLOBAL);
+  const handle = mount(hostCase, GLOBAL, FAST_WATCHDOG);
   await handle.whenIdle();
   assert.deepEqual(hostCase.calls.injectKeys, [], 'global 不注入');
 
-  await sleep(5200);
+  await sleep(140);
   assert.deepEqual(hostCase.calls.warnings, [], 'global 下看门狗必须完全不启动（红线：零新增日志）');
   handle.dispose();
 });
@@ -965,13 +1000,13 @@ test('M6: global 模式 ⇒ 看门狗不启动，任何时刻都零日志', asyn
 test('M6: selected 期间切回 global ⇒ 到点后不得冒出看门狗日志', async () => {
   const hostCase = makeHost({ injectNeverResolves: true });
   const config = { mode: { get: () => 'selected' }, workspaceIds: { get: () => ['w1'] } };
-  const handle = mount(hostCase, config);
+  const handle = mount(hostCase, config, FAST_WATCHDOG);
   await handle.whenIdle();
   assert.deepEqual(hostCase.calls.injectKeys, [['agents', 'workspaceRegistry']]);
 
   config.mode = { get: () => 'global' };
   await hostCase.emit('loader/volatile-update', [['scope', 'mode']]);
-  await sleep(5200);
+  await sleep(140);
 
   assert.deepEqual(hostCase.calls.warnings, [], '切回 global 必须清掉看门狗 timer');
   handle.dispose();
@@ -985,14 +1020,124 @@ test('M6: 注入回落到达 ⇒ 看门狗已清，不得再告警', async () =>
     deliver = () => cb(hostCase.child);
     return undefined;
   };
+  const handle = mount(hostCase, SELECTED_W1, FAST_WATCHDOG);
+  await handle.whenIdle();
+
+  deliver(); // 看门狗到点之前到达
+  await handle.whenIdle();
+  await sleep(140);
+
+  assert.deepEqual(
+    hostCase.calls.warnings.filter((line) => !/scope 已激活/.test(line)),
+    [],
+    '注入到达后看门狗必须已被清理',
+  );
+  handle.dispose();
+});
+
+// ─── M26：注入晚到 ⇒ 不是降级（5s 假警报的回归位）─────────────────
+//
+// 现场取证：boot 期 `dsh-workspace` 要开 storageDomain 并扫 session 头，注入回调常在 5s
+// 之后才到（本机 33 次启动均如此，跨 0.2.1/0.2.2 两代）。旧实现把这条正常路径记成
+// "判定未生效 ⇒ 工具对所有会话可见"，且**永不撤回**——运维据此误判"限定工作区失效"。
+// 本用例用**默认**看门狗（不注入 watchdogMs）复现那个时间窗：晚到不得告警，只留一条摘要。
+
+test('M26: 注入在 5s 之后到达 ⇒ 不告警，并在首轮后记一条激活摘要（含实测等待）', async () => {
+  let deliver;
+  const hostCase = makeHost({ agents: [] });
+  hostCase.ctx.inject = (keys, cb) => {
+    hostCase.calls.injectKeys.push(keys);
+    deliver = () => cb(hostCase.child);
+    return undefined;
+  };
+  const handle = mount(hostCase, SELECTED_W1); // 默认 30s 看门狗
+  await handle.whenIdle();
+
+  await sleep(5400); // 旧实现（5s）在这里已经告警过了
+  assert.deepEqual(
+    hostCase.calls.warnings.filter((line) => /仍未到达/.test(line)),
+    [],
+    `注入晚到不得记成降级告警，实际：${JSON.stringify(hostCase.calls.warnings)}`,
+  );
+
+  deliver();
+  await handle.whenIdle();
+
+  const summary = hostCase.calls.warnings.filter((line) => /scope 已激活/.test(line));
+  assert.equal(summary.length, 1, `晚到后应恰有一条激活摘要，实际：${JSON.stringify(hostCase.calls.warnings)}`);
+  assert.match(summary[0], /注入等待 \d+ms/, '摘要必须报告实测等待时长');
+  const waited = Number(/注入等待 (\d+)ms/.exec(summary[0])[1]);
+  assert.ok(waited >= 5000, `摘要报告的是真实等待（本用例 ≥5000ms），实际 ${waited}ms`);
+  assert.match(summary[0], /判定 \d+ 个会话，隐藏 \d+ 个/, '摘要必须带判定/隐藏计数');
+  handle.dispose();
+});
+
+// ─── M27：判定是异步的，会话可能在 await 期间被销毁 ────────────────
+//
+// 现场取证：`[dsh-mnemon] idle review failed` 之后紧跟 700 条
+// `agent … 的 tools.restrict 安装被宿主拒绝（cannot create effect on inactive context）`。
+// cordis 的 `assertActive()` 只在 `fiber.uid === null` 时抛这条错，而 `uid` 只在 fiber
+// **dispose** 时置空 ⇒ 错误含义是"作用域已销毁"，不是"尚未激活"。mnemon 的 idle review
+// 建的是短命子会话：它的 created 监听器同步装完 guard 后失败并立刻销毁会话，我们的判定
+// 还在 await realpath，回来时对端 fiber 已经没了。对已销毁会话装限制层毫无意义，故判活。
+
+test('M27: 判定 await 期间会话被销毁 ⇒ 不装层、不告警、判定不进缓存', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({
+    agents: [{ agent, record }],
+    restrictThrows: true,
+    resolve: async () => {
+      // 关键：在判定 await 的真实时间窗里把会话摘掉（mnemon 的 idle review 就是这个形态）。
+      hostCase.child.agents.list = () => [];
+      return W2;
+    },
+  });
   const handle = mount(hostCase, SELECTED_W1);
   await handle.whenIdle();
 
-  deliver(); // 5000ms 之前到达
-  await handle.whenIdle();
-  await sleep(5200);
+  assert.equal(record.installed, 0, '已销毁会话不得装层');
+  assert.deepEqual(
+    hostCase.calls.warnings.filter((line) => /restrict/.test(line)),
+    [],
+    `已销毁会话不是"宿主拒绝"，不得按 agent 告警：${JSON.stringify(hostCase.calls.warnings)}`,
+  );
+  const summary = hostCase.calls.warnings.filter((line) => /scope 已激活/.test(line));
+  assert.equal(summary.length, 1);
+  assert.match(summary[0], /判定 0 个会话/, '已销毁会话不得进判定缓存（摘要计数即观测面）');
+  handle.dispose();
+});
 
-  assert.deepEqual(hostCase.calls.warnings, [], '注入到达后看门狗必须已被清理');
+test('M27: 会话在 restrict 调用瞬间被销毁（INACTIVE_EFFECT 竞态）⇒ 不告警', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }] });
+  agent.ctx.tools.restrict = () => {
+    // 判活检查刚通过、installLayer 正在调 restrict 的这一瞬，对端 fiber 被销毁。
+    hostCase.child.agents.list = () => [];
+    throw new Error('cannot create effect on inactive context');
+  };
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  assert.deepEqual(
+    hostCase.calls.warnings.filter((line) => /restrict/.test(line)),
+    [],
+    `销毁竞态不得冒告警：${JSON.stringify(hostCase.calls.warnings)}`,
+  );
+  handle.dispose();
+});
+
+test('M27: 会话仍存活时 restrict 被拒 ⇒ 仍按 agent 告警（不得吞掉真降级）', async () => {
+  const { agent, record } = makeAgent({ id: 'a', cwd: '/workspace/hermes' });
+  const hostCase = makeHost({ agents: [{ agent, record }] });
+  agent.ctx.tools.restrict = () => {
+    throw new Error('cannot create effect on inactive context');
+  };
+  const handle = mount(hostCase, SELECTED_W1);
+  await handle.whenIdle();
+
+  const failed = hostCase.calls.warnings.filter((line) => /restrict 安装被宿主拒绝/.test(line));
+  assert.equal(failed.length, 1, `存活会话的安装失败必须可见：${JSON.stringify(hostCase.calls.warnings)}`);
+  assert.match(failed[0], /a/, '告警必须点名 agent');
   handle.dispose();
 });
 
@@ -1270,8 +1415,8 @@ test('M25: 复检 / 注入看门狗 / resolveByPath 超时三类 timer 都被 un
   const handle = mount(hostCase, SELECTED_W1);
   await handle.whenIdle();
 
-  const watchdog = scheduled.filter((record) => record.delay === 5000);
-  assert.equal(watchdog.length, 1, `应恰有一条 5000ms 看门狗 timer，实际 ${watchdog.length} 条`);
+  const watchdog = scheduled.filter((record) => record.delay === 30000);
+  assert.equal(watchdog.length, 1, `应恰有一条 30000ms 看门狗 timer，实际 ${watchdog.length} 条`);
   assert.equal(watchdog[0].unrefCalled, true, '注入看门狗 timer 必须 unref()：否则 pending 注入会把进程钉住');
 
   handle.dispose();

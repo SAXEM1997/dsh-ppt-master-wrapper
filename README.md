@@ -190,7 +190,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（724 用例）
+├── tests/                            # node:test 全套（728 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -204,11 +204,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 724/724）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 728/728）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 724/722/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 728/726/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 
@@ -224,6 +224,7 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 | `v6.7.3` | 上游同步：vendor v6.7.3（逐字节）。含 v6.7.2 的「不再静默丢失/覆盖内容」一批修复（skill-only 安装的项目落工作目录、PDF 表格不再按单篇样例重写、HTML/`.txt` 按声明编码解码、同名批次互不覆盖、图像检索整词匹配、原生图表 part 名冲突、公式 MCE fallback 让 WPS/LibreOffice 不再空白）与 v6.7.3 的 Edit Native 往返修复；另修 `verify-plugin` 的 `baseName` 反斜杠兼容（Windows 上第⑥项不再误报） |
 | `v6.8.0` | 上游同步：vendor v6.8.0（逐字节）。AI 图像生成默认换 `gpt-image-2.5-sunburst`（约 1/4 输出 token、约一半耗时、支持真 RGBA 透明），`aspect_ratio` 接受任意正 W:H，`Retry-After` 全后端与 manifest 重排生效；Edit Native 的数据变更图表改为原地 patch（渐变/图例/单点标签等保留），合并单元格表格改任一格不再让 `--native-charts-and-tables` 失败；PPTX 导入零尺寸几何不再硬失败（无法恢复者保留并报告），作者隐藏内容不再泄漏进源 Markdown/Beautify 清单/重建讲解词；`source_to_md` 保留 Office Math 为 LaTeX、DOCX 文本与 Word 显示一致、EPUB/ODT/RTF 找回被跳过文本；动画时长按 PowerPoint beat 语义；超链接比较前先 XML 解码；支持的 Python 上限改为 3.14 |
 | `v6.8.0-r1` | 包装层修订（无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——先挂 `@deepseek-ai/dsh-tool-executor-native` 再按批量 `tools.execute` 调用，0.2.1 及更早仍走单调用，两代 SDK 均绿；顺手清掉 `schemaOf` 时代的陈旧文档坐标，并在 AGENTS §3 登记两代执行契约。vendor 树保持 v6.8.0 逐字节 |
+| `v6.8.0-r2` | scope 运行时两处收口（issue #33）：① 注入看门狗 5s → 30s——boot 期注入回调常在 5s 后才到，旧值把正常启动记成「判定未生效、工具处处可见」且永不撤回；② 判定/装层前**判活**——`cannot create effect on inactive context` 的真含义是「会话已销毁」（cordis `assertActive` 只在 `fiber.uid === null` 时抛），短命子会话（mnemon idle review）不再刷 `restrict 安装被宿主拒绝`；③ 新增一条 `scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个` 摘要。默认 `global` 仍零日志 |
 
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
