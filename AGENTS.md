@@ -123,6 +123,9 @@
 同步时 `sync-upstream.mjs` 自动联动改写 `lib/client.js` 的 `PLUGIN_VERSION` /
 `UPSTREAM_VERSION`（`applyVersionLinkage`，改写进同步 commit）；README 版本表仍是人工。
 
+Release 说明**中英双语各一份**，结构＝「一段总结 + 每项一行的变更列表」；机制细节归 issue/PR，
+不塞进 release body。格式细则见 `docs/agents/maintainer-ops.md` §5。
+
 | 版本（tag） | 详细说明 |
 |---|---|
 | `v6.7.0` | 首次交付：vendor 上游 v6.7.0（约 78 MiB，逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
