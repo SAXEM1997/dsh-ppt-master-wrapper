@@ -95,3 +95,40 @@ npm view @deepseek-ai/dsh@<版本> dependencies --json | grep loader
 
 `squash merge` 会保留作者身份，但 GitHub 的贡献者图只统计**合入默认分支**的提交——
 发布后顺手确认 `git log` 里有作者署名即可。
+
+## 5. Release 说明的写法
+
+**结构固定三段，中英双语各一份**（先中文后英文，英文段单独 `---` 分隔）：
+
+1. **开头的总结段**：一段话说清「这个版本做了什么、为什么值得升级」，不含列表、不逐条
+   展开机制。读者只看这一段就该能决定要不要升。
+2. **变更项列表**：每条**一行**，简洁明了。写结论不写推导——机制细节、根因、复现路径
+   都留给 issue/PR，release notes 里出现第二段解释就说明该收进链接。
+3. **必要时的边界说明**：覆盖边界、已知限制、需要人工处理的事，一到两句。
+
+模板：
+
+```markdown
+## 总结
+
+<一段话：这个版本改了什么、影响谁、要不要升>
+
+## 变更
+
+- <一行一条>
+- <一行一条>
+
+---
+
+## Summary
+
+<one paragraph: what changed, who it affects, whether to upgrade>
+
+## Changes
+
+- <one line each>
+- <one line each>
+```
+
+**反例**（曾经的写法，别回去）：把根因分析、红→绿三态实测表、stub 替身设计理由全塞进
+release body——那属于 PR 描述和 AGENTS，release 页面只服务「要不要升级」这一个问题。
