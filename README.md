@@ -53,7 +53,7 @@ flowchart TB
 | 依赖 | 用途 | 备注 |
 |---|---|---|
 | **DeepSeek Harness** | 运行宿主 | 配置卡片需 **DSH ≥ 0.2.0-rc.2**；更早版本安静降级为"无卡片"，其余功能不受影响 |
-| **Node.js ≥ 20** | 插件与工具运行时 | 纯内置模块，无 npm 依赖 |
+| **Node.js ≥ 22.12** | 插件与工具运行时 | 纯内置模块，无 npm 依赖；22.12 是装载链路的下限（`require(esm)`） |
 | **python3 ≥ 3.10** | 上游脚本套件与完整性门 | 建议 `python3-venv` 可用（venv 模式依赖其 ensurepip） |
 | **pip3** | 安装上游 Python 依赖 | venv 模式下改用 `<venv>/bin/pip3`，不受 PEP 668 拦截 |
 | **git** / **tar** | 同步脚本 | 仅同步上游时需要 |

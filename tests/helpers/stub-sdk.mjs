@@ -174,7 +174,7 @@ export const COSMOKIT_STUB = [
  * 复刻真实包 `lib/index.cjs:1` 那一跳的**约束**而非机制：真实包在此同步 `require()`
  * ESM-only 的 cosmokit，Node 在并行装载下会抛 `ERR_REQUIRE_ESM_RACE_CONDITION`；替身
  * 用「cosmokit 是否已由 ESM 加载完毕」的标记把同一约束表达成确定性断言——先预热再
- * require 才通过，省掉 `require(esm)` 本身（Node 20 兼容 job 不支持它）。
+ * require 才通过，省掉 `require(esm)` 本身（`require(esm)` 只在 Node ≥ 22.12 可用，替身刻意不依赖它）。
  */
 export const COSMOKIT_ORDER_GUARD = [
   'if (!globalThis.__stubCosmokitEsmLoaded) {',
@@ -205,7 +205,7 @@ export async function buildStubSdk(modules, {
   // 在 results[i].result）。默认 single，保证既有用例与 CI 形态不变。
   executorModel = 'single',
   // 装载期顺序契约（issue #36）：'absent'（默认）＝不建 cosmokit 替身，入口预热必抛、
-  // 落回 require 老路，既有用例与 Node 20 兼容 job 的形态不变；'hoisted' / 'nested'
+  // 落回 require 老路，既有用例与 CI 兼容 job 的形态不变；'hoisted' / 'nested'
   // 建 **ESM-only** 的 cosmokit 替身（分别在 modules 根与 schemastery/node_modules 下），
   // 并让 schemastery 替身在入口处断言「cosmokit 已经过 ESM 加载完毕」——锁住
   // 「先 await import() 预热、再同步 require schemastery」这条装载期契约。
