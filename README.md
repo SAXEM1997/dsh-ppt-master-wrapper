@@ -226,6 +226,8 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 | `v6.8.0-r1` | 包装层修订（无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——先挂 `@deepseek-ai/dsh-tool-executor-native` 再按批量 `tools.execute` 调用，0.2.1 及更早仍走单调用，两代 SDK 均绿；顺手清掉 `schemaOf` 时代的陈旧文档坐标，并在 AGENTS §3 登记两代执行契约。vendor 树保持 v6.8.0 逐字节 |
 | `v6.8.0-r2` | scope 运行时两处收口（issue #33）：① 注入看门狗 5s → 30s——boot 期注入回调常在 5s 后才到，旧值把正常启动记成「判定未生效、工具处处可见」且永不撤回；② 判定/装层前**判活**——`cannot create effect on inactive context` 的真含义是「会话已销毁」（cordis `assertActive` 只在 `fiber.uid === null` 时抛），短命子会话（mnemon idle review）不再刷 `restrict 安装被宿主拒绝`；③ 新增一条 `scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个` 摘要。默认 `global` 仍零日志 |
 
+| `v6.8.0-r3` | 装载期竞态修复（issue #36）：`schemastery` 的 CJS 构建首行同步 `require()` ESM-only 的 `cosmokit`，而宿主以并行 `import()` 装载插件，同批有插件正在加载 cosmokit 时该 require 抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，整个插件不装载。现于 `require` 之前先 `await import()` 预热 cosmokit，解析锚点落在 **schemastery 自身**（非提升布局下才不会静默退化）。入口模块因此带顶层 `await`；预热失败落回原路径。vendor 树保持 v6.8.0 逐字节 |
+
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
 ## 致谢与许可
