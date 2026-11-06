@@ -228,6 +228,8 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 
 | `v6.8.0-r3` | 装载期竞态修复（issue #36）：`schemastery` 的 CJS 构建首行同步 `require()` ESM-only 的 `cosmokit`，而宿主以并行 `import()` 装载插件，同批有插件正在加载 cosmokit 时该 require 抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，整个插件不装载。现于 `require` 之前先 `await import()` 预热 cosmokit，解析锚点落在 **schemastery 自身**（非提升布局下才不会静默退化）。入口模块因此带顶层 `await`；预热失败落回原路径。vendor 树保持 v6.8.0 逐字节 |
 
+| `v6.8.0-r4` | 环境声明与仓库约定修订：`engines.node` 由 `>=20.0.0` 校正为 `>=22.12.0`（装载链路需 `require(esm)`）；CI 兼容 job 改为 `node22-compat` 并钉死该下限；release 说明格式约定为「严谨总结 + 每 PR 一行 + 中英双语」。无运行时行为变更 |
+
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
 ## 致谢与许可
