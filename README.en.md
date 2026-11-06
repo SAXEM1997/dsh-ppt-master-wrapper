@@ -227,6 +227,8 @@ Machines without the host SDK (CI included): build the default stub tree with `n
 
 | `v6.8.0-r3` | Load-time race fix (issue #36): `schemastery`'s CJS build `require()`s the ESM-only `cosmokit` on its first line, while the host loads plugins with parallel `import()`. When another plugin in the same batch is still loading cosmokit, that require throws `ERR_REQUIRE_ESM_RACE_CONDITION` and the whole plugin fails to activate. The entry now `await import()`s cosmokit before the `require`, resolving it from **schemastery itself** (so non-hoisted layouts do not silently degrade). The entry therefore carries a top-level `await`; a failed warm-up falls back to the previous path. Vendored tree stays byte-identical to v6.8.0 |
 
+| `v6.8.0-r4` | Environment declaration and repository conventions: `engines.node` corrected from `>=20.0.0` to `>=22.12.0` (the load path needs `require(esm)`); the CI compatibility job becomes `node22-compat` pinned to that floor; release notes are now "formal summary + one line per PR + bilingual". No runtime behaviour change |
+
 > Versioning: the `base` mirrors upstream releases; wrapper revisions append `-rN`. Itemized details in [AGENTS.md](AGENTS.md) §5.
 
 ## Acknowledgements and licence
