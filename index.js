@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { toolNamesOf } from './lib/scope.js';
 import { mountToolScope } from './lib/scope-host.js';
@@ -109,7 +109,24 @@ function locateDshModules() {
  * @returns {Function} 可调用的 schemastery 命名空间（`object/string/boolean/union/const`）。
  * @throws {Error} 定位链未命中或宿主未安装该包。
  */
-function loadSchemastery() {
+/**
+ * 解析宿主 `@deepseek-ai/schemastery`（async；顶层 await 调用，见下）。
+ *
+ * 与原同步版的唯一行为差：先**顺序 `await import()` 预热 cosmokit**，再同步
+ * `require('@deepseek-ai/schemastery')`。根因（DSH 0.2.2-rc.1 上 6/6 复现，
+ * 上游 issue #36）：schemastery `lib/index.cjs:1` 同步 `require()` ESM-only 的
+ * cosmokit，而 cordis 以并行动态 `import()` 装载插件——cosmokit 尚未加载完时
+ * 该 require 抛 "not yet fully loaded" 竞态错。Node 自身的报错建议正是
+ * "Try await-ing the import() sequentially in a loop instead"：顺序 import
+ * 等同一份加载完成后再 require，即可命中已加载态。预热失败一律吞掉、落回
+ * 原 require 路径（stub SDK 测试环境里 cosmokit 根本不存在，仍走老路；
+ * 真失败仍由下面 require 的同一条点名诊断报出，文案约束不变）。
+ * 本包 `type: module`，顶层 await 可用；`z` 只用于其后 `Config` 的定义。
+ *
+ * @returns {Function} 可调用的 schemastery 命名空间（`object/string/boolean/union/const`）。
+ * @throws {Error} 定位链未命中或宿主未安装该包。
+ */
+async function loadSchemastery() {
   const { dir, via, attempted } = locateDshModules();
 
   if (dir === null) {
@@ -128,8 +145,14 @@ function loadSchemastery() {
   // （Gate 3 G3-08，实测 `Received 'node_modules/noop-anchor.cjs'`）。锚点先解析为绝对路径，
   // 且 `createRequire` 本身也留在 try 内——即使锚点仍不可用，也归到同一条点名诊断，
   // 不泄漏裸 TypeError。
+  const requireFromHost = createRequire(join(resolve(dir), 'noop-anchor.cjs'));
   try {
-    const requireFromHost = createRequire(join(resolve(dir), 'noop-anchor.cjs'));
+    await import(pathToFileURL(requireFromHost.resolve('@deepseek-ai/cosmokit')).href);
+  } catch {
+    // 预热失败（stub 环境无 cosmokit / 解析失败）不致命：落回下面 require，
+    // 真失败仍由同一条点名诊断报出。
+  }
+  try {
     return requireFromHost('@deepseek-ai/schemastery');
   } catch (error) {
     throw new Error(
@@ -139,7 +162,7 @@ function loadSchemastery() {
   }
 }
 
-const z = loadSchemastery();
+const z = await loadSchemastery();
 
 // ─── Config 注解（spec §4.1/§5.1；模块加载期求值一次）────────────
 
