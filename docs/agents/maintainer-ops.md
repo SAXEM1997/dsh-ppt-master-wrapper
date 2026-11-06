@@ -17,11 +17,14 @@ gh pr checks <PR号> --repo SAXEM1997/dsh-ppt-master-wrapper   # → "no checks 
 gh api repos/SAXEM1997/dsh-ppt-master-wrapper/actions/runs/<run_id> --jq '{status,conclusion}'
 #    → {"status":"completed","conclusion":"action_required"}
 
-# 2) 批准——注意：这一步不能走 gh 里存的凭据
+# 2) 批准——先用 gh 里存的凭据试（够用就不要绕路）
 gh api -X POST repos/SAXEM1997/dsh-ppt-master-wrapper/actions/runs/<run_id>/approve
-#    → 403 "Resource not accessible by personal access token"（gh 存的 token 权限不够）
+#    → 成功时返回空对象 {}，随后 run 由 action_required 转 queued
+#    （2026-11-06 在 run 42154397773 上实测成功；本文档早先记录的
+#      "403 Resource not accessible by personal access token" 已不可复现，
+#      但该失败形态仍可能出现——若命中，走下面的 classic PAT 直调）
 
-# 正确做法：classic PAT 直调（返回 201 且 body 为空即成功）
+# 兜底：classic PAT 直调（返回 201 且 body 为空即成功）
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   -H "Authorization: Bearer $CLASSIC_PAT" \
   -H "Accept: application/vnd.github+json" \
