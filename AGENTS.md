@@ -75,7 +75,12 @@
 - **schemastery 受控解析**：`index.js` 在模块加载期经「定位宿主 node_modules +
   `createRequire`」取 `@deepseek-ai/schemastery`（禁 ESM 裸导入；锚点必须是定位到的
   node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。解析失败＝整插件
-  不可加载。定位链**两侧不同，勿混**：脚本侧（`scripts/check-dsh-compat.mjs` 的
+  不可加载。**装载期是异步的（顶层 `await`）**：`require` 之前先 `await import()` 预热
+  schemastery 的 ESM-only 依赖 `@deepseek-ai/cosmokit`——宿主 loader 并行创建插件条目，
+  不预热则 `require(esm)` 会撞上正在加载的 cosmokit 并抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，
+  整个插件不装载（issue #36）。预热的**解析锚点必须是 schemastery 入口**（`cosmokit` 是它的
+  依赖，profile 根的副本只是提升布局的巧合；锚在根上则 pnpm 严格布局下静默退化）。预热
+  失败被吞、落回原 `require` 路径，真失败仍由同一条点名诊断报出。定位链**两侧不同，勿混**：脚本侧（`scripts/check-dsh-compat.mjs` 的
   `resolveDshModules`）五级——`--dsh-modules` 参数 > `DSH_NODE_MODULES` >
   `DSH_PROFILE_DIR/node_modules` > `DSH_HOME/profiles/$DSH_PROFILE/node_modules` >
   `DSH_HOME/profiles/node_modules`（末级未命中再无序扫描 profiles/*）；**插件装载侧**
@@ -91,7 +96,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 732 tests / 730 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 732/732。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 733 tests / 731 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 733/733。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -105,7 +110,7 @@
 - **schemastery 前置的红灯形态（实测签名）**：`tests/apply.test.mjs`、
   `tests/verify-plugin.test.mjs` 静态 import 入口——干净机器上**文件级**失败；而
   `tests/compat.test.mjs` 的 13 处 in-process `runCompatCheck` 走真实动态 import（封不住
-  `process.env`），洁净环境 **40 例中 9 红**，可辨识签名是 `schemastery 定位失败 …
+  `process.env`），洁净环境 **41 例中 9 红**，可辨识签名是 `schemastery 定位失败 …
   定位链四级均未命中`；CLI 子进程用例自带 stub 树不受影响。
 - 测试文件地图：`sync-*.test.mjs`（同步脚本纯函数/编排，编排用真实临时 git 仓库）、
   `scope*.test.mjs`（工具可见范围纯逻辑/宿主集成）、`client-half.test.mjs`（卡片）、
@@ -132,6 +137,7 @@
 | `v6.8.0` | 上游同步（规则①）：vendor v6.8.0 逐字节（refs/tags/v6.8.0@5e8856be0da8e6bc85c4aa28acc614478f7b7137），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.8.0`／`6.8.0`，`package.json.version` 同为 `6.8.0`；结构分类 🔴 0 项、走自动路径。`requirements.txt` 相对 v6.7.3 **无变化**（仍 19 条依赖，本机 venv 无需重建）；上游支持的 Python 上限改为 3.14（本机 venv 3.11.2 在范围内），`ppt_master_check_env` 仍按 vendor 文件现读。测试保持 720/720 |
 | `v6.8.0-r1` | 包装层修订（#31，无运行时行为变更）：`check-dsh-compat` 的 guard 探针适配 DSH 0.2.2 的「执行外置」契约——`executionModelOf()` 按 `tools.setExecutor` 存在性分流，batch 侧自挂 `@deepseek-ai/dsh-tool-executor-native` 并按 `{calls:[…]}` 调用、结果经 `firstToolResult()` 取 `results[i].result`；single 侧保持 0.2.1 单调用。stub SDK 新增 `executorModel: 'batch'` 形态（`setExecutor` + executor 替身 + `executorLog`/`batchCalls`），新增 4 例（2 纯函数 + 2 端到端/降级，含批量入参形状自证与降级 warning），测试 720 → **724**。同时清 `schemaOf`/loader 行号等陈旧坐标，并在 §3 登记两代执行契约。真机 0.2.1-rc.5 与 npm 0.2.2-rc.1 树双绿；vendor 树仍 v6.8.0 逐字节 |
 | `v6.8.0-r2` | scope 运行时两处收口（#33，运行时行为有变）：① **注入看门狗 5s → 30s**——boot 期 `dsh-workspace` 要开 storageDomain 再扫 session 头，注入回调常在 5s 后才到（本机 33 次启动、跨 0.2.1-rc.5/0.2.2-rc.1 两代），旧值把正常启动写成「判定未生效 ⇒ 工具处处可见」且永不撤回；② **装层前判活**——`cannot create effect on inactive context` 的真含义是「会话已销毁」（cordis `assertActive()` 只在 `fiber.uid === null` 时抛，`uid` 仅 dispose 时置空），mnemon idle review 的短命子会话不再刷 `restrict 安装被宿主拒绝`（本机 701 条 / 670 个 id 中 545 条紧随 mnemon 失败行，属抽样归因、非全量；**重启后真机实测归零**）；`judgeOne` 同时不把已销毁会话的判定写进缓存，且同 id 换代时旧判定作废；③ 新增一条 `scope 已激活（注入等待 Nms）：判定 N 个会话，隐藏 M 个`。`watchdogMs` 选项**仅供测试与排障**覆盖默认值（M25 spy 守护默认 30s）。重启后真机实测：注入等待 **14331ms**（旧 5s 阈值必误报），该次启动 8 条 mnemon idle review 失败对应 **0** 条 `restrict 安装被宿主拒绝`（改前为 1:1）。新增 8 例（M26×3：晚到不告警 / `watchdogMs` 阈值上界 / 轮次中切 global 不得记摘要；M27×5：判定期销毁、restrict 瞬间销毁、存活仍被拒须告警、判活 fallback、同 id 换代旧判定作废），测试 724 → **732**；默认 `global` 仍零新增日志 |
+| `v6.8.0-r3` | 装载期竞态修复（#36/PR #38，运行时行为有变）：`schemastery@3.19.0` 的 CJS 构建首行同步 `require()` ESM-only 的 `cosmokit`，而宿主 loader 用 `Promise.all` 并行创建插件条目；同批另有插件正在经 ESM 加载 cosmokit 时，该 require 抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，**整个插件不装载**（三工具 + vendored skill 全不可用，启动只留一行 `did not activate`）。修法（采纳 @knsew 的 #37，PR #38 接管）：`loadSchemastery()` 改 async，在同步 `require` 之前先 `await import()` 预热 cosmokit，随后 require 必命中已加载态；入口模块因此带**顶层 await**。相对 #37 补三处：① 预热解析锚点由 profile 根改为 **schemastery 入口**（cosmokit 是它的依赖，根上副本只是 npm 提升布局的巧合；pnpm 严格布局下根锚点解析失败会被 `catch` 吞掉、预热静默退化）；② 新增 T5⑨ 与 stub knob `schemasteryCosmokit: absent|hoisted|nested`（ESM-only cosmokit 替身 + schemastery 替身的顺序守卫，表达「require 前 cosmokit 必须已由 ESM 加载完毕」而不依赖 `require(esm)`，故 Node 20 兼容 job 形态不变；默认 `absent` 下既有用例零变化）；③ AGENTS §3 装载期口径与 §4 基线。红→绿三态实测：`main` 两布局皆红、#37 补丁在 nested 布局红、本版两布局皆绿。**本机复现不出真实竞态**（profile 里 117 个宿主模块在 boot 期已把 cosmokit 加载完；plain `Promise.all`、微任务错峰、fs 队列灌满、pass-through ESM hook、真 cordis loader 并发消费者全部试过，均绿）⇒ 这条用例证明的是「预热先于 require」这条契约，不是「在报告者 profile 上不再复现」，后者由报告者真机验证。测试 732 → **733**；vendor 树仍 v6.8.0 逐字节。**另记（未改）**：`engines.node: ">=20.0.0"` 是虚标——真实链路需 `require(esm)`（Node ≥22.12），宿主 `dsh@0.2.2-rc.1` 自身要求 `>=24.9.0` |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

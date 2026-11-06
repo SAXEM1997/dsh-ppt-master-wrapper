@@ -882,6 +882,26 @@ test('T5⑧: schemastery 两态——可解析（注入 stub env）→ 装载成
   }
 });
 
+test('T5⑨: 装载期先预热 ESM-only cosmokit 再 require schemastery（提升布局 + 非提升布局两形态）', async () => {
+  // 装载期契约只能在**子进程**里观测：同进程二次 import 走模块缓存，装配期的解析通道
+  // 不会重跑。替身的顺序守卫（`COSMOKIT_ORDER_GUARD`）复刻真实包那一跳的约束——
+  // schemastery 被 require 时 cosmokit 必须已经由 ESM 加载完毕。
+  const loadProbe = `await import(${JSON.stringify(pathToFileURL(PLUGIN_ENTRY).href)}); console.log('PLUGIN-LOADED');`;
+  for (const placement of ['hoisted', 'nested']) {
+    const sdk = await makeStubSdk({ schemasteryCosmokit: placement });
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--input-type=module', '-e', loadProbe],
+        { env: { DSH_NODE_MODULES: sdk.modules } },
+      );
+      assert.match(stdout, /PLUGIN-LOADED/, `${placement} 布局：入口须装载成功（预热须先于 require）`);
+    } finally {
+      await sdk.cleanup();
+    }
+  }
+});
+
 test('G3-08: 相对 DSH_NODE_MODULES 命中 → 锚点先 resolve（不抛裸 ERR_INVALID_ARG_VALUE；诊断含包名）', async () => {
   const sdk = await makeStubSdk();
   const emptyTree = await mkdtemp(join(tmpdir(), 'compat-rel-empty-'));
