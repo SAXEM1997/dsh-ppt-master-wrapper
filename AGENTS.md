@@ -123,8 +123,8 @@
 同步时 `sync-upstream.mjs` 自动联动改写 `lib/client.js` 的 `PLUGIN_VERSION` /
 `UPSTREAM_VERSION`（`applyVersionLinkage`，改写进同步 commit）；README 版本表仍是人工。
 
-Release 说明**中英双语各一份**，结构＝「一段总结 + 每项一行的变更列表」；机制细节归 issue/PR，
-不塞进 release body。格式细则见 `docs/agents/maintainer-ops.md` §5。
+Release 说明**中英双语各一份**，结构＝「一段严谨口吻的总结 + **每个 PR 一行**的变更列表」；
+机制细节归 issue/PR，不塞进 release body。格式细则见 `docs/agents/maintainer-ops.md` §5。
 
 | 版本（tag） | 详细说明 |
 |---|---|
