@@ -25,7 +25,7 @@ test('package.json: 身份与入口字段', () => {
   );
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.main, 'index.js');
-  assert.deepEqual(pkg.engines, { node: '>=20.0.0' });
+  assert.deepEqual(pkg.engines, { node: '>=22.12.0' });
 });
 
 test('package.json: 零运行时 npm 依赖', () => {

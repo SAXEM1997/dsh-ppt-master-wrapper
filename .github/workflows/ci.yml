@@ -43,27 +43,30 @@ jobs:
       # （真实上游解压树，GitHub runner 无缓存，缺省即 fail-loud exit 1）；该逻辑已由
       # tests/verify-plugin.test.mjs 用 fixtures 覆盖。本地/同步流程仍照常执行。
 
-  # ─── Node 20 兼容性补充验证（engines >= 20.0.0 防漂移，issue M29）────────
-  # 本 job 是 package.json `engines.node: ">=20.0.0"` 声明的兼容性补充验证，
+  # ─── 声明下限验证（engines.node >= 22.12.0 防漂移，issue M29 / #40）────────
+  # 本 job 是 package.json `engines.node: ">=22.12.0"` 声明的补充验证，
   # **不是必需检查**；main 分支保护的必需状态检查仍是上方的 `test`（无矩阵后缀）。
-  # 目的：现有 `test` job 只跑 Node 22，无法发现「代码用到 Node 21+/22+ 才有的 API」
-  # 这类 engines 漂移；此处以 Node 20 复跑同一测试套件，漂移即红灯。
+  # 22.12.0 不是随手挑的版本：它是装载链路的真实下限——`index.js` 经
+  # `require()` 取 schemastery，而 schemastery 的 CJS 构建首行 require ESM-only 的
+  # cosmokit，这一跳是 Node 的 `require(esm)`，Node 22.12.0 起才默认开启（#40）。
+  # 上方 `test` job 跑 Node 22 的最新版，发现不了「用了比 22.12 更新的 API」这类漂移；
+  # 此处**钉死 22.12.0** 复跑同一套件，漂移即红灯。
   # 注意：不得把本 job 改名/合并进 `test` 的 matrix——check 名一旦变为
-  # `test (20)` / `test (22)`，必需检查将永远无法满足。
-  node20-compat:
+  # `test (22)` / `test (22.12)`，受保护的必需检查 `test` 将永远无法满足。
+  node22-compat:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22.12.0'
 
       # 与 `test` job 同一 stub 构造路径（详见上方注释），保证两侧测试环境同形态。
       - name: Build stub SDK tree
         run: node tests/helpers/stub-sdk.mjs .ci-stub
 
-      - name: Run test suite (stub SDK, Node 20)
+      - name: Run test suite (stub SDK, Node 22.12.0 = declared floor)
         env:
           DSH_NODE_MODULES: ${{ github.workspace }}/.ci-stub/node_modules
         run: node --test tests/*.test.mjs

@@ -53,7 +53,7 @@ The skill surface is registered by `index.js` through `ctx.skills`: the vendored
 | Dependency | Purpose | Notes |
 |---|---|---|
 | **DeepSeek Harness** | Host runtime | The config card needs **DSH ≥ 0.2.0-rc.2**; older hosts degrade quietly to "no card" with no other impact |
-| **Node.js ≥ 20** | Plugin & tool runtime | Pure built-ins, no npm dependencies |
+| **Node.js ≥ 22.12** | Plugin & tool runtime | Pure built-ins, no npm dependencies; 22.12 is the load-path floor (`require(esm)`) |
 | **python3 ≥ 3.10** | Upstream scripts & integrity gate | `python3-venv` recommended (venv mode needs its ensurepip) |
 | **pip3** | Installing upstream Python deps | venv mode uses `<venv>/bin/pip3` instead, unaffected by PEP 668 |
 | **git** / **tar** | Sync script | Only needed when syncing upstream |
