@@ -92,12 +92,22 @@ function locateDshModules() {
 }
 
 /**
- * 同步解析宿主 `@deepseek-ai/schemastery`。
+ * 解析宿主 `@deepseek-ai/schemastery`（async；顶层 `await` 调用，见下）。
  *
  * `createRequire` **必须以定位到的 node_modules 为锚**（锚点取该目录下的占位文件路径，
  * 且先经 `resolve` 落成绝对路径——定位命中的 `dir` 可能是相对拼写）：
  * 锚在 `index.js` 上即便 `DSH_PROFILE_DIR` 正确也会 `MODULE_NOT_FOUND`（本机实测）——
- * 本包被符号链接装载，从包内向上找不到 profile 的 node_modules。包为 CJS，同步解析可行。
+ * 本包被符号链接装载，从包内向上找不到 profile 的 node_modules。
+ *
+ * 与原同步版的唯一行为差：先**顺序 `await import()` 预热 cosmokit**，再同步
+ * `require('@deepseek-ai/schemastery')`。根因（DSH 0.2.2-rc.1 上 6/6 复现，issue #36）：
+ * schemastery `lib/index.cjs:1` 同步 `require()` ESM-only 的 cosmokit，而 cordis 以并行
+ * 动态 `import()` 装载插件——cosmokit 尚未加载完时该 require 抛
+ * `ERR_REQUIRE_ESM_RACE_CONDITION`（"not yet fully loaded"）。Node 自身的报错建议正是
+ * "Try await-ing the import() sequentially in a loop instead"：顺序 import 等同一份加载
+ * 完成后再 require，即可命中已加载态。预热失败一律吞掉、落回原 require 路径（stub SDK
+ * 测试环境里 cosmokit 根本不存在，仍走老路；真失败仍由下面 require 的同一条点名诊断
+ * 报出，文案约束不变）。本包 `type: module`，顶层 await 可用；`z` 只用于其后 `Config`。
  *
  * 任一级未命中或 require 失败 → 在**模块加载期**抛出（不捕获、不降级为无 Config 导出）。
  * 错误文案约束（Task 5 Step 3a）：不得含「用法 / unknown / 未知」（否则 compat 的
@@ -106,24 +116,7 @@ function locateDshModules() {
  * 断言会被装载期文案污染）；包名 `@deepseek-ai/schemastery` 须留在**首行**（compat 的
  * 不可解析态子进程用例以它作唯一正向标记，`firstLine` 只上抛首行）。
  *
- * @returns {Function} 可调用的 schemastery 命名空间（`object/string/boolean/union/const`）。
- * @throws {Error} 定位链未命中或宿主未安装该包。
- */
-/**
- * 解析宿主 `@deepseek-ai/schemastery`（async；顶层 await 调用，见下）。
- *
- * 与原同步版的唯一行为差：先**顺序 `await import()` 预热 cosmokit**，再同步
- * `require('@deepseek-ai/schemastery')`。根因（DSH 0.2.2-rc.1 上 6/6 复现，
- * 上游 issue #36）：schemastery `lib/index.cjs:1` 同步 `require()` ESM-only 的
- * cosmokit，而 cordis 以并行动态 `import()` 装载插件——cosmokit 尚未加载完时
- * 该 require 抛 "not yet fully loaded" 竞态错。Node 自身的报错建议正是
- * "Try await-ing the import() sequentially in a loop instead"：顺序 import
- * 等同一份加载完成后再 require，即可命中已加载态。预热失败一律吞掉、落回
- * 原 require 路径（stub SDK 测试环境里 cosmokit 根本不存在，仍走老路；
- * 真失败仍由下面 require 的同一条点名诊断报出，文案约束不变）。
- * 本包 `type: module`，顶层 await 可用；`z` 只用于其后 `Config` 的定义。
- *
- * @returns {Function} 可调用的 schemastery 命名空间（`object/string/boolean/union/const`）。
+ * @returns {Promise<Function>} 可调用的 schemastery 命名空间（`object/string/boolean/union/const`）。
  * @throws {Error} 定位链未命中或宿主未安装该包。
  */
 async function loadSchemastery() {
@@ -147,7 +140,12 @@ async function loadSchemastery() {
   // 不泄漏裸 TypeError。
   const requireFromHost = createRequire(join(resolve(dir), 'noop-anchor.cjs'));
   try {
-    await import(pathToFileURL(requireFromHost.resolve('@deepseek-ai/cosmokit')).href);
+    // 预热的**解析锚点必须落在 schemastery 自己身上**：cosmokit 是它的依赖、不是本包的
+    // 依赖，profile 根的提升副本只是 npm 布局的巧合。非提升布局（pnpm 严格）下根锚点
+    // 解析不到，`catch` 一吞，预热就静默退化成旧行为——恰好在最可能中招的安装形态上。
+    // 以 schemastery 入口为锚，命中的就是它随后 `require()` 的那一份 cosmokit。
+    const requireFromSchemastery = createRequire(requireFromHost.resolve('@deepseek-ai/schemastery'));
+    await import(pathToFileURL(requireFromSchemastery.resolve('@deepseek-ai/cosmokit')).href);
   } catch {
     // 预热失败（stub 环境无 cosmokit / 解析失败）不致命：落回下面 require，
     // 真失败仍由同一条点名诊断报出。

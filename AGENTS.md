@@ -75,7 +75,12 @@
 - **schemastery 受控解析**：`index.js` 在模块加载期经「定位宿主 node_modules +
   `createRequire`」取 `@deepseek-ai/schemastery`（禁 ESM 裸导入；锚点必须是定位到的
   node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。解析失败＝整插件
-  不可加载。定位链**两侧不同，勿混**：脚本侧（`scripts/check-dsh-compat.mjs` 的
+  不可加载。**装载期是异步的（顶层 `await`）**：`require` 之前先 `await import()` 预热
+  schemastery 的 ESM-only 依赖 `@deepseek-ai/cosmokit`——宿主 loader 并行创建插件条目，
+  不预热则 `require(esm)` 会撞上正在加载的 cosmokit 并抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，
+  整个插件不装载（issue #36）。预热的**解析锚点必须是 schemastery 入口**（`cosmokit` 是它的
+  依赖，profile 根的副本只是提升布局的巧合；锚在根上则 pnpm 严格布局下静默退化）。预热
+  失败被吞、落回原 `require` 路径，真失败仍由同一条点名诊断报出。定位链**两侧不同，勿混**：脚本侧（`scripts/check-dsh-compat.mjs` 的
   `resolveDshModules`）五级——`--dsh-modules` 参数 > `DSH_NODE_MODULES` >
   `DSH_PROFILE_DIR/node_modules` > `DSH_HOME/profiles/$DSH_PROFILE/node_modules` >
   `DSH_HOME/profiles/node_modules`（末级未命中再无序扫描 profiles/*）；**插件装载侧**
@@ -91,7 +96,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 732 tests / 730 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 732/732。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 733 tests / 731 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 733/733。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -105,7 +110,7 @@
 - **schemastery 前置的红灯形态（实测签名）**：`tests/apply.test.mjs`、
   `tests/verify-plugin.test.mjs` 静态 import 入口——干净机器上**文件级**失败；而
   `tests/compat.test.mjs` 的 13 处 in-process `runCompatCheck` 走真实动态 import（封不住
-  `process.env`），洁净环境 **40 例中 9 红**，可辨识签名是 `schemastery 定位失败 …
+  `process.env`），洁净环境 **41 例中 9 红**，可辨识签名是 `schemastery 定位失败 …
   定位链四级均未命中`；CLI 子进程用例自带 stub 树不受影响。
 - 测试文件地图：`sync-*.test.mjs`（同步脚本纯函数/编排，编排用真实临时 git 仓库）、
   `scope*.test.mjs`（工具可见范围纯逻辑/宿主集成）、`client-half.test.mjs`（卡片）、

@@ -156,6 +156,34 @@ export const SCHEMASTERY_STUB = [
 ].join('\n');
 
 /**
+ * cosmokit 替身（**ESM-only**，对齐真实包 `type: module` + 仅 `default` 条件）。
+ *
+ * 唯一职责是留下「本模块已经过 ESM 加载并求值完毕」的进程内标记，供
+ * {@link COSMOKIT_ORDER_GUARD} 在 schemastery 替身被 require 时断言顺序。
+ */
+export const COSMOKIT_STUB = [
+  '// stub: @deepseek-ai/cosmokit（ESM-only；只服务装载期顺序契约，issue #36）。',
+  'globalThis.__stubCosmokitEsmLoaded = true;',
+  'export const stubCosmokit = true;',
+  '',
+].join('\n');
+
+/**
+ * schemastery 替身的「顺序守卫」前插片（仅 `schemasteryCosmokit` 非 absent 时启用）。
+ *
+ * 复刻真实包 `lib/index.cjs:1` 那一跳的**约束**而非机制：真实包在此同步 `require()`
+ * ESM-only 的 cosmokit，Node 在并行装载下会抛 `ERR_REQUIRE_ESM_RACE_CONDITION`；替身
+ * 用「cosmokit 是否已由 ESM 加载完毕」的标记把同一约束表达成确定性断言——先预热再
+ * require 才通过，省掉 `require(esm)` 本身（Node 20 兼容 job 不支持它）。
+ */
+export const COSMOKIT_ORDER_GUARD = [
+  'if (!globalThis.__stubCosmokitEsmLoaded) {',
+  "  throw new Error('stub schemastery: cosmokit 尚未经 ESM 加载完成就被 require'",
+  "    + '（装载期 require(esm) 契约被破坏：入口须先 await import() 预热 cosmokit）');",
+  '}',
+].join('\n');
+
+/**
  * 把默认+可调形态的 stub SDK 写入**显式给定**的 node_modules 目录。
  *
  * 幂等：先整树 rm 再建（重复构造同一目录不留旧文件）。knob 集与 compat.test.mjs
@@ -176,6 +204,12 @@ export async function buildStubSdk(modules, {
   // 先装 `@deepseek-ai/dsh-tool-executor-native` 替身、execute 入参 {calls:[…]}、结果
   // 在 results[i].result）。默认 single，保证既有用例与 CI 形态不变。
   executorModel = 'single',
+  // 装载期顺序契约（issue #36）：'absent'（默认）＝不建 cosmokit 替身，入口预热必抛、
+  // 落回 require 老路，既有用例与 Node 20 兼容 job 的形态不变；'hoisted' / 'nested'
+  // 建 **ESM-only** 的 cosmokit 替身（分别在 modules 根与 schemastery/node_modules 下），
+  // 并让 schemastery 替身在入口处断言「cosmokit 已经过 ESM 加载完毕」——锁住
+  // 「先 await import() 预热、再同步 require schemastery」这条装载期契约。
+  schemasteryCosmokit = 'absent',
   omit = [],
 } = {}) {
   // 病态路径守卫（Gate 3 P3-2）：本函数对目标**先 rm 再建**（幂等语义），必须在动手前
@@ -197,9 +231,9 @@ export async function buildStubSdk(modules, {
   await mkdir(resolvedModules, { recursive: true });
   await writeFile(join(resolvedModules, OWNERSHIP_MARKER), `${OWNERSHIP_MARKER_PAYLOAD}\n`);
 
-  const pkg = async (name, main, files) => {
+  const pkgAt = async (base, name, main, files) => {
     if (omit.includes(name)) return;
-    const dir = join(modules, ...name.split('/'));
+    const dir = join(base, ...name.split('/'));
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'package.json'), `${JSON.stringify({ name, version: '0.0.0-stub', type: 'module', main })}\n`);
     for (const [file, source] of Object.entries(files)) {
@@ -207,6 +241,8 @@ export async function buildStubSdk(modules, {
       await writeFile(join(dir, file), source);
     }
   };
+  /** 默认落点＝`<modules>/@scope/name`；`pkgAt` 供「非提升布局」把包写进子目录。 */
+  const pkg = (name, main, files) => pkgAt(modules, name, main, files);
 
   await pkg('@deepseek-ai/cordis', 'index.mjs', {
     // M8：从空壳补到「最小可用」。三条方法签名逐字对齐真实 cordis
@@ -571,9 +607,23 @@ export async function buildStubSdk(modules, {
 
   // schemastery 替身（Task 5）：index.js 装载期受控解析的对象。包形 main→.cjs 与真实
   // 包一致（`pkg` 恒写 type:'module'，.cjs 扩展名即 CJS）；替身随 `omit` 可整体缺席。
+  // `schemasteryCosmokit` 非 absent 时前插顺序守卫，并落一份 ESM-only 的 cosmokit 替身：
+  // hoisted＝与真实 npm 提升布局同形（modules 根），nested＝pnpm 严格布局同形（只在
+  // schemastery 自己的 node_modules 下）——后者用来锁住「预热须按 schemastery 的位置解析」。
+  const schemaStub = schemasteryCosmokit === 'absent'
+    ? SCHEMASTERY_STUB
+    : SCHEMASTERY_STUB.replace("'use strict';\n", `'use strict';\n${COSMOKIT_ORDER_GUARD}\n`);
   await pkg('@deepseek-ai/schemastery', 'lib/index.cjs', {
-    'lib/index.cjs': SCHEMASTERY_STUB,
+    'lib/index.cjs': schemaStub,
   });
+  if (schemasteryCosmokit !== 'absent') {
+    const cosmokitBase = schemasteryCosmokit === 'nested'
+      ? join(modules, '@deepseek-ai', 'schemastery', 'node_modules')
+      : modules;
+    await pkgAt(cosmokitBase, '@deepseek-ai/cosmokit', 'lib/index.js', {
+      'lib/index.js': COSMOKIT_STUB,
+    });
+  }
 
   return modules;
 }
