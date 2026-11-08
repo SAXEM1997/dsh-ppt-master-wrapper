@@ -229,6 +229,7 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 | `v6.8.0-r3` | 装载期竞态修复（issue #36）：`schemastery` 的 CJS 构建首行同步 `require()` ESM-only 的 `cosmokit`，而宿主以并行 `import()` 装载插件，同批有插件正在加载 cosmokit 时该 require 抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，整个插件不装载。现于 `require` 之前先 `await import()` 预热 cosmokit，解析锚点落在 **schemastery 自身**（非提升布局下才不会静默退化）。入口模块因此带顶层 `await`；预热失败落回原路径。vendor 树保持 v6.8.0 逐字节 |
 
 | `v6.8.0-r4` | 环境声明与仓库约定修订：`engines.node` 由 `>=20.0.0` 校正为 `>=22.12.0`（装载链路需 `require(esm)`）；CI 兼容 job 改为 `node22-compat` 并钉死该下限；release 说明格式约定为「严谨总结 + 每 PR 一行 + 中英双语」。无运行时行为变更 |
+| `v6.9.0` | 上游同步：vendor v6.9.0（逐字节）。Image→PPTX 新增 OCR 文本证据——`image_ocr.py scan` 把归一化页图 OCR 成可复核文本块（行框、估算字号、取样墨色），文字层成为「去文字底板」之上的原生文本，`merge-base` 会回读底板、发现文本框内残留文字时以 exit 3 报出；新增 `image_layers.py`（`check` 校验图层与页面配准、`diff-matte` 由页面自身像素导出图层、`mono-matte` 从色板切单色图形）与 `image_normalization.py`；profile 不再绑定单一宿主，任意带参考图路径的视觉宿主均可（文本去除默认 `-b openai`、注册图层默认 `-b gemini`）。`image_gen.py` 支持 `--gif-frames` 生成动态 GIF 与 `gpt-image-2.6` 系列，每张图按其文件名格式只写一次（`.jpg` 保留 Gemini 原始 JPEG 字节，不再 PNG 往返留孤儿）；旁白新增 `--provider openai`（`gpt-realtime-2.1-mini` 走 Realtime WebSocket，替代 2027-01-06 退役的 `tts-1`／`gpt-4o-mini-tts`）。覆盖写入修复：导出 `-o` 指向源 PPTX、`source_to_md` 输出指向输入（含硬链接别名）均在写盘前拒绝；模板重装改写 `Installed-from` 行而非叠加。依赖清单 19 条逐字不变（venv 无需重建），另清理 6.8.0 误入 vendor 的 `__pycache__` |
 
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
