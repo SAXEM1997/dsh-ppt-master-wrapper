@@ -126,6 +126,11 @@
 Release 说明**中英双语各一份**，结构＝「一段严谨口吻的总结 + **每个 PR 一行**的变更列表」；
 机制细节归 issue/PR，不塞进 release body。格式细则见 `docs/agents/maintainer-ops.md` §5。
 
+npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：`npm stage publish` 先暂存、由维护者
+2FA 批准后才真正发布；`publishConfig.registry` 钉死 npmjs（本机默认 registry 是镜像站，不能发布）。
+修订版 `6.9.0-r1` 在 semver 里是**预发布**，故每次必须显式 `--tag latest`，且 `^6.9.0` 不含它。
+发布前必查 vendor 文件数对齐与 tarball 装载。细则见 `docs/agents/maintainer-ops.md` §6。
+
 | 版本（tag） | 详细说明 |
 |---|---|
 | `v6.7.0` | 首次交付：vendor 上游 v6.7.0（约 78 MiB，逐字节）+ skill provider + 三生命周期工具 + verify/compat/sync 三脚本 |
