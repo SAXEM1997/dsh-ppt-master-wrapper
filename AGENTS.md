@@ -127,9 +127,13 @@ Release 说明**中英双语各一份**，结构＝「一段严谨口吻的总�
 机制细节归 issue/PR，不塞进 release body。格式细则见 `docs/agents/maintainer-ops.md` §5。
 
 npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：`npm stage publish` 先暂存、由维护者
-2FA 批准后才真正发布；`publishConfig.registry` 钉死 npmjs（本机默认 registry 是镜像站，不能发布）。
-修订版 `6.9.0-r1` 在 semver 里是**预发布**，故每次必须显式 `--tag latest`，且 `^6.9.0` 不含它。
-发布前必查 vendor 文件数对齐与 tarball 装载。细则见 `docs/agents/maintainer-ops.md` §6。
+2FA 批准后才真正发布；`publishConfig.registry` 钉死 npmjs（本机默认 registry 是镜像站，不能发布，
+`npm stage list|approve` 也不读它，须显式 `--registry`）。**上传在 CI 侧做**——本机出口上行
+~23 KB/s，17.7 MB 传不完。`publish.yml` 两条硬约束：按必填 `version` 检出
+`refs/tags/v<version>` 并断言 manifest 一致（旧版取 main，导致 tag 与产物对不上），以及
+`--provenance` + `id-token: write` 让 npm 签发绑定证明。修订版 `6.9.0-r1` 在 semver 里是
+**预发布**，故每次必须显式 `--tag latest`，且 `^6.9.0` 不含它。细则见
+`docs/agents/maintainer-ops.md` §6。
 
 | 版本（tag） | 详细说明 |
 |---|---|
@@ -148,6 +152,7 @@ npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：
 | `v6.8.0-r3` | 装载期竞态修复（#36/PR #38，运行时行为有变）：`schemastery@3.19.0` 的 CJS 构建首行同步 `require()` ESM-only 的 `cosmokit`，而宿主 loader 用 `Promise.all` 并行创建插件条目；同批另有插件正在经 ESM 加载 cosmokit 时，该 require 抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，**整个插件不装载**（三工具 + vendored skill 全不可用，启动只留一行 `did not activate`）。修法（采纳 @knsew 的 #37，PR #38 接管）：`loadSchemastery()` 改 async，在同步 `require` 之前先 `await import()` 预热 cosmokit，随后 require 必命中已加载态；入口模块因此带**顶层 await**。相对 #37 补三处：① 预热解析锚点由 profile 根改为 **schemastery 入口**（cosmokit 是它的依赖，根上副本只是 npm 提升布局的巧合；pnpm 严格布局下根锚点解析失败会被 `catch` 吞掉、预热静默退化）；② 新增 T5⑨ 与 stub knob `schemasteryCosmokit: absent|hoisted|nested`（ESM-only cosmokit 替身 + schemastery 替身的顺序守卫，表达「require 前 cosmokit 必须已由 ESM 加载完毕」而不依赖 `require(esm)`；默认 `absent` 下既有用例零变化）；③ AGENTS §3 装载期口径与 §4 基线。红→绿三态实测：`main` 两布局皆红、#37 补丁在 nested 布局红、本版两布局皆绿。**本机复现不出真实竞态**（profile 里 117 个宿主模块在 boot 期已把 cosmokit 加载完；plain `Promise.all`、微任务错峰、fs 队列灌满、pass-through ESM hook、真 cordis loader 并发消费者全部试过，均绿）⇒ 这条用例证明的是「预热先于 require」这条契约，不是「在报告者 profile 上不再复现」，后者由报告者真机验证。测试 732 → **733**；vendor 树仍 v6.8.0 逐字节。**另记**：`engines.node` 原为 `>=20.0.0`，与真实链路不符（需 `require(esm)`，即 Node ≥22.12）——由 #40 处理 |
 | `v6.8.0-r4` | 环境声明与仓库约定修订（#41 / #39 / #42，**无运行时行为变更**）：① `engines.node` 由 `>=20.0.0` 校正为 **`>=22.12.0`**——装载链路 `index.js → require(schemastery) → schemastery 的 CJS 构建首行 require(ESM-only cosmokit)` 是 Node 的 `require(esm)`，22.12.0 起才默认开启；取插件自身下限而非宿主 `>=24.9.0`（0.2.1 宿主未声明 engines，照抄会无谓拦住 0.2.1 用户）。② CI 兼容 job `node20-compat` → **`node22-compat`**，`node-version` 钉死 `22.12.0`——上方 `test` job 跑 Node 22 最新版，与声明下限重复则发现不了「用了比 22.12 更新的 API」；原 `node20-compat` 常年绿但跑的是无 cosmokit 的 stub 树，永远走不到 `require(esm)` 一跳，属虚假安全感。job 名变更不影响分支保护（必需检查只有 `test`，已实读确认）。③ release 说明格式固化为「严谨口吻总结 + **每个 PR 一行**的变更列表 + 中英双语」，细则见 `docs/agents/maintainer-ops.md` §5。④ skeleton 用例断言同步 `>=22.12.0`；README 双语表格的 Node 版本要求同步。测试仍 733/733 |
 | `v6.9.0` | 上游同步（规则①）：vendor v6.9.0 逐字节（refs/tags/v6.9.0@ce92fb43e4ade9c701f4c869e286f13fce743c72），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.9.0`／`6.9.0`，`package.json.version` 同为 `6.9.0`；包装层 `v6.8.0-r1..r4` 四次修订按规则①归零。结构变化 1 项经人工确认后走 `--confirm-structural`：`skills/ppt-master/scripts/` 新增 `image_ocr.py`／`image_layers.py`／`image_normalization.py`（三者在上下游 workflows、references、scripts/README 内均有引用），删除 6.8.0 误入 vendor 的 `__pycache__`（`tts_backends/`、`image_backends/` 下的 `.pyc`）。`requirements.txt` 19 条**逐字不变** ⇒ `DIST_TO_IMPORT` 19/19 仍成立、本机 venv 无需重建；`MINIMUM_PYTHON`（硬编码 3.10）与上游声明一致、未动；`SKILL.md` 第 2 步仍是 `python3 "${SKILL_DIR}/scripts/attribution_guard.py"` ⇒ 入口技能正文的 `${SKILL_DIR}` 替换规则仍成立。测试 733 例：732 pass / 1 fail（`tools-setup-deps` 的 `envFileExists`，因本机存在 `~/.ppt-master/.env`；已在 main 的干净 worktree 上复现同一红，与本次同步无关）/ 0 skip；`verify-plugin --upstream .upstream/refs/tags/v6.9.0@ce92…` OK（problems 0、warnings 0）、`check-dsh-compat` warnings 0 |
+| `v6.9.0-r1` | npm 发布渠道（#48/#50/#51）：`package.json` 增 `publishConfig{access:public,registry:https://registry.npmjs.org}`；双语 README 安装段把 npm 提为方式一（semver 提示：`6.9.0-r1` 属预发布，`^6.9.0` 不含它）；新增 `.github/workflows/publish.yml` 在 CI 侧 `npm stage publish`（本机出口上行 ~23 KB/s，17.7 MB 传不出；Node 24 因 `npm stage` 需 npm≥11），维护者 2FA `npm stage approve`。workflow 按必填 `version` 检出 `refs/tags/v<version>` 并断言 manifest 版本一致——旧版从触发时的 main 取码，故已发布的 6.9.0 与 tag `v6.9.0` 不同树（出货文件差 README 双语与 package.json）；`id-token: write` + `--provenance` 由 npm 签发绑定 commit/workflow 的证明。另 `execSync` 的 `maxBuffer` 提到 64 MB（13107 文件清单超 1 MB 默认值，首次运行即踩到）。**无运行时行为变更**；npm `6.9.0` 是本规则生效前发布的包，无 provenance、不对应任何 tag |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/
