@@ -41,6 +41,10 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "node": ">=22.12.0"
   },

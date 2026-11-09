@@ -61,14 +61,19 @@ The skill surface is registered by `index.js` through `ctx.skills`: the vendored
 ### Install into DSH
 
 ```bash
-# Option 1: install from GitHub (recommended)
+# Option 1: npm (recommended; same source as the plugin market)
+dsh plugin --profile <name> add dsh-ppt-master-wrapper
+
+# Option 2: install from GitHub
 dsh plugin --profile <name> add https://github.com/SAXEM1997/dsh-ppt-master-wrapper.git
 
-# Option 2: local path link (development machines)
+# Option 3: local path link (development machines)
 dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 ```
 
-Option 3 — intranet mirror (optional, same source as GitHub): replace the URL with this repository's address on your intranet GitLab. Restart the session after installing and the `ppt-master` skill becomes visible to agents; the client half (config card) is loaded by the host **once after a restart** — afterwards saving configuration **takes effect without restarts**.
+Option 4 — intranet mirror (optional, same source as GitHub): replace the URL with this repository's address on your intranet GitLab. Restart the session after installing and the `ppt-master` skill becomes visible to agents; the client half (config card) is loaded by the host **once after a restart** — afterwards saving configuration **takes effect without restarts**.
+
+> **A note on npm versions**: wrapper revisions are named like `6.9.0-r1`, which semver treats as a **prerelease** (`6.9.0-r1 < 6.9.0`). The npm side always publishes the newest build under the `latest` tag, so `dsh plugin add dsh-ppt-master-wrapper` gets it; but a range such as `^6.9.0` will **not** include `6.9.0-r1` — pin the full version when you need a specific revision.
 
 ### First run
 

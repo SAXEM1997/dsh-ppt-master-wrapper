@@ -144,3 +144,45 @@ npm view @deepseek-ai/dsh@<版本> dependencies --json | grep loader
 **反例**（曾经的写法，别回去）：把根因分析、红→绿三态实测表、stub 替身设计理由全塞进
 release body——那属于 PR 描述和 AGENTS，release 页面只服务「要不要升级」这一个问题；
 或者按技术改动逐条列点、导致一个 PR 拆成四五条，读者看不出这版到底合了什么。
+
+## 6. npm 发布：先 stage，再由维护者批准
+
+GitHub Release 与 npm 是两条独立渠道：Release 回答「要不要升级」，npm 让**插件市场**能解析
+版本、比对更新并一键安装。发版时两条都要走。
+
+**认证**：用 npm granular access token（`npm_…`），只经环境变量传，**不写进仓库任何文件**。
+本机默认 registry 是镜像站（`registry.npmmirror.com`），**镜像不能发布**——`package.json` 的
+`publishConfig.registry` 已钉死 `https://registry.npmjs.org`，`npm publish` 与 `npm stage publish`
+都会跟随它，不必每次手写 `--registry`。
+
+**先 stage，把 2FA 证明推迟到批准那一刻**：
+
+```bash
+export NPM_TOKEN='npm_…'
+npm stage publish --tag latest --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
+# → 输出 stage id
+npm stage list --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
+```
+
+维护者批准（需 2FA），或拒绝：
+
+```bash
+npm stage approve <stage-id>     # 批准后正式发布
+npm stage reject  <stage-id>     # 拒绝：该版本号不会被占用，改完可重发
+```
+
+**版本号的坑（必读）**：本仓库修订版形如 `6.9.0-r1`，semver 视其为**预发布**
+（`6.9.0-r1 < 6.9.0`）。因此 ① 每次发布都必须显式 `--tag latest`，否则 `npm i <pkg>`
+会停在旧的正式版；② `^6.9.0` 这类范围**不会**包含 `6.9.0-r1`，要锁定修订版必须写全。
+
+**发布前必查**（三条，任一失败都会把坏包发出去）：
+
+```bash
+npm pack --dry-run                 # 看 tarball 体积与总文件数
+find skills -type f | wc -l        # 与上面 skills/ 的文件数逐一对齐——vendor 必须完整，
+                                   # 少一个文件，装上后 attribution_guard.py 完整性门必失败
+npm i ./dsh-ppt-master-wrapper-<ver>.tgz   # 干净目录装一次；import 入口应打印 name/inject/Config
+```
+
+`files` 白名单已含 `skills`/`scripts`/`lib`/`cordis.patch.yml`/`static` 与双语 README；
+`tests/` 与 `docs/` 不进包。tarball 约 17–18 MB（vendor 压缩后），远低于 registry 上限。

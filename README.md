@@ -61,14 +61,19 @@ flowchart TB
 ### 安装到 DSH
 
 ```bash
-# 方式一：GitHub 直接安装（推荐）
+# 方式一：npm（推荐，插件市场同源）
+dsh plugin --profile <name> add dsh-ppt-master-wrapper
+
+# 方式二：GitHub 直接安装
 dsh plugin --profile <name> add https://github.com/SAXEM1997/dsh-ppt-master-wrapper.git
 
-# 方式二：本地路径 link（开发机）
+# 方式三：本地路径 link（开发机）
 dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 ```
 
-方式三——内网镜像（可选，与 GitHub 同源）：把上面的 URL 换成内网 GitLab 上本仓库的地址即可。安装后重启会话，`ppt-master` 技能即对 agent 可见；客户端半边（配置卡片）须宿主**重启一次**才首次装载——之后保存配置即**免重启生效**。
+方式四——内网镜像（可选，与 GitHub 同源）：把上面的 URL 换成内网 GitLab 上本仓库的地址即可。安装后重启会话，`ppt-master` 技能即对 agent 可见；客户端半边（配置卡片）须宿主**重启一次**才首次装载——之后保存配置即**免重启生效**。
+
+> **npm 版本号提示**：包装层修订版形如 `6.9.0-r1`，在 semver 里属**预发布**（`6.9.0-r1 < 6.9.0`）。npm 侧始终把最新版发到 `latest` 标签，所以 `dsh plugin add dsh-ppt-master-wrapper` 拿到的是最新版；但 `^6.9.0` 这类范围**不会**包含 `6.9.0-r1`，需要锁定时请写全版本号。
 
 ### 首次使用
 
