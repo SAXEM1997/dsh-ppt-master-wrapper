@@ -1,0 +1,72 @@
+name: Publish
+
+# 手动触发：本 workflow 只做一件事——把**当前 main** 的包体 stage 到 npm，
+# 再由维护者带 2FA 执行 `npm stage approve <stage-id>` 完成发布。
+#
+# 为什么在 CI 而不是本机（issue #49）：维护机出口上行被限到 ~23 KB/s，
+# 17.7 MB 的 tarball 传不完（2026-11-09 三次实测均在中途 ECONNRESET）；
+# runner 上行正常。tarball 体积压不下来——主体是 vendor 的 templates/，
+# 而 vendor 面必须逐字节完整（attribution_guard.py 完整性门）。
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: 'npm dist-tag（修订版如 6.9.0-r1 属 semver 预发布，必须显式 latest）'
+        required: true
+        default: latest
+      dry_run:
+        description: '只校验包体，不 stage'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 而非 22.12：`npm stage` 是 npm >= 11 的能力，Node 22.12 自带的
+      # npm 10 没有该子命令。这里只打包/暂存，不运行插件，与 engines.node 无关。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Show toolchain
+        run: |
+          node --version
+          npm --version
+
+      # vendor 完整性前置：`files` 白名单若漏掉 skills/ 下任何文件，装上的插件会在
+      # attribution_guard.py 完整性门上失败——那是**用户侧**才炸，本地测试全绿也发现不了。
+      - name: Verify the vendored tree is packaged whole
+        run: |
+          node - <<'JS'
+          const { execSync } = require('node:child_process')
+          const onDisk = execSync('find skills -type f | wc -l').toString().trim()
+          const meta = JSON.parse(execSync('npm pack --dry-run --json').toString())
+          const p = Array.isArray(meta) ? meta[0] : meta
+          const inTarball = (p.files || []).filter((f) => f.path.startsWith('skills/')).length
+          console.log(`package: ${p.name}@${p.version}  tarball=${(p.size / 1048576).toFixed(1)}MB  files=${p.entryCount}`)
+          console.log(`vendor files: on disk=${onDisk}  in tarball=${inTarball}`)
+          if (onDisk !== String(inTarball)) {
+            console.error('FAIL: 打包后的 vendor 文件数与磁盘不一致——完整性门会在用户侧失败')
+            process.exit(1)
+          }
+          JS
+
+      - name: Stage on npm
+        if: ${{ !inputs.dry_run }}
+        run: npm stage publish --tag "${{ inputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Next step
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "已暂存。发布需要维护者带 2FA 批准："
+          echo "  npm stage list"
+          echo "  npm stage approve <stage-id>"
