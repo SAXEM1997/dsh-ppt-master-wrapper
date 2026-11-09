@@ -145,40 +145,76 @@ npm view @deepseek-ai/dsh@<版本> dependencies --json | grep loader
 release body——那属于 PR 描述和 AGENTS，release 页面只服务「要不要升级」这一个问题；
 或者按技术改动逐条列点、导致一个 PR 拆成四五条，读者看不出这版到底合了什么。
 
-## 6. npm 发布：先 stage，再由维护者批准
+## 6. npm 发布：CI 侧 stage，维护者 2FA 批准
 
 GitHub Release 与 npm 是两条独立渠道：Release 回答「要不要升级」，npm 让**插件市场**能解析
 版本、比对更新并一键安装。发版时两条都要走。
 
-**认证**：用 npm granular access token（`npm_…`），只经环境变量传，**不写进仓库任何文件**。
-本机默认 registry 是镜像站（`registry.npmmirror.com`），**镜像不能发布**——`package.json` 的
-`publishConfig.registry` 已钉死 `https://registry.npmjs.org`，`npm publish` 与 `npm stage publish`
-都会跟随它，不必每次手写 `--registry`。
+### 为什么上传在 CI 而不在本机
 
-**先 stage，把 2FA 证明推迟到批准那一刻**：
+维护机出口上行被限到 ~23 KB/s（下载 1 MB/s；同出口对 Cloudflare 也是 ~52 KB/s），17.7 MB 的
+tarball 传不完——2026-11-09 三次 `npm stage publish` 全部在中途 `ECONNRESET`。tarball 体积压
+不下来：主体是 vendor 的 `templates/`，而 vendor 必须逐字节完整。runner 上行正常，故上传走 CI。
+
+### 流程
+
+```bash
+# 1. 版本号联动后合入 main，并在合并后的 commit 上打 tag
+#    ① package.json.version ② lib/client.js 的 PLUGIN_VERSION ③ README 双语与 AGENTS §5 表格
+
+# 2. 触发（version 必填，必须与 tag 完全一致）
+gh workflow run publish.yml -f version=6.9.0-r1 -f dist_tag=latest
+
+# 3. 从日志取 stage id
+gh run view <run-id> --log | grep "staged with id"
+
+# 4. 维护者带 2FA 批准
+npm stage approve <stage-id> --registry=https://registry.npmjs.org
+```
+
+`dry_run=true` 只跑包体校验、不 stage。拒绝用 `npm stage reject <stage-id>`：该版本号不会被
+占用，改完可重发。
+
+### workflow 的两条硬约束
+
+- **必须钉 tag**。`version` 是必填输入，checkout 直接取 `refs/tags/v<version>`，随后断言
+  `package.json.version` 与之一致。旧版不给 `ref`，取的是触发那一刻的 main——2026-11-09 发布的
+  `6.9.0` 因此从 `f5ea5c1` 打出，而 tag `v6.9.0` 指向 `821ee68`，两者出货文件不同（README 双语、
+  `package.json` 的 `publishConfig`），「npm 上的包对应哪个 commit」永久不可考。tag 不存在则
+  checkout 直接失败，想漂都漂不了。
+- **必须开 provenance**。`permissions.id-token: write` + `npm stage publish --provenance`：npm 经
+  OIDC 签发把包绑定到 commit、workflow 与运行记录的签名证明。
+
+### 版本号的坑（必读）
+
+本仓库修订版形如 `6.9.0-r1`，semver 视其为**预发布**（`6.9.0-r1 < 6.9.0`）。因此 ① 每次发布
+都必须显式 `--tag latest`，否则 `npm i <pkg>` 会停在旧的正式版；② `^6.9.0` 这类范围**不会**
+包含 `6.9.0-r1`，要锁定修订版必须写全。
+
+### 认证与 registry
+
+token 只走环境变量或 CI secret，**不写进仓库任何文件**。`publishConfig.registry` 已钉死
+`https://registry.npmjs.org`，`npm publish` / `npm stage publish` 跟随它；但
+**`npm stage list|approve|reject` 不读 `publishConfig`**——本机默认 registry 是镜像站
+（`registry.npmmirror.com` 没有 `/-/stage` 端点，会 404），故这几条必须显式
+`--registry=https://registry.npmjs.org`。
+
+### 本机直发（备用路径）
+
+上行恢复后可以直接发，省掉 CI 一跳：
 
 ```bash
 export NPM_TOKEN='npm_…'
 npm stage publish --tag latest --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
-# → 输出 stage id
-npm stage list --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
 ```
 
-维护者批准（需 2FA），或拒绝：
+代价是**没有 provenance**——离开 GitHub Actions 就没有 OIDC 身份，包无法被签名绑定到 commit。
+所以 CI 仍是默认路径。
+
+### 发布前必查（workflow 已自动执行前两条）
 
 ```bash
-npm stage approve <stage-id>     # 批准后正式发布
-npm stage reject  <stage-id>     # 拒绝：该版本号不会被占用，改完可重发
-```
-
-**版本号的坑（必读）**：本仓库修订版形如 `6.9.0-r1`，semver 视其为**预发布**
-（`6.9.0-r1 < 6.9.0`）。因此 ① 每次发布都必须显式 `--tag latest`，否则 `npm i <pkg>`
-会停在旧的正式版；② `^6.9.0` 这类范围**不会**包含 `6.9.0-r1`，要锁定修订版必须写全。
-
-**发布前必查**（三条，任一失败都会把坏包发出去）：
-
-```bash
-npm pack --dry-run                 # 看 tarball 体积与总文件数
+npm pack --dry-run                 # tarball 体积与总文件数
 find skills -type f | wc -l        # 与上面 skills/ 的文件数逐一对齐——vendor 必须完整，
                                    # 少一个文件，装上后 attribution_guard.py 完整性门必失败
 npm i ./dsh-ppt-master-wrapper-<ver>.tgz   # 干净目录装一次；import 入口应打印 name/inject/Config

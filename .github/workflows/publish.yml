@@ -1,7 +1,14 @@
 name: Publish
 
-# 手动触发：本 workflow 只做一件事——把**当前 main** 的包体 stage 到 npm，
-# 再由维护者带 2FA 执行 `npm stage approve <stage-id>` 完成发布。
+# 手动触发：把**指定 tag** 的包体 stage 到 npm，再由维护者带 2FA 执行
+# `npm stage approve <stage-id>` 完成发布。
+#
+# 为什么钉 tag 而不是当前 main（2026-11-09 的事故）：`workflow_dispatch` 的
+# `actions/checkout` 不给 ref 时取触发那一刻的 main，于是「npm 上的包对应哪个
+# commit」永久不可考——已发布的 6.9.0 是从 main 的 f5ea5c1 打的，而 tag v6.9.0
+# 指向 821ee68；两者出货文件不同（README 双语、package.json 的 publishConfig）。
+# 现在 `version` 是必填项，checkout 直接取 `refs/tags/v<version>` 并断言
+# package.json.version 与之一致：tag 不存在则 checkout 直接失败，想漂都漂不了。
 #
 # 为什么在 CI 而不是本机（issue #49）：维护机出口上行被限到 ~23 KB/s，
 # 17.7 MB 的 tarball 传不完（2026-11-09 三次实测均在中途 ECONNRESET）；
@@ -10,6 +17,9 @@ name: Publish
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: '要发布的版本，须与 tag v<version> 及 package.json 一致（如 6.9.0-r1）'
+        required: true
       dist_tag:
         description: 'npm dist-tag（修订版如 6.9.0-r1 属 semver 预发布，必须显式 latest）'
         required: true
@@ -21,12 +31,34 @@ on:
 
 permissions:
   contents: read
+  # --provenance 用 OIDC 换签名：npm 侧据此签发可验证的证明，把包永久绑定到
+  # 这个 commit、这个 workflow、这次运行。没有它，「这包是从哪来的」只能靠人记。
+  id-token: write
 
 jobs:
   stage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+
+      # checkout 成功只证明 tag 存在，不证明它与包体一致：tag 打在旧 commit 上、
+      # 或 package.json 忘了改版本号，都会让「tag 说 6.9.0-r1、包里是 6.9.0」这种
+      # 错位一路走到 registry，且发布后不可撤销。
+      - name: Assert the tag matches the manifest
+        run: |
+          node -e '
+            const want = process.env.WANT;
+            const got = require("./package.json").version;
+            if (got !== want) {
+              console.error(`FAIL: tag 是 v${want}，但 package.json.version 是 ${got}`);
+              process.exit(1);
+            }
+            console.log(`version ok: ${got}`);
+          '
+        env:
+          WANT: ${{ inputs.version }}
 
       # Node 24 而非 22.12：`npm stage` 是 npm >= 11 的能力，Node 22.12 自带的
       # npm 10 没有该子命令。这里只打包/暂存，不运行插件，与 engines.node 无关。
@@ -64,7 +96,7 @@ jobs:
 
       - name: Stage on npm
         if: ${{ !inputs.dry_run }}
-        run: npm stage publish --tag "${{ inputs.dist_tag }}"
+        run: npm stage publish --tag "${{ inputs.dist_tag }}" --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -72,5 +104,5 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           echo "已暂存。发布需要维护者带 2FA 批准："
-          echo "  npm stage list"
+          echo "  npm stage list --registry=https://registry.npmjs.org"
           echo "  npm stage approve <stage-id>"
