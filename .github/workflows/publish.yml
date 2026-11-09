@@ -47,7 +47,11 @@ jobs:
           node - <<'JS'
           const { execSync } = require('node:child_process')
           const onDisk = execSync('find skills -type f | wc -l').toString().trim()
-          const meta = JSON.parse(execSync('npm pack --dry-run --json').toString())
+          // maxBuffer 必须放大：13107 个文件的清单 JSON 超过 execSync 默认的 1 MB，
+          // 截断后 JSON.parse 会失败（2026-11-09 首次运行即踩到）。
+          const meta = JSON.parse(
+            execSync('npm pack --dry-run --json', { maxBuffer: 64 * 1024 * 1024 }).toString(),
+          )
           const p = Array.isArray(meta) ? meta[0] : meta
           const inTarball = (p.files || []).filter((f) => f.path.startsWith('skills/')).length
           console.log(`package: ${p.name}@${p.version}  tarball=${(p.size / 1048576).toFixed(1)}MB  files=${p.entryCount}`)
