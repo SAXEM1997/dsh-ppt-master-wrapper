@@ -54,10 +54,13 @@
   更早是 `schemaOf()`，两代均实测；故 `get description()` 能跟上 volatile 换代
   （`ppt_master_info` / `ppt_master_check_env` 即此写法）。
 - **步骤级可见性 `when`（0.2.2-alpha.2+，本插件 scope 的唯一机制）**：
-  `tools.register(def, { when })` 后，宿主每步调 `tools.resolve({agent, signal})`，逐个
-  `await when(context)`；真才进本步可见集（投影与执行都过滤，隐藏工具调用按
-  `UNKNOWN_TOOL` 失败）。条件**抛错会让步骤准备失败**（`ToolActivationError`），故 `when`
-  必须同步、永不抛、一切不确定收敛成 `false`。**0.2.1 及更早没有 `when`/`resolve`**
+  `tools.register(def, { when })` 后，宿主每步（`preStep`）调一次
+  `tools.resolve({agent, modelSelection, signal})`，对每个已注册工具 `await when(context)`；
+  真才进本步可见集。**同一步所有工具复用同一个 context 对象**（故判定器可按 context 记忆
+  本步结论），`toolSet` 在工具批结束后 `dispose()`。执行侧 `tools.executable(name, scope,
+  toolSet)` 只看本步准入集：**带 `when` 的工具在「步外」（无 `toolSet`）一律不可执行**，
+  模型侧调用隐藏工具按 `UNKNOWN_TOOL` 失败（README 已如此描述）；条件抛错则包成
+  `ToolActivationError`。故 `when` 必须同步、永不抛、一切不确定收敛成 `false`。**0.2.1 及更早没有 `when`/`resolve`**
   （npm 0.2.1-rc.5 实测 0 处），第二参会被静默忽略 ⇒ `selected` 失效且无报错；本插件
   因此把 `engines.dsh` 抬到 `>=0.2.2-rc.1`，并在 `apply` 用 `assertWhenCapable()`
   自检 `tools.resolve`（缺失即 fail-loud）。`when` 里不要 `await`：异步精化（
@@ -92,7 +95,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 700 tests / 698 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 697 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 702 tests / 700 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 699 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 

@@ -361,6 +361,34 @@ test('judgeAgent: 无 cwd 时不调用 resolveByPath', async () => {
   assert.equal(called, false);
 });
 
+test('resolved 记录必带 basis（正缓存据此判断失效条件）', async () => {
+  const member = scope.resolveNow({
+    config: SELECTED_W1,
+    agent: { id: 's-in-w1', cwd: '/elsewhere' },
+    workspaces: WORKSPACES,
+    pathMap: PATH_MAP,
+  });
+  assert.equal(member.basis, 'member');
+
+  const byPath = scope.resolveNow({
+    config: SELECTED_W1,
+    agent: { id: 'nobody', cwd: '/workspace/ppt-master' },
+    workspaces: WORKSPACES,
+    pathMap: PATH_MAP,
+  });
+  assert.equal(byPath.status, 'resolved');
+  assert.equal(byPath.basis, 'path');
+
+  const refined = await scope.judgeAgent({
+    config: SELECTED_W1,
+    agent: { id: 'nobody', cwd: '/workspace/ppt-master' },
+    workspaces: WORKSPACES,
+    pathMap: PATH_MAP,
+    resolveByPath: async () => ({ id: 'w1' }),
+  });
+  assert.equal(refined.basis, 'path');
+});
+
 test('judgeAgent: 判定结果带 cwd（诊断用；供宿主侧解释不可见原因）', async () => {
   const judgement = await scope.judgeAgent({
     config: SELECTED_W1,

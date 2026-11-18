@@ -157,9 +157,9 @@ After a plugin upgrade adds new configuration fields, compare and complete exist
 - Editing only `lib/client.js` — **no** (host hot-updates via stat polling, ~500 ms);
 - Editing `package.json`'s `dsh.client` / `exports["./client"]` declarations, or the profile patch by hand — **yes**.
 
-**Card missing / unavailable** — check in order: ① just edited the `package.json` declaration surface? restart DSH (most common); ② does the host Plugins page provide the `plugins.bundle.config` slot; ③ the card shows "configuration channel not connected" = host lacks the `configForms` service (optional wiring, everything else unaffected); ④ old hosts that ignore `dsh.client` degrade quietly — plugin functionality is unaffected, configure via profile patch or upgrade the host.
+**Card missing / unavailable** — check in order: ① just edited the `package.json` declaration surface? restart DSH (most common); ② does the host Plugins page provide the `plugins.bundle.config` slot; ③ the card shows "configuration channel not connected" = host lacks the `configForms` service (optional wiring, everything else unaffected); ④ a host below 0.2.2-rc.1 refuses to load the **whole plugin** (not just the card) — upgrade the host; only a missing `dsh.client` declaration degrades to "no card, everything else works".
 
-**Other**: a failed plugin load that takes the skill surface down with it is usually `@deepseek-ai/schemastery` controlled-resolution failure — confirm the package exists in the host profile's `node_modules` and that `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` point at it (details in [AGENTS.md](AGENTS.md) §3). **Missing entry skill**: if the host rejects the synthetic candidate without `resourceBase`, only the entry skill is absent — the vendored skill and the tools are unaffected.
+**Other**: a failed plugin load that takes the skill surface down with it is usually `@deepseek-ai/schemastery` resolution failure — an installed plugin resolves it by **bare import** from the profile's `node_modules` (the same path first-party plugins use), so first confirm the profile actually hoists the package; `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` are only the fallback for `link:` development setups and are normally empty inside the host process (details in [AGENTS.md](AGENTS.md) §3). **Missing entry skill**: if the host rejects the synthetic candidate without `resourceBase`, only the entry skill is absent — the vendored skill and the tools are unaffected.
 
 ## Syncing a new upstream release
 
@@ -194,7 +194,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (700 cases)
+├── tests/                            # full node:test suite (702 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -208,11 +208,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (700/700 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
+node --test tests/*.test.mjs          # full suite (702/702 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 700/698/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 702/700/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 
