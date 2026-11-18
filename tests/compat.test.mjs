@@ -446,7 +446,7 @@ test('runCompatCheck 基线: stub SDK 全绿——三真实工具过 register、
 // 本插件只经 `tools.register(def, { when })` + 宿主 `tools.resolve({agent,signal})`
 // 收窄；0.2.1 没有 `resolve`（npm 实测 0 处），会静默忽略 when 第二参 ⇒ selected
 // 静默失效。故 compat 必须在真/替身 ToolRuntime 上验证「false 被排除、true 被纳入」，
-// 并在缺席时报 problem（本插件的 `dsh.engines.dsh >= 0.2.2-rc.1` 押在它上面）。
+// 并在缺席时报 problem（本插件的 `engines.dsh >= 0.2.2-rc.1`（顶部字段） 押在它上面）。
 
 test('runCompatCheck: 步骤级可见性——when=false 被排除、when=true 被纳入（stub ToolRuntime）', async () => {
   const [sdk, fixture] = await Promise.all([makeStubSdk(), makePositiveFixture()]);

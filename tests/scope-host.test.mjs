@@ -38,11 +38,16 @@ function makeRegistry({ workspaces = [], resolveByPath, listThrows = false } = {
 /** 假根 ctx：`inject` 立即（或延迟）回调；返回句柄供测试手动驱动注入。 */
 function makeCtx({ registry, defer = false } = {}) {
   const pending = [];
+  const handlers = new Map();
   const ctx = {
     inject(keys, callback) {
       assert.deepEqual(keys, ['workspaceRegistry']);
       if (defer) pending.push(callback);
       else callback({ workspaceRegistry: registry });
+    },
+    on(event, handler) {
+      handlers.set(event, handler);
+      return () => handlers.delete(event);
     },
   };
   return {
@@ -51,6 +56,9 @@ function makeCtx({ registry, defer = false } = {}) {
       const list = pending.splice(0);
       for (const callback of list) callback({ workspaceRegistry: registry });
       return list.length;
+    },
+    emit(event) {
+      handlers.get(event)?.();
     },
   };
 }
@@ -244,7 +252,7 @@ test('dispose 后 when 恒 false，且不排精化', () => {
   handle.dispose();
   assert.equal(handle.when({ agent: agent('a1', '/repo/a') }), false);
   assert.equal(calls.list, 0);
-  assert.deepEqual(handle.hostState(), { state: 'unsupported', reason: '作用域已释放' });
+  assert.deepEqual(handle.hostState(), { state: 'pending', reason: '作用域已释放' });
 });
 
 test('when 永不抛：agent 的 id 取用抛错时按不可见处理', () => {
@@ -259,4 +267,137 @@ test('when 永不抛：agent 的 id 取用抛错时按不可见处理', () => {
   };
   assert.equal(handle.when({ agent: hostile }), false);
   assert.equal(handle.when({ get agent() { throw new Error('boom'); } }), false);
+});
+
+test('global: 明确断言零注册表读取', () => {
+  const { registry, calls } = makeRegistry({ workspaces: [{ id: 'w1', path: '/a', sessionIds: [] }] });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'global', workspaceIds: ['w1'] } });
+  for (let i = 0; i < 5; i += 1) assert.equal(handle.when({ agent: agent('a', '/a') }), true);
+  assert.equal(calls.list, 0, 'global 不读注册表');
+});
+
+test('注入晚到：flush 之前 fail-closed，到达后老会话按路径命中', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/a', sessionIds: [] }];
+  const { ctx, flush } = makeCtx({ registry: makeRegistry({ workspaces }).registry, defer: true });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+  const user = agent('a1', '/repo/a');
+  assert.equal(handle.when({ agent: user }), false);
+  assert.equal(flush(), 1);
+  assert.equal(handle.when({ agent: user }), true);
+});
+
+test('缓存按 agent 对象：同 id 的新会话对象不继承旧的 realpath 命中（cwd 移出工作区）', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces, resolveByPath: async () => ({ id: 'w1' }) });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+
+  const first = agent('reused-id', '/repo/link');
+  assert.equal(handle.when({ agent: first }), false);
+  await tick();
+  assert.equal(handle.when({ agent: first }), true);
+
+  const second = agent('reused-id', '/repo/outside');
+  assert.equal(handle.when({ agent: second }), false, '同 id 新对象不得继承旧结论');
+});
+
+test('精化命中后 cwd 消失：无 cwd 一律不可见（不得读旧缓存）', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces, resolveByPath: async () => ({ id: 'w1' }) });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+  const user = { id: 'a1', session: { header: { cwd: '/repo/link' } } };
+  handle.when({ agent: user });
+  await tick();
+  assert.equal(handle.when({ agent: user }), true);
+
+  delete user.session.header.cwd;
+  assert.equal(handle.when({ agent: user }), false, '同一对象丢 cwd 后不得继续可见');
+});
+
+test('确定性 no-match 落负缓存：后续步骤不再触发 resolveByPath', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry, calls } = makeRegistry({ workspaces, resolveByPath: async () => undefined });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+  const user = agent('a1', '/repo/elsewhere');
+  assert.equal(handle.when({ agent: user }), false);
+  await tick();
+  assert.equal(calls.resolveByPath.length, 1);
+  for (let i = 0; i < 5; i += 1) assert.equal(handle.when({ agent: user }), false);
+  assert.equal(calls.resolveByPath.length, 1, 'no-match 不重试');
+});
+
+test('瞬时失败重试有界：最多 MAX_UNRESOLVED_RETRIES 次', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry, calls } = makeRegistry({
+    workspaces,
+    resolveByPath: async () => {
+      throw new Error('boom');
+    },
+  });
+  const { ctx } = makeCtx({ registry });
+  let t = 0;
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+    now: () => t,
+  });
+  const user = agent('a1', '/repo/x');
+  for (let i = 0; i < 6; i += 1) {
+    assert.equal(handle.when({ agent: user }), false);
+    t += 3000;
+    await tick();
+  }
+  assert.equal(calls.resolveByPath.length, 3, '瞬时失败最多重试 3 次');
+});
+
+test('一步一结论：同一 context 对象内精化落定也不改变本步答案', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces, resolveByPath: async () => ({ id: 'w1' }) });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+  const context = { agent: agent('a1', '/repo/link') };
+  assert.equal(handle.when(context), false);
+  await tick();
+  assert.equal(handle.when(context), false, '同一步（同一 context）三工具结论必须一致');
+  assert.equal(handle.when({ agent: context.agent }), true, '下一步用新 context 才看到精化结果');
+});
+
+test('非法配置：selected + 空名单 fail-closed，且只告警一次', () => {
+  const warnings = [];
+  const { ctx } = makeCtx({ registry: makeRegistry({ workspaces: [] }).registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'bogus', workspaceIds: [] },
+    warn: (message) => warnings.push(message),
+  });
+  assert.equal(handle.when({ agent: agent('a1', '/repo/a') }), false);
+  assert.equal(handle.when({ agent: agent('a2', '/repo/b') }), false);
+  assert.equal(warnings.filter((line) => /配置非法/.test(line)).length, 1);
+});
+
+test('volatile 换代：invalidate 后负缓存作废，新工作区可命中', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/a', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces, resolveByPath: async () => undefined });
+  const { ctx, emit } = makeCtx({ registry });
+  const config = { mode: 'selected', workspaceIds: ['w1'] };
+  const handle = mountToolScope(ctx, { scopeConfig: config });
+  const user = agent('a1', '/repo/b');
+  assert.equal(handle.when({ agent: user }), false);
+  await tick();
+
+  workspaces.push({ id: 'w2', path: '/repo/b', sessionIds: [] });
+  config.workspaceIds = ['w1', 'w2'];
+  emit('loader/volatile-update');
+  assert.equal(handle.when({ agent: user }), true, '换代后按新清单重判');
 });

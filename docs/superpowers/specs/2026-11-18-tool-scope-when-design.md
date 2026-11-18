@@ -1,6 +1,6 @@
 # 工具可见范围改用步骤级 `when`（2026-11-18）
 
-状态：已定稿（方案 1：全量迁移，引擎下限抬到 `>=0.2.2-rc.1`）。
+状态：已实现（PR #58；方案 1：全量迁移，引擎下限抬到顶部 `engines.dsh >=0.2.2-rc.1`）。
 
 ## 1. 为什么改
 
@@ -30,13 +30,15 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
 ## 2. 决策与代价
 
 - **全量迁移**：删掉 restrict/guard/看门狗/生命周期机制，不保留双轨。
-- **引擎下限**：`dsh.engines.dsh` 从 `>=0.1.1-rc.1` 抬到 **`>=0.2.2-rc.1`**。
+- **引擎下限**：顶部 `engines.dsh` 从 `>=0.1.1-rc.1` 抬到 **`>=0.2.2-rc.1`**（`dsh.engines`
+  不是宿主兼容门读取的字段——`dsh-app-boot` 与插件市场都只读顶部 `engines.dsh`）。
   0.2.1 的 dsh-tools **没有** `when`/`resolve`（npm 实测 0.2.1-rc.5 内 0 处），
   第二参会被静默忽略 ⇒ `selected` 失效且无报错。这是最坏的失败方式，故不允许
   「带 when 但宿主不认」的形态存在。
-- **自证兜底**：宿主是否强制校验 `dsh.engines` 未经验证，因此 `apply` 仍要自检
-  `typeof ctx.tools.resolve === 'function'`；缺失即 **fail-loud 抛错**（整插件不激活，
-  命名「需要 DSH ≥ 0.2.2（tools.resolve）」），不静默放行。
+- **自证兜底**：兼容门只挡得住「安装/清单」路径；link: 形态或跳过校验的宿主仍可能把
+  0.2.1 拉起来，因此 `apply` 仍自检 `typeof ctx.tools.resolve === 'function'`；缺失即
+  **fail-loud 抛错**（整插件不激活，命名「需要 DSH ≥ 0.2.2（tools.resolve）」），
+  不静默放行。
 
 ## 3. 目标语义（与现状等价的部分）
 
@@ -49,26 +51,31 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
 
 ## 4. 新结构
 
-`lib/scope.js`（纯逻辑，保留）：`normalizeScope` / `isVisible` / `projectAgent` /
+`lib/scope.js`（纯逻辑，保留）：`readScopeConfig` / `isVisible` / `projectAgent` /
 `readWorkspaces` / `resolveNow`（同步：成员 + 字符串路径）/ `judgeAgent`（异步：成员 +
 `resolveByPath`）。
 
 `lib/scope-host.js`（重写，目标 ≤ 320 行）导出 `mountToolScope(ctx, options)`：
 
-- `options`: `{ scopeConfig, warn }`；返回 `{ when, dispose, hostState }`。
+- `options`: `{ scopeConfig, warn, now }`；返回 `{ when, invalidate, dispose, hostState }`。
 - `when(context)`：**同步**、**永不抛**，按下述顺序回答：
   1. 读配置（现读 volatile）；`mode=global` ⇒ `true`（不碰注册表）。
   2. `projectAgent(context?.agent)` 无 id ⇒ `false`。
   3. `registry.list()` 现读 → `readWorkspaces` + `pathMap`；`resolveNow` 命中 ⇒
      `isVisible(config, workspaceId)`。
   4. 未命中且有 cwd ⇒ 触发一次**异步精化**（`judgeAgent` + `resolveByPath`，按
-     agent id + 代际去重），本步返回 `false`；后续步骤读缓存。
+     **agent 对象**单飞 + 2s 节流 + 代际），本步返回 `false`；后续步骤读缓存。
   5. 任何异常（list/resolveByPath/配置解引用）⇒ `false`。
 - 异步精化只提升符号链接/拼写差异的命中率，不参与 fail-open：没跑完就按不可见。
-- 缓存：`agentId → { workspaceId?, status, generation }`；代际在 mount、配置变更
-  （`loader/volatile-update`）与 `invalidate()` 时递增；落败代际不写缓存。
-- 注入：`ctx.inject(['agents', 'workspaceRegistry'], cb)` 只为后续精化拿服务；
-  注入未到 ⇒ `selected` 全部 fail-closed（无定时器、无告警刷屏）。
+- 缓存：**按 agent 对象**（WeakMap）记账，不用 agent id——宿主会跨 clear/压缩/resume
+  复用 id，按 id 会让曾精化命中的会话在 cwd 移出工作区后仍可见。正缓存只存命中；
+  `no-match` 是确定性结论（不重试），`unresolved` 最多重试 3 次。代际在 mount、
+  注入到达、`loader/volatile-update` 与 `invalidate()` 时递增；落败代际不写缓存。
+  无 cwd 时不读任何缓存。
+- 一步一结论：宿主对同一次 `resolve()` 的所有工具复用同一个 `context` 对象，故按
+  context（WeakMap）缓存本步答案，避免精化在微任务里落定后同一步出现部分可见。
+- 注入：只用 `ctx.inject(['workspaceRegistry'], cb)`；注入未到 ⇒ `selected` 全部
+  fail-closed（无定时器）。
 
 ## 5. 删除面
 
@@ -98,10 +105,15 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
   4. `when` 内异常 ⇒ false，不抛；
   5. 异步精化：`resolveByPath` 命中后下一步可见；抛错保持不可见；
   6. 配置热变更 ⇒ 下一步生效（volatile 现读）；
-  7. 代际：mount/invalidate 后旧精化结果不写缓存；
-  8. 能力自检：`tools.resolve` 缺失 ⇒ `mountToolScope` 抛命名错误。
+  7. 代际：mount/invalidate 后旧精化结果不写缓存；volatile 事件使负缓存作废；
+  9. 缓存键：同 id 的新 agent 对象不继承旧精化结论；cwd 消失后不得读缓存；
+  10. 负缓存：确定性 no-match 不重试，瞬时失败最多 3 次；
+  11. 一步一结论：同一 context 对象内精化落定不改变本步答案；
+  12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次；
+  8. 能力自检：`tools.resolve` 缺失 ⇒ `assertWhenCapable` 抛命名错误（`apply` 调用）。
 - compat：新 §7.7⑦ 断言 `resolve` 在场，并用 `when: false` 的探针工具验证被排除、
-  `when: true` 被纳入；stub 宿主缺 `resolve` 时记 note，不误报。
+  `when: true` 被纳入，并断言 when 收到的 context 就是 resolve 的 `{agent, signal}`；
+  stub 宿主缺 `resolve` 时记 **problem**（引擎下限押在它上面），不降级为 note。
 
 ## 8. 迁移顺序（一个 PR）
 

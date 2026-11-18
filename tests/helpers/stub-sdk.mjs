@@ -199,7 +199,8 @@ export async function buildStubSdk(modules, {
   superpowers = 'present', // 'present' | 'absent' | 'no-const'
   superpowersRank = 550,
   rejectBareTools = false,
-  // 工具执行模型（issue #31）：'single' = 0.2.1 及更早（tools.execute 自带实现、
+  // 工具执行模型（issue #31，历史形态；本插件自 2026-11-18 起不再用 execute）：
+  // 'single' = 0.2.1 及更早（tools.execute 自带实现、
   // 入参 {callId,name,arguments}）；'batch' = 0.2.2+ 外置 executor（tools.setExecutor
   // 先装 `@deepseek-ai/dsh-tool-executor-native` 替身、execute 入参 {calls:[…]}、结果
   // 在 results[i].result）。默认 single，保证既有用例与 CI 形态不变。
@@ -470,11 +471,19 @@ export async function buildStubSdk(modules, {
         '      signal?.throwIfAborted?.();',
         '      if (enabled) visible.set(name, definition);',
         '    }',
-        '    return { view: () => visible };',
+        '    let closed = false;',
+      '    const stepAgent = context?.agent;',
+      '    return {',
+      '      // 与真宿主同语义：view(scope) 只对本次 resolve 的 agent 给出非空集；',
+      '      // dispose 后一律空（compat 探针若忘了传 agent 或忘了 dispose，替身要能抓住）。',
+      '      view: (scope) => (closed || (scope !== undefined && scope !== stepAgent) ? new Map() : visible),',
+      '      dispose: () => { closed = true; },',
+      '    };',
         '  }',
       ] : []),
 
-      '  // 工具可见范围（2026-10-18）依赖的两条契约，逐字复刻真宿主：',
+      '  // 工具可见范围（2026-10-18）的旧契约（restrict/guard）——2026-11-18 起本插件改用',
+      '  // 步骤级 when，这两个方法仅为既有 stub 保真用例保留，不参与插件路径。',
       '  // ① restrict 只能在 agent 作用域调用（根 ctx 调用抛错）；② guard 在普通 ctx 可装、返回 disposer。',
       '  // M2a/M8 补强：scoped 半面——经 @deepseek-ai/dsh-scope 的 createScope 产出的 child ctx',
       '  // 带 `__dshScopeKey`（见下方 dsh-scope 替身），此时不再抛错而是安装一层掩码并返回',

@@ -59,7 +59,7 @@
   `UNKNOWN_TOOL` 失败）。条件**抛错会让步骤准备失败**（`ToolActivationError`），故 `when`
   必须同步、永不抛、一切不确定收敛成 `false`。**0.2.1 及更早没有 `when`/`resolve`**
   （npm 0.2.1-rc.5 实测 0 处），第二参会被静默忽略 ⇒ `selected` 失效且无报错；本插件
-  因此把 `dsh.engines.dsh` 抬到 `>=0.2.2-rc.1`，并在 `apply` 用 `assertWhenCapable()`
+  因此把 `engines.dsh` 抬到 `>=0.2.2-rc.1`，并在 `apply` 用 `assertWhenCapable()`
   自检 `tools.resolve`（缺失即 fail-loud）。`when` 里不要 `await`：异步精化（
   `judgeAgent` + `resolveByPath`）只排到后台，本步按不可见处理。
 - **schemastery 受控解析**：`index.js` 在模块加载期**先裸导入**
@@ -92,7 +92,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 686 tests / 684 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 685 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 697 tests / 695 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 694 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -171,7 +171,8 @@ npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：
 - 合成入口 `ppt-master-env` **不落盘**——`verify-plugin.mjs` 字节比对面零变化；
 - `sync-upstream.mjs` 不读取本插件产物（scope/venv 与同步零交互面）；
 - 默认 `scope.mode=global` 下**零新增日志**（`apply.test.mjs`「能力齐全时不得输出降级
-  日志」用例守护）；默认配置行为与"没有该特性"逐字一致。
+  日志」用例守护）；在 ≥0.2.2 宿主上，默认配置行为与"没有该特性"逐字一致（<0.2.2
+  会在装载期 fail-loud，这是有意的兼容门，不是降级）。
 - 默认 `venv` 配置（`enabled=false` + 合法默认路径）下同样**零日志**：`loader/volatile-update`
   订阅只在 `invalidReason` **变化且非 null** 时报一条（同一原因重放不刷）——由
   `apply.test.mjs`「配置改成非法路径 → 保存后立即 warn；同一原因不重复刷」用例守护。

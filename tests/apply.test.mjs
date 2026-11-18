@@ -119,6 +119,33 @@ test('apply: skills+tools 齐全 → provider 注册一次且 tools.register 恰
   }
 });
 
+test('apply: 宿主缺 tools.resolve ⇒ fail-loud（不允许 when 被静默忽略）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx } = makeCtx({ whenCapable: false });
+    assert.throws(
+      () => apply(ctx, { skillRoots: [root] }),
+      /tools\.resolve/,
+      '0.2.1 会静默忽略 when 第二参，必须拒绝装载而不是装作收窄成功',
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test('apply: 三个工具都拿到同一个 when 谓词（缺一即部分收窄）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    apply(ctx, { skillRoots: [root], scope: { mode: 'selected', workspaceIds: ['w1'] } });
+    assert.equal(calls.whens.length, 3);
+    assert.ok(calls.whens.every((predicate) => typeof predicate === 'function'));
+    assert.equal(new Set(calls.whens).size, 1, '三个注册必须共用一个判定器');
+  } finally {
+    await cleanup();
+  }
+});
+
 test('apply: scope.mode=selected 且无 registry 注入 ⇒ 工具仍注册，when fail-closed 且只告警一次', async () => {
   const { root, cleanup } = await makePositiveRoot();
   try {
@@ -148,7 +175,7 @@ test('apply: scope.mode=selected 且无 registry 注入 ⇒ 工具仍注册，wh
   }
 });
 
-test('apply: 未配置 scope ⇒ 零降级日志（默认 global 整段短路）', async () => {
+test('apply: 未配置 scope ⇒ 零降级日志（默认 global 恒可见）', async () => {
   const { root, cleanup } = await makePositiveRoot();
   try {
     const { ctx } = makeCtx();

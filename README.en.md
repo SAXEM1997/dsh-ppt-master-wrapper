@@ -126,9 +126,10 @@ The three `ppt_master_*` tools are registered **globally** by default. If most o
 
 Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible**. Failure policy (an explicit narrowing intent is never silently widened): registry not ready or unreadable, no `cwd`, path miss, empty list, or judgement not finished yet ⇒ invisible for that step (fail-closed), with a single `console.warn` when the registry is not ready; saving the config takes effect on the next step.
 
-Host floor: `scope` relies on per-step `when` (`tools.register(def, { when })` + `tools.resolve`), i.e. **DSH ≥ 0.2.2-rc.1**; older hosts lack it (0.2.1 silently ignores `when`), so this version declares the floor in `dsh.engines.dsh` and fails loud at load time instead of silently showing everything under `selected`.
+Host floor: `scope` relies on per-step `when` (`tools.register(def, { when })` + `tools.resolve`), i.e. **DSH ≥ 0.2.2-rc.1**; older hosts lack it (0.2.1 silently ignores `when`), so this version declares the floor in `engines.dsh` and fails loud at load time instead of silently showing everything under `selected`.
 
 Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; a symlinked `cwd` may be invisible for the first step and visible from the next one after async canonicalisation; calling a hidden tool now fails with the host's `UNKNOWN_TOOL` (no custom denial message); ids of deleted workspaces are ignored; the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
+
 ### Profile patch (the equivalent channel)
 
 Edit the profile's `cordis.patch.yml` and append (**write every field** — a patch `config` replaces wholesale; **restart DSH afterwards**):

@@ -785,7 +785,7 @@ export async function runCompatCheck(options = {}) {
   // 本插件只经 `tools.register(def, { when })` + 宿主 `tools.resolve({ agent, signal })`
   // 收窄：判定器被逐工具 `await`，为真才进入本步可见集。假宿主证明不了这一点，
   // 故在真实 ToolRuntime 上注册两个探针（when 恒 false / 恒 true）并 resolve 一次。
-  // `resolve` 缺席即宿主低于 0.2.2-alpha.2 —— 本插件（`dsh.engines.dsh >= 0.2.2-rc.1`）
+  // `resolve` 缺席即宿主低于 0.2.2-alpha.2 —— 本插件（`engines.dsh >= 0.2.2-rc.1`（顶部字段））
   // 会拒绝装载，这里必须报 problem 而不是记 note。
   try {
     const ctxScope = mount({ withSkills: false });
@@ -808,14 +808,22 @@ export async function runCompatCheck(options = {}) {
         },
         execute: async () => ({}),
       });
+      let seenContext;
       const releaseHidden = ctxScope.tools.register(definition('compat-when-hidden'), {
-        when: () => false,
+        when: (context) => {
+          seenContext = context;
+          return false;
+        },
       });
       const releaseShown = ctxScope.tools.register(definition('compat-when-shown'), {
         when: () => true,
       });
+      let selection;
       try {
-        const selection = await ctxScope.tools.resolve({ agent, signal });
+        selection = await ctxScope.tools.resolve({ agent, signal });
+        if (seenContext?.agent !== agent || seenContext?.signal !== signal) {
+          problems.push('§7.7⑦ when 收到的 context 不是 resolve 的 { agent, signal } 原样对象');
+        }
         const visible = [...selection.view(agent).keys()];
         if (visible.includes('compat-when-hidden')) {
           problems.push('§7.7⑦ when=false 的工具仍进入本步可见集（步骤级收窄失效）');
@@ -830,6 +838,7 @@ export async function runCompatCheck(options = {}) {
           );
         }
       } finally {
+        selection?.dispose?.();
         releaseHidden?.();
         releaseShown?.();
       }

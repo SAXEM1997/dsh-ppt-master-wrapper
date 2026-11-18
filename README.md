@@ -127,9 +127,10 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 
 `selected` 下：会话按「工作区 `sessionIds` 成员 → 会话 `cwd` 规范路径」两级判定归属，命中且 id 在名单里才可见——**不属于任何工作区的会话也看不到**。失败口径（明示收窄意图，答不出来时不静默放宽）：注册表未就绪或读取失败、无 `cwd`、路径未命中、名单为空、判定尚未完成 ⇒ 本步一律不可见（fail-closed），注册表未就绪只 `console.warn` 一次；配置保存后下一步生效。
 
-宿主下限：`scope` 依赖步骤级 `when`（`tools.register(def, { when })` + `tools.resolve`），即 **DSH ≥ 0.2.2-rc.1**；更早的宿主没有该能力（0.2.1 会静默忽略 `when`），本版本 `dsh.engines.dsh` 声明下限并在装载期 fail-loud，不会出现"配了 selected 却全可见"的静默失效。
+宿主下限：`scope` 依赖步骤级 `when`（`tools.register(def, { when })` + `tools.resolve`），即 **DSH ≥ 0.2.2-rc.1**；更早的宿主没有该能力（0.2.1 会静默忽略 `when`），本版本 `engines.dsh` 声明下限并在装载期 fail-loud，不会出现"配了 selected 却全可见"的静默失效。
 
 已知限制：只收窄**工具**不收窄技能条目；判定基于会话创建时的 `cwd`；符号链接的 `cwd` 首步可能不可见，异步规范化后下一步恢复；隐藏工具的调用会以宿主 `UNKNOWN_TOOL` 失败（不再有自定义拒绝文案）；已删除工作区的 id 被忽略；市场截图 `assets/screenshot-1-config-card.png` 待重制（卡片新增了可见范围节）。
+
 ### profile patch（等价通道）
 
 编辑 profile 的 `cordis.patch.yml` 追加（**字段写全**——patch 的 `config` 是整体替换语义；**保存后须重启 DSH**）：

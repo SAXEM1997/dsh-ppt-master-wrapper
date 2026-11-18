@@ -375,7 +375,7 @@ test('judgeAgent: 判定结果带 agentId 与 cwd（供诊断与 guard 回显）
 
 // ─── M5：throwing `toString` 不得穿透（「任何函数都不向外抛」不变量）──────
 //
-// 最坏路径：装配期 `syncMode()` → `readScopeConfig` 抛 ⇒ `mountToolScope` 抛 ⇒ `apply` 抛
+// 最坏路径：装配期 `readScopeConfig` 抛 ⇒ `when` 的 try 兜住（按不可见），不得让判定异常升格
 // ⇒ 整个插件（含 vendor 技能面）装载失败。敌意对象的 throwing `toString` 是纯逻辑层
 // 唯一还能漏出的转换点，故逐个导出钉死"不抛 + 既定失败形态"。
 
