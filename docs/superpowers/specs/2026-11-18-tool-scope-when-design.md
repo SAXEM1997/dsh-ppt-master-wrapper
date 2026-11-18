@@ -55,7 +55,7 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
 `readWorkspaces` / `resolveNow`（同步：成员 + 字符串路径）/ `judgeAgent`（异步：成员 +
 `resolveByPath`）。
 
-`lib/scope-host.js`（重写，目标 ≤ 320 行）导出 `mountToolScope(ctx, options)`：
+`lib/scope-host.js`（重写，约 320 行）导出 `mountToolScope(ctx, options)`：
 
 - `options`: `{ scopeConfig, warn, now }`；返回 `{ when, invalidate, dispose, hostState }`。
 - `when(context)`：**同步**、**永不抛**，按下述顺序回答：
@@ -65,11 +65,12 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
      `isVisible(config, workspaceId)`。
   4. 未命中且有 cwd ⇒ 触发一次**异步精化**（`judgeAgent` + `resolveByPath`，按
      **agent 对象**单飞 + 2s 节流 + 代际），本步返回 `false`；后续步骤读缓存。
-  5. 任何异常（list/resolveByPath/配置解引用）⇒ `false`。
+  5. `context.signal.aborted` ⇒ `false`（宿主已取消本步）。
+  6. 任何异常（list/resolveByPath/配置解引用）⇒ `false`。
 - 异步精化只提升符号链接/拼写差异的命中率，不参与 fail-open：没跑完就按不可见。
 - 缓存：**按 agent 对象**（WeakMap）记账，不用 agent id——宿主会跨 clear/压缩/resume
   复用 id，按 id 会让曾精化命中的会话在 cwd 移出工作区后仍可见。正缓存只存命中；
-  `no-match` 是确定性结论（不重试），`unresolved` 最多重试 3 次。代际在 mount、
+  `no-match` 与**注册表指纹**（工作区 id+路径的有序快照）绑定：指纹不变不重试，变了才重排；`unresolved` 最多重试 3 次。代际在 mount、
   注入到达、`loader/volatile-update` 与 `invalidate()` 时递增；落败代际不写缓存。
   无 cwd 时不读任何缓存。
 - 一步一结论：宿主对同一次 `resolve()` 的所有工具复用同一个 `context` 对象，故按
@@ -90,9 +91,9 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
 
 | 项 | 现状 | 迁移后 |
 |---|---|---|
-| 隐藏工具被调用 | 我们的 guard 返回中文解释 | 宿主 `UNKNOWN_TOOL`（解释移到 `check_env`/卡片与文档） |
+| 隐藏工具被调用 | 我们的 guard 返回中文解释 | 宿主 `UNKNOWN_TOOL`（不再有自定义解释；README 的「已知限制」说明成因） |
 | 0.2.1 及更早 | 可用（走 restrict/guard） | 拒绝装载（引擎下限 + apply 自检） |
-| 首轮可见性 | `agent/created` 被 await，首轮前判定 | 同步快路径（成员/字符串路径）即命中；仅符号链接 cwd 的首轮可能不可见，异步精化后下一轮恢复 |
+| 首轮可见性 | `agent/created` 被 await，首轮前判定 | 同步快路径（成员/字符串路径）即命中；符号链接 cwd 的首轮、或 `workspaceRegistry` 注入晚到的整段启动期可能不可见，异步精化/注入后恢复 |
 | 判定成本 | 事件驱动 | 每步每工具一次：global 常量返回；selected 走一次 `list()` + 字符串比较 |
 
 ## 7. 测试计划
@@ -108,12 +109,14 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
   7. 代际：mount/invalidate 后旧精化结果不写缓存；volatile 事件使负缓存作废；
   8. 能力自检：`tools.resolve` 缺失 ⇒ `assertWhenCapable` 抛命名错误（`apply` 调用）；
   9. 缓存键：同 id 的新 agent 对象不继承旧精化结论；cwd 消失后不得读缓存；
-  10. 负缓存：确定性 no-match 不重试（TTL 30s 后重排一次），瞬时失败最多 3 次；
+  10. 负缓存：no-match 与注册表指纹绑定（清单变化后重排），瞬时失败最多 3 次；
   11. 一步一结论：同一 context 对象内精化落定不改变本步答案；
   12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次。
 - compat：新 §7.7⑦ 断言 `resolve` 在场，并用 `when: false` 的探针工具验证被排除、
   `when: true` 被纳入，并断言 when 收到的 context 就是 resolve 的 `{agent, signal}`；
   stub 宿主缺 `resolve` 时记 **problem**（引擎下限押在它上面），不降级为 note。
+  该探针证明的是**宿主契约**；本插件自己的接线（三个工具都带 `when`）由
+  `verify-plugin` 对 `register(tool, options)` 的断言与 `scope-host` 集成测试覆盖。
 
 ## 8. 迁移顺序（一个 PR）
 

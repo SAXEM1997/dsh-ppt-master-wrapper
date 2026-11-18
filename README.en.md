@@ -52,7 +52,7 @@ The skill surface is registered by `index.js` through `ctx.skills`: the vendored
 
 | Dependency | Purpose | Notes |
 |---|---|---|
-| **DeepSeek Harness** | Host runtime | The config card needs **DSH ≥ 0.2.0-rc.2**; older hosts degrade quietly to "no card" with no other impact |
+| **DeepSeek Harness** | Host runtime | The plugin needs **DSH ≥ 0.2.2-rc.1** (`engines.dsh` plus a load-time `assertWhenCapable` gate). Older hosts refuse to load the **whole plugin** (all three tools and the vendored skill), because `when` would be ignored silently and scoping would stop working; stay on `v6.9.0-r1` if you must run 0.2.1 |
 | **Node.js ≥ 22.12** | Plugin & tool runtime | Pure built-ins, no npm dependencies; 22.12 is the load-path floor (`require(esm)`) |
 | **python3 ≥ 3.10** | Upstream scripts & integrity gate | `python3-venv` recommended (venv mode needs its ensurepip) |
 | **pip3** | Installing upstream Python deps | venv mode uses `<venv>/bin/pip3` instead, unaffected by PEP 668 |
@@ -194,7 +194,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (736 cases)
+├── tests/                            # full node:test suite (699 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -208,11 +208,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (736/736 with a real SDK on the machine)
+node --test tests/*.test.mjs          # full suite (699/699 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 736/734/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 699/697/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 

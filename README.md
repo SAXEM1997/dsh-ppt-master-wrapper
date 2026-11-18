@@ -52,7 +52,7 @@ flowchart TB
 
 | 依赖 | 用途 | 备注 |
 |---|---|---|
-| **DeepSeek Harness** | 运行宿主 | 配置卡片需 **DSH ≥ 0.2.0-rc.2**；更早版本安静降级为"无卡片"，其余功能不受影响 |
+| **DeepSeek Harness** | 运行宿主 | 插件本体需 **DSH ≥ 0.2.2-rc.1**（`engines.dsh` + 装载期 `assertWhenCapable` 双重把关）。更早宿主会**整插件拒绝装载**（三个工具与 vendored 技能都不可用），因为 `when` 会被静默忽略、范围隔离失效；仍在使用 0.2.1 的用户请停留在 `v6.9.0-r1` |
 | **Node.js ≥ 22.12** | 插件与工具运行时 | 纯内置模块，无 npm 依赖；22.12 是装载链路的下限（`require(esm)`） |
 | **python3 ≥ 3.10** | 上游脚本套件与完整性门 | 建议 `python3-venv` 可用（venv 模式依赖其 ensurepip） |
 | **pip3** | 安装上游 Python 依赖 | venv 模式下改用 `<venv>/bin/pip3`，不受 PEP 668 拦截 |
@@ -195,7 +195,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（736 用例）
+├── tests/                            # node:test 全套（699 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -209,11 +209,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 736/736）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 699/699；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 736/734/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 699/697/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 

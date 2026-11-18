@@ -259,11 +259,14 @@ function checkSkillLinks(skillDir, skillName, skillText) {
  * @returns {object|null} 已实例化的 provider（供 list/get 往返），不可用 → null。
  */
 function checkRegistration(root, problems) {
-  const registered = { providers: [], tools: [] };
+  const registered = { providers: [], tools: [], when: [] };
   const ctx = {
     skills: { registerProvider: (factory) => registered.providers.push(factory) },
     tools: {
-      register: (tool) => registered.tools.push(tool),
+      register: (tool, options) => {
+        registered.tools.push(tool);
+        registered.when.push(options?.when);
+      },
       // 0.2.2+ 宿主契约（本插件 scope 的唯一机制）：探针只需在场，不在此处解析。
       resolve: async () => ({ view: () => new Map() }),
     },
@@ -281,6 +284,11 @@ function checkRegistration(root, problems) {
       `mock ctx 注册工具不符（期望 ${EXPECTED_TOOLS.join('/')}，实际 ${names.join('/') || '无'}）`,
     );
   }
+  registered.tools.forEach((tool, index) => {
+    if (typeof registered.when[index] !== 'function') {
+      problems.push(`工具 ${tool?.name} 注册时未带 when 判定（步骤级可见性失效）`);
+    }
+  });
   for (const tool of registered.tools) {
     const schema = tool?.output?.schema;
     const shapeOk =
