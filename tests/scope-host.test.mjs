@@ -435,6 +435,22 @@ test('裸 agent 对象不走步缓存：cwd 变更立即反映', () => {
   assert.equal(handle.when(user), false, '同一 agent 对象第二次调用必须重算');
 });
 
+test('精化按成员命中：移出工作区名单后下一步不可见', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/other', sessionIds: ['a1'] }];
+  let calls = 0;
+  const registry = { list() { calls += 1; return calls === 1 ? [] : workspaces; } };
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'selected', workspaceIds: ['w1'] } });
+  const user = agent('a1', '/repo/x');
+
+  assert.equal(handle.when({ agent: user }), false, '首步名单为空 ⇒ 先排精化');
+  await tick();
+  assert.equal(handle.when({ agent: user }), true, '精化按成员命中');
+
+  workspaces[0].sessionIds = [];
+  assert.equal(handle.when({ agent: user }), false, '成员被移出后不得沿用旧正缓存');
+});
+
 test('同一对象 cwd 变更：正缓存绑定 cwd，移出工作区后立即不可见', async () => {
   const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
   const { registry } = makeRegistry({ workspaces, resolveByPath: async () => ({ id: 'w1' }) });

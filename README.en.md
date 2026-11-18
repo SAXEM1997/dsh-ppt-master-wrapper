@@ -128,7 +128,7 @@ Under `selected`: a session's ownership is resolved by "workspace `sessionIds` m
 
 Host floor: `scope` relies on per-step `when` (`tools.register(def, { when })` + `tools.resolve`), i.e. **DSH ≥ 0.2.2-rc.1**; older hosts lack it (0.2.1 silently ignores `when`), so this version declares the floor in `engines.dsh` and fails loud at load time instead of silently showing everything under `selected`.
 
-Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; a symlinked `cwd` may be invisible for the first step and visible from the next one after async canonicalisation; calling a hidden tool now fails with the host's `UNKNOWN_TOOL` (no custom denial message); ids of deleted workspaces are ignored; the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
+Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the session `cwd` (written by the host at creation and normally stable); a symlinked `cwd` may be invisible for the first step and visible from the next one after async canonicalisation; calling a hidden tool now fails with the host's `UNKNOWN_TOOL` (no custom denial message); ids of deleted workspaces are ignored; the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
 
 ### Profile patch (the equivalent channel)
 
@@ -194,7 +194,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (699 cases)
+├── tests/                            # full node:test suite (700 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -208,11 +208,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (699/699 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
+node --test tests/*.test.mjs          # full suite (700/700 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 699/697/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 700/698/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 

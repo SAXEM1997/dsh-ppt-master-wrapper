@@ -69,8 +69,11 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
   6. 任何异常（list/resolveByPath/配置解引用）⇒ `false`。
 - 异步精化只提升符号链接/拼写差异的命中率，不参与 fail-open：没跑完就按不可见。
 - 缓存：**按 agent 对象**（WeakMap）记账，不用 agent id——宿主会跨 clear/压缩/resume
-  复用 id，按 id 会让曾精化命中的会话在 cwd 移出工作区后仍可见。正缓存只存命中；
-  `no-match` 与**注册表指纹**（工作区 id+路径的有序快照）绑定：指纹不变不重试，变了才重排；`unresolved` 最多重试 3 次。代际在 mount、
+  复用 id，按 id 会让曾精化命中的会话在 cwd 移出工作区后仍可见。正缓存存
+  `{workspaceId, cwd, basis, fingerprint}`：cwd 必须相同，路径依据还要求注册表指纹不变，
+  成员依据还要求该会话仍在该工作区名单里（被移出后不沿用旧结论）。负缓存中 `no-match`
+  与**注册表指纹**（工作区 id+路径的有序快照）绑定：指纹不变不重试，变了才重排；
+  `unresolved` 最多重试 3 次。代际在 mount、
   注入到达、`loader/volatile-update` 与 `invalidate()` 时递增；落败代际不写缓存。
   无 cwd 时不读任何缓存。
 - 一步一结论：宿主对同一次 `resolve()` 的所有工具复用同一个 `context` 对象，故按
