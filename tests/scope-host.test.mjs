@@ -367,6 +367,25 @@ test('一步一结论：同一 context 对象内精化落定也不改变本步�
   assert.equal(handle.when({ agent: context.agent }), true, '下一步用新 context 才看到精化结果');
 });
 
+test('两类注册表失败各占一条告警：启动期 pending 不会吃掉 list() 抛错', () => {
+  const warnings = [];
+  const { registry } = makeRegistry({ listThrows: true });
+  const { ctx, flush } = makeCtx({ registry, defer: true });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+    warn: (message) => warnings.push(message),
+  });
+
+  // ① 注入未到：selected 下 fail-closed，并留下"尚未注入"这一条。
+  assert.equal(handle.when({ agent: agent('a1', '/a') }), false);
+  assert.equal(warnings.filter((line) => /尚未注入/.test(line)).length, 1);
+
+  // ② 注入到达后 list() 抛错：要能报出"读取失败"，不能被上一条吃掉。
+  flush();
+  assert.equal(handle.when({ agent: agent('a1', '/a') }), false);
+  assert.equal(warnings.filter((line) => /读取失败/.test(line)).length, 1, 'list() 抛错必须单独告警一次');
+});
+
 test('非法配置：selected + 空名单 fail-closed，且只告警一次', () => {
   const warnings = [];
   const { ctx } = makeCtx({ registry: makeRegistry({ workspaces: [] }).registry });

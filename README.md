@@ -158,9 +158,9 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 - 只改 `lib/client.js`——**不需要**（宿主 stat 轮询热更新，约 500ms）；
 - 改 `package.json` 的 `dsh.client` / `exports["./client"]` 声明面、或手工编辑 profile patch——**需要**。
 
-**卡片没出现 / 不可用**，按序排查：① 刚改过 `package.json` 声明面？→ 重启 DSH（最常见）；② 宿主「插件」页是否提供 `plugins.bundle.config` 槽位；③ 卡片显示「配置通道未接入」＝宿主缺 `configForms` 服务（可选拼装，功能面不受影响）；④ 老宿主不认 `dsh.client` → 安静降级，插件功能不受影响，配置走 profile patch 或升级宿主。
+**卡片没出现 / 不可用**，按序排查：① 刚改过 `package.json` 声明面？→ 重启 DSH（最常见）；② 宿主「插件」页是否提供 `plugins.bundle.config` 槽位；③ 卡片显示「配置通道未接入」＝宿主缺 `configForms` 服务（可选拼装，功能面不受影响）；④ 宿主低于 0.2.2-rc.1 → 整插件不装载（不是只丢卡片），升级宿主；仅缺 `dsh.client` 声明面时才是"无卡片、其余照常"。
 
-**其他**：插件装载失败并连带技能面消失，通常是 `@deepseek-ai/schemastery` 受控解析失败——确认宿主 profile 的 `node_modules` 内有该包，且 `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` 指向它（详见 [AGENTS.md](AGENTS.md) §3）。**入口技能缺失**：宿主拒绝不带 `resourceBase` 的合成候选时仅入口技能缺席，vendor 技能与工具不受影响。
+**其他**：插件装载失败并连带技能面消失，通常是 `@deepseek-ai/schemastery` 解析失败——装好的插件靠**裸导入**从 profile 的 `node_modules` 取它（与官方插件同一条路径），故先确认 profile 里确实提升了该包；`DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` 只是 `link:` 开发形态的兜底，宿主进程里通常为空，不要指望它们（详见 [AGENTS.md](AGENTS.md) §3）。**入口技能缺失**：宿主拒绝不带 `resourceBase` 的合成候选时仅入口技能缺席，vendor 技能与工具不受影响。
 
 ## 同步上游更新
 
@@ -195,7 +195,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（700 用例）
+├── tests/                            # node:test 全套（702 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -209,11 +209,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 700/700；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 702/702；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 700/698/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 702/700/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 

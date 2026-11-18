@@ -114,7 +114,8 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
   9. 缓存键：同 id 的新 agent 对象不继承旧精化结论；cwd 消失后不得读缓存；
   10. 负缓存：no-match 与注册表指纹绑定（清单变化后重排），瞬时失败最多 3 次；
   11. 一步一结论：同一 context 对象内精化落定不改变本步答案；
-  12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次。
+  12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次；
+      注册表的「尚未注入」与「list() 抛错」各占一条告警（共用 key 会让启动期那条吃掉要处理的）。
 - compat：新 §7.7⑦ 断言 `resolve` 在场，并用 `when: false` 的探针工具验证被排除、
   `when: true` 被纳入，并断言 when 收到的 context 就是 resolve 的 `{agent, signal}`；
   stub 宿主缺 `resolve` 时记 **problem**（引擎下限押在它上面），不降级为 note。
