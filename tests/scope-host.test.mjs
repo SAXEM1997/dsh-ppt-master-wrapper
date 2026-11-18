@@ -82,14 +82,15 @@ test('assertWhenCapable: 缺 tools.resolve 即抛命名错误（0.2.1 会静默�
 });
 
 test('global: when 恒 true，且完全不读注册表', () => {
-  const { registry } = makeRegistry({ listThrows: true });
+  const { registry, calls } = makeRegistry({ listThrows: true });
   const { ctx } = makeCtx({ registry });
-  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'global', workspaceIds: [] } });
+  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'global', workspaceIds: ['w1'] } });
 
-  assert.equal(handle.when({ agent: agent('a1', '/x') }), true);
+  for (let i = 0; i < 5; i += 1) assert.equal(handle.when({ agent: agent('a1', '/x') }), true);
   assert.equal(handle.when({ agent: agent('a2') }), true);
   assert.equal(handle.when(undefined), true);
   assert.equal(handle.when({ agent: null }), true);
+  assert.equal(calls.list, 0, 'global 不读注册表（listThrows 也不会被触发）');
 });
 
 test('未配置 scope ⇒ global（与"没有该特性"同形）', () => {
@@ -269,14 +270,6 @@ test('when 永不抛：agent 的 id 取用抛错时按不可见处理', () => {
   assert.equal(handle.when({ get agent() { throw new Error('boom'); } }), false);
 });
 
-test('global: 明确断言零注册表读取', () => {
-  const { registry, calls } = makeRegistry({ workspaces: [{ id: 'w1', path: '/a', sessionIds: [] }] });
-  const { ctx } = makeCtx({ registry });
-  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'global', workspaceIds: ['w1'] } });
-  for (let i = 0; i < 5; i += 1) assert.equal(handle.when({ agent: agent('a', '/a') }), true);
-  assert.equal(calls.list, 0, 'global 不读注册表');
-});
-
 test('注入晚到：flush 之前 fail-closed，到达后老会话按路径命中', async () => {
   const workspaces = [{ id: 'w1', path: '/repo/a', sessionIds: [] }];
   const { ctx, flush } = makeCtx({ registry: makeRegistry({ workspaces }).registry, defer: true });
@@ -402,27 +395,58 @@ test('volatile 换代：invalidate 后负缓存作废，新工作区可命中', 
   assert.equal(handle.when({ agent: user }), true, '换代后按新清单重判');
 });
 
-test('no-match 负缓存到期后重排精化（新建工作区不必重启）', async () => {
+test('no-match 负缓存与注册表指纹绑定：清单不变不重排，新增工作区后重排命中', async () => {
   const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
-  const { registry, calls } = makeRegistry({ workspaces, resolveByPath: async () => undefined });
+  let hit;
+  const { registry, calls } = makeRegistry({ workspaces, resolveByPath: async () => hit });
   const { ctx } = makeCtx({ registry });
   let t = 1_000;
   const handle = mountToolScope(ctx, {
-    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1', 'w2'] },
     now: () => t,
   });
   const user = agent('a1', '/repo/new');
+
   assert.equal(handle.when({ agent: user }), false);
   await tick();
   assert.equal(calls.resolveByPath.length, 1);
-
-  t += 20_000;
-  assert.equal(handle.when({ agent: user }), false, 'TTL 内仍用负缓存');
+  assert.equal(handle.when({ agent: user }), false, '指纹不变 ⇒ 复用负结论');
   await tick();
-  assert.equal(calls.resolveByPath.length, 1);
+  assert.equal(calls.resolveByPath.length, 1, '清单不变时不再精化');
 
-  t += 15_000;
+  hit = { id: 'w2' };
+  workspaces.push({ id: 'w2', path: '/repo/other', sessionIds: [] });
+  t += 3_000;
   assert.equal(handle.when({ agent: user }), false);
   await tick();
-  assert.equal(calls.resolveByPath.length, 2, 'TTL 到期后允许重排一次');
+  assert.equal(calls.resolveByPath.length, 2, '指纹变了 ⇒ 重排一次');
+  assert.equal(handle.when({ agent: user }), true, '新工作区立即生效，不必重启');
+});
+
+test('裸 agent 对象不走步缓存：cwd 变更立即反映', () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, { scopeConfig: { mode: 'selected', workspaceIds: ['w1'] } });
+  const user = agent('a1', '/repo/real');
+
+  assert.equal(handle.when(user), true);
+  user.session.header.cwd = '/elsewhere';
+  assert.equal(handle.when(user), false, '同一 agent 对象第二次调用必须重算');
+});
+
+test('同一对象 cwd 变更：正缓存绑定 cwd，移出工作区后立即不可见', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry } = makeRegistry({ workspaces, resolveByPath: async () => ({ id: 'w1' }) });
+  const { ctx } = makeCtx({ registry });
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+  });
+  const user = { id: 'a1', session: { header: { cwd: '/repo/link' } } };
+  handle.when({ agent: user });
+  await tick();
+  assert.equal(handle.when({ agent: user }), true);
+
+  user.session.header.cwd = '/repo/outside';
+  assert.equal(handle.when({ agent: user }), false, 'cwd 变了就不能沿用旧的精化命中');
 });

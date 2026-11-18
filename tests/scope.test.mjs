@@ -361,7 +361,7 @@ test('judgeAgent: 无 cwd 时不调用 resolveByPath', async () => {
   assert.equal(called, false);
 });
 
-test('judgeAgent: 判定结果带 agentId 与 cwd（供诊断与 guard 回显）', async () => {
+test('judgeAgent: 判定结果带 cwd（诊断用；供宿主侧解释不可见原因）', async () => {
   const judgement = await scope.judgeAgent({
     config: SELECTED_W1,
     agent: { id: 'agent-1', cwd: '/tmp/scratch' },
@@ -369,8 +369,8 @@ test('judgeAgent: 判定结果带 agentId 与 cwd（供诊断与 guard 回显）
     pathMap: PATH_MAP,
     resolveByPath: async () => undefined,
   });
-  assert.equal(judgement.agentId, 'agent-1');
   assert.equal(judgement.cwd, '/tmp/scratch');
+  assert.equal(Object.hasOwn(judgement, 'workspaceId'), false);
 });
 
 // ─── M5：throwing `toString` 不得穿透（「任何函数都不向外抛」不变量）──────
