@@ -169,7 +169,15 @@ const CONTROLLED_CHANNEL_MARKERS = [
   { label: 'createRequire', pattern: /createRequire\(/ },
   { label: '@deepseek-ai/schemastery', pattern: /@deepseek-ai\/schemastery/ },
 ];
-const BARE_SCHEMASTERY_IMPORT = /(?:^|\n)\s*import\b[^\n]*from\s*['"]@deepseek-ai\/schemastery['"]/;
+/**
+ * ④ 的静态判据：源码里是否存在 `@deepseek-ai/schemastery` 的**静态** ESM 导入或再导出。
+ * 单行与多行都要命中（旧实现 `[^\n]*` 逐行匹配，`import {\n … \n} from '…'` 会漏判）；
+ * `export … from '…'` 同样是绕过受控通道的静态形态。动态 `import()` 自 v6.9.0-r2 起是
+ * 主路径，不在禁列。`[^;]*?` 把匹配限制在同一语句内，避免跨语句误伤。
+ */
+export function hasStaticSchemasteryImport(source) {
+  return /^\s*(?:import|export)\b(?:[^;]*?\bfrom\s*)?\s*['"]@deepseek-ai\/schemastery['"]/m.test(source);
+}
 
 /** 动态导入的 SDK 包（顺序即挂载顺序：systemPrompt 是 ToolRuntime 的构造依赖）。 */
 const SDK_PACKAGES = [
@@ -479,7 +487,7 @@ function readControlledChannelEvidence() {
   if (missing.length > 0) {
     return { ok: false, reason: `受控解析通道标记缺席: ${missing.map(({ label }) => label).join('、')}` };
   }
-  if (BARE_SCHEMASTERY_IMPORT.test(source)) {
+  if (hasStaticSchemasteryImport(source)) {
     return { ok: false, reason: '插件入口存在 @deepseek-ai/schemastery 的 ESM 裸导入（受控解析通道被绕过）' };
   }
   return { ok: true };
