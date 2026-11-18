@@ -401,3 +401,28 @@ test('volatile 换代：invalidate 后负缓存作废，新工作区可命中', 
   emit('loader/volatile-update');
   assert.equal(handle.when({ agent: user }), true, '换代后按新清单重判');
 });
+
+test('no-match 负缓存到期后重排精化（新建工作区不必重启）', async () => {
+  const workspaces = [{ id: 'w1', path: '/repo/real', sessionIds: [] }];
+  const { registry, calls } = makeRegistry({ workspaces, resolveByPath: async () => undefined });
+  const { ctx } = makeCtx({ registry });
+  let t = 1_000;
+  const handle = mountToolScope(ctx, {
+    scopeConfig: { mode: 'selected', workspaceIds: ['w1'] },
+    now: () => t,
+  });
+  const user = agent('a1', '/repo/new');
+  assert.equal(handle.when({ agent: user }), false);
+  await tick();
+  assert.equal(calls.resolveByPath.length, 1);
+
+  t += 20_000;
+  assert.equal(handle.when({ agent: user }), false, 'TTL 内仍用负缓存');
+  await tick();
+  assert.equal(calls.resolveByPath.length, 1);
+
+  t += 15_000;
+  assert.equal(handle.when({ agent: user }), false);
+  await tick();
+  assert.equal(calls.resolveByPath.length, 2, 'TTL 到期后允许重排一次');
+});

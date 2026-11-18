@@ -106,11 +106,11 @@ tools.register(definition, { when(context) { /* context = { agent, signal } */ }
   5. 异步精化：`resolveByPath` 命中后下一步可见；抛错保持不可见；
   6. 配置热变更 ⇒ 下一步生效（volatile 现读）；
   7. 代际：mount/invalidate 后旧精化结果不写缓存；volatile 事件使负缓存作废；
+  8. 能力自检：`tools.resolve` 缺失 ⇒ `assertWhenCapable` 抛命名错误（`apply` 调用）；
   9. 缓存键：同 id 的新 agent 对象不继承旧精化结论；cwd 消失后不得读缓存；
-  10. 负缓存：确定性 no-match 不重试，瞬时失败最多 3 次；
+  10. 负缓存：确定性 no-match 不重试（TTL 30s 后重排一次），瞬时失败最多 3 次；
   11. 一步一结论：同一 context 对象内精化落定不改变本步答案；
-  12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次；
-  8. 能力自检：`tools.resolve` 缺失 ⇒ `assertWhenCapable` 抛命名错误（`apply` 调用）。
+  12. global 明确零注册表读取；注入晚到 flush 后命中；非法配置告警一次。
 - compat：新 §7.7⑦ 断言 `resolve` 在场，并用 `when: false` 的探针工具验证被排除、
   `when: true` 被纳入，并断言 when 收到的 context 就是 resolve 的 `{agent, signal}`；
   stub 宿主缺 `resolve` 时记 **problem**（引擎下限押在它上面），不降级为 note。
