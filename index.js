@@ -132,8 +132,11 @@ async function loadSchemastery() {
   let bareImportFailure = null;
   try {
     // `.default` 对两种形态都成立：ESM 构建 `export { Schema as default }`，CJS 替身
-    // 经 ESM 装载时 `module.exports` 也落在 `default` 上。
-    return (await import('@deepseek-ai/schemastery')).default;
+    // 经 ESM 装载时 `module.exports` 也落在 `default` 上。上游若改成纯命名导出
+    // （只有 `Schema`、无 default），退回命名导出——否则失败点会退化成 `z.object`
+    // 上的裸 TypeError，把「包在，但导出形态变了」误报成装载期定位失败。
+    const mod = await import('@deepseek-ai/schemastery');
+    return mod.default ?? mod.Schema ?? mod;
   } catch (error) {
     bareImportFailure = error;
   }

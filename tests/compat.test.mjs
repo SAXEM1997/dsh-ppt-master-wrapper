@@ -12,6 +12,7 @@ import {
   PLUGIN_ENTRY,
   executionModelOf,
   firstToolResult,
+  hasStaticSchemasteryImport,
   resolveDshModules,
   runCompatCheck,
 } from '../scripts/check-dsh-compat.mjs';
@@ -954,4 +955,32 @@ test('CLI: §7.7 五项断言行（无 --skill-roots → 生产根形态）→ e
   } finally {
     await sdk.cleanup();
   }
+});
+
+test('compat §7.7④: 静态 ESM 裸导入判据覆盖单行与多行，不误伤动态导入', () => {
+  assert.equal(
+    hasStaticSchemasteryImport("import z from '@deepseek-ai/schemastery';\n"),
+    true,
+    '单行静态导入必须命中',
+  );
+  assert.equal(
+    hasStaticSchemasteryImport("import {\n  Schema,\n} from '@deepseek-ai/schemastery';\n"),
+    true,
+    '多行静态导入也必须命中（旧判据逐行匹配，正好漏掉这一形态）',
+  );
+  assert.equal(
+    hasStaticSchemasteryImport("const z = await import('@deepseek-ai/schemastery');\n"),
+    false,
+    '动态导入是主路径，不得判为违规',
+  );
+  assert.equal(
+    hasStaticSchemasteryImport("export { Schema } from '@deepseek-ai/schemastery';\n"),
+    true,
+    '静态再导出同样是绕过受控通道的形态',
+  );
+  assert.equal(
+    hasStaticSchemasteryImport("import { readFileSync } from 'node:fs';\n"),
+    false,
+    '其它包的静态导入不得误伤',
+  );
 });
