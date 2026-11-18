@@ -157,7 +157,9 @@ const SLOT_NAME = 'plugins.bundle.config';
 const CLIENT_LOCALE_NS = 'dsh-ppt-master-config';
 
 /**
- * ④ 的静态文本判据（受控解析通道的两半）：正向标记必须出现、ESM 裸导入必须缺席。
+ * ④ 的静态文本判据（受控解析通道的两半）：正向标记必须出现（兜底通道仍在），**静态**
+ * ESM 裸导入必须缺席——v6.9.0-r2 起动态裸导入是主路径（`loadSchemastery` 第一段），静态
+ * 形态仍只在符号链接装载下必炸，故禁的只是它。
  *
  * ④ 的**实跑**证据（入口装载成功）同时是 ① 的前提：`Config.toJSON()` 的引用图由同一个
  * 受控解析出的 schemastery 产出，替身若失真（例如把所有叶都标 volatile）则 ① 会自我
@@ -459,8 +461,9 @@ function readBundleInsertIds() {
 /**
  * §7.7④ 的静态文本证据：插件入口必须经**受控解析通道**取宿主 schemastery。
  *
- * 正向＝`createRequire` + 包名标记在场；负向＝无 `@deepseek-ai/schemastery` 的 ESM
- * 裸导入（符号链接装载路径下裸导入必然 ERR_MODULE_NOT_FOUND，spec §5.1/§6.1⓪）。
+ * 正向＝`createRequire` + 包名标记在场（兜底通道未被拆掉）；负向＝无 `@deepseek-ai/schemastery`
+ * 的**静态** ESM 裸导入（符号链接装载路径下静态裸导入必然 ERR_MODULE_NOT_FOUND，spec
+ * §5.1/§6.1⓪；动态裸导入自 v6.9.0-r2 起是主路径，不在禁列）。
  * 与**实跑**（入口在本环境装载成功＝受控解析命中）合成本项证据；不另立 env 通道。
  *
  * @returns {{ ok: true } | { ok: false, reason: string }}
@@ -1219,8 +1222,8 @@ export async function runCompatCheck(options = {}) {
       problems.push(`§7.7④ 受控解析通道静态断言失败: ${channel.reason}`);
     } else {
       notes.push(
-        '§7.7④ schemastery 可解析性: index.js 含受控解析通道（createRequire 锚定定位到的宿主 '
-          + 'node_modules、无 ESM 裸导入——静态源码文本断言）'
+        '§7.7④ schemastery 可解析性: index.js 含受控解析通道（动态裸导入为主 + createRequire '
+          + '锚定定位到的宿主 node_modules 兜底、无静态 ESM 裸导入——静态源码文本断言）'
           + (pluginLoaded
             ? '＋ 本环境入口实跑装载成功（受控解析命中）'
             : '；**本环境入口实跑装载失败**——受控解析未命中（见 problems），本项仅静态半成立'),

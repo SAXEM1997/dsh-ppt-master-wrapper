@@ -72,10 +72,16 @@
   语义）⇒ 对 `agent.ctx.tools` 调用用的就是该 agent 自己的 fiber。因此 `agent/created`
   的监听器里做 async 判定后再装层，必须**先经 `agents.get(id)` 判活**（短命子会话——如
   mnemon idle review——会在 `await` 期间被销毁）；重试对已死会话无意义（issue #33）。
-- **schemastery 受控解析**：`index.js` 在模块加载期经「定位宿主 node_modules +
-  `createRequire`」取 `@deepseek-ai/schemastery`（禁 ESM 裸导入；锚点必须是定位到的
-  node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。解析失败＝整插件
-  不可加载。**装载期是异步的（顶层 `await`）**：`require` 之前先 `await import()` 预热
+- **schemastery 受控解析**：`index.js` 在模块加载期**先裸导入**
+  `import('@deepseek-ai/schemastery')`——装好的插件由 Node 从 profile 的 `node_modules`
+  解析（与官方插件、与 `@wenaixi/dsh-ponytail` 同一条路径），**零环境变量依赖**；未命中才
+  落回「定位宿主 node_modules + `createRequire`」的兜底通道（锚点必须是定位到的
+  node_modules 内路径，锚在 index.js 本身必 `MODULE_NOT_FOUND`）。**别指望那四个环境变量**：
+  `DSH_HOME` / `DSH_PROFILE` / `DSH_PROFILE_DIR` 只由 `dsh-shell-env` 在**每次 shell 调用时
+  现造**（宿主 asar 内 `process.env.DSH_PROFILE` 出现 0 次），`dsh-app-boot` 的 `.env` 分层
+  又把 `DSH_*` 前缀列为 bootstrap-only 直接拒绝——四级 env 链在正常安装形态下**必然全落空**
+  （v6.9.0-r2 之前 Desktop 直启与普通终端起 `dsh` 的装载失败即此，报错签名「无任何级别可
+  探测」）。解析失败＝整插件不可加载。**装载期是异步的（顶层 `await`）**：兜底通道在 `require` 之前先 `await import()` 预热
   schemastery 的 ESM-only 依赖 `@deepseek-ai/cosmokit`——宿主 loader 并行创建插件条目，
   不预热则 `require(esm)` 会撞上正在加载的 cosmokit 并抛 `ERR_REQUIRE_ESM_RACE_CONDITION`，
   整个插件不装载（issue #36）。预热的**解析锚点必须是 schemastery 入口**（`cosmokit` 是它的
@@ -96,7 +102,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 733 tests / 731 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 733/733。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 734 tests / 732 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 734/734。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -114,7 +120,8 @@
   定位链四级均未命中`；CLI 子进程用例自带 stub 树不受影响。
 - 测试文件地图：`sync-*.test.mjs`（同步脚本纯函数/编排，编排用真实临时 git 仓库）、
   `scope*.test.mjs`（工具可见范围纯逻辑/宿主集成）、`client-half.test.mjs`（卡片）、
-  `compat.test.mjs`（SDK 契约 + stub 保真）、`apply/verify-plugin/venv/tools-*/skill-provider/
+  `compat.test.mjs`（SDK 契约 + stub 保真）、`loader.test.mjs`（装载期宿主包解析：
+  裸导入优先 / env 链兜底）、`apply/verify-plugin/venv/tools-*/skill-provider/
   frontmatter/skeleton`（各对应模块）。
 
 ## 5. 版本与同步记账
@@ -153,6 +160,7 @@ npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：
 | `v6.8.0-r4` | 环境声明与仓库约定修订（#41 / #39 / #42，**无运行时行为变更**）：① `engines.node` 由 `>=20.0.0` 校正为 **`>=22.12.0`**——装载链路 `index.js → require(schemastery) → schemastery 的 CJS 构建首行 require(ESM-only cosmokit)` 是 Node 的 `require(esm)`，22.12.0 起才默认开启；取插件自身下限而非宿主 `>=24.9.0`（0.2.1 宿主未声明 engines，照抄会无谓拦住 0.2.1 用户）。② CI 兼容 job `node20-compat` → **`node22-compat`**，`node-version` 钉死 `22.12.0`——上方 `test` job 跑 Node 22 最新版，与声明下限重复则发现不了「用了比 22.12 更新的 API」；原 `node20-compat` 常年绿但跑的是无 cosmokit 的 stub 树，永远走不到 `require(esm)` 一跳，属虚假安全感。job 名变更不影响分支保护（必需检查只有 `test`，已实读确认）。③ release 说明格式固化为「严谨口吻总结 + **每个 PR 一行**的变更列表 + 中英双语」，细则见 `docs/agents/maintainer-ops.md` §5。④ skeleton 用例断言同步 `>=22.12.0`；README 双语表格的 Node 版本要求同步。测试仍 733/733 |
 | `v6.9.0` | 上游同步（规则①）：vendor v6.9.0 逐字节（refs/tags/v6.9.0@ce92fb43e4ade9c701f4c869e286f13fce743c72），`lib/client.js` 两常量随 `applyVersionLinkage` 改写为 `6.9.0`／`6.9.0`，`package.json.version` 同为 `6.9.0`；包装层 `v6.8.0-r1..r4` 四次修订按规则①归零。结构变化 1 项经人工确认后走 `--confirm-structural`：`skills/ppt-master/scripts/` 新增 `image_ocr.py`／`image_layers.py`／`image_normalization.py`（三者在上下游 workflows、references、scripts/README 内均有引用），删除 6.8.0 误入 vendor 的 `__pycache__`（`tts_backends/`、`image_backends/` 下的 `.pyc`）。`requirements.txt` 19 条**逐字不变** ⇒ `DIST_TO_IMPORT` 19/19 仍成立、本机 venv 无需重建；`MINIMUM_PYTHON`（硬编码 3.10）与上游声明一致、未动；`SKILL.md` 第 2 步仍是 `python3 "${SKILL_DIR}/scripts/attribution_guard.py"` ⇒ 入口技能正文的 `${SKILL_DIR}` 替换规则仍成立。测试 733 例：732 pass / 1 fail（`tools-setup-deps` 的 `envFileExists`，因本机存在 `~/.ppt-master/.env`；已在 main 的干净 worktree 上复现同一红，与本次同步无关）/ 0 skip；`verify-plugin --upstream .upstream/refs/tags/v6.9.0@ce92…` OK（problems 0、warnings 0）、`check-dsh-compat` warnings 0 |
 | `v6.9.0-r1` | npm 发布渠道（#48/#50/#51）：`package.json` 增 `publishConfig{access:public,registry:https://registry.npmjs.org}`；双语 README 安装段把 npm 提为方式一（semver 提示：`6.9.0-r1` 属预发布，`^6.9.0` 不含它）；新增 `.github/workflows/publish.yml` 在 CI 侧 `npm stage publish`（本机出口上行 ~23 KB/s，17.7 MB 传不出；Node 24 因 `npm stage` 需 npm≥11），维护者 2FA `npm stage approve`。workflow 按必填 `version` 检出 `refs/tags/v<version>` 并断言 manifest 版本一致——旧版从触发时的 main 取码，故已发布的 6.9.0 与 tag `v6.9.0` 不同树（出货文件差 README 双语与 package.json）；`id-token: write` + `--provenance` 由 npm 签发绑定 commit/workflow 的证明。另 `execSync` 的 `maxBuffer` 提到 64 MB（13107 文件清单超 1 MB 默认值，首次运行即踩到）。**无运行时行为变更**；npm `6.9.0` 是本规则生效前发布的包，无 provenance、不对应任何 tag |
+| `v6.9.0-r2` | 装载期解析回到正路（**运行时行为有变**）：`DSH_HOME` / `DSH_PROFILE` / `DSH_PROFILE_DIR` 在宿主进程里**恒为空**——只由 `dsh-shell-env` 在每次 shell 调用时现造，`dsh-app-boot` 的 `.env` 分层又把 `DSH_*` 前缀列为 bootstrap-only 直接拒绝；原实现只认这几个变量，故 Desktop 直启、或从普通终端起 `dsh` 都在 import 期抛「定位链四级均未命中」，整插件 `did not activate`。改法：`loadSchemastery()` 先**裸导入** `@deepseek-ai/schemastery`（装好的插件由 Node 从 profile 的 `node_modules` 解析，与官方插件、与 `@wenaixi/dsh-ponytail` 同一条路径），未命中才落回 env 四级链 + `createRequire`——那条链现在只服务 `link:` 的符号链接开发形态；返回 `.default` 对 ESM 构建与 CJS 替身都成立，故兜底通道的 cosmokit 预热（#36）原样保留。装载失败文案补「裸导入未命中」与「正常安装下即表示 profile 未提升该包」。新增 `tests/loader.test.mjs` 1 例：把插件按**已安装**形态落进 stub profile、子进程剔除全部 `DSH_*` 后装载必须成功（改前正是截图那句报错）。测试 733 → **734**；vendor 树仍 v6.9.0 逐字节 |
 
 同步退出码：`0` 成功/最新；`1` 用法；`2` 结构变化待人工（🔴 含 skill 目录增删、改名、
 `metadata.version` 缺失）；`3` 完整性门失败；`4` verify 失败（vendor 未触碰）；`5` 网络/

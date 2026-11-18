@@ -3,11 +3,12 @@
  * `ctx.skills`, exposes the three model-facing tools on `ctx.tools`, and declares
  * the cordis `Config` schema behind the venv-isolation settings page.
  *
- * Zero *declared* npm dependencies (package.json carries none). The Config schema
- * is built from the host-provided `@deepseek-ai/schemastery`, obtained through the
- * controlled channel below (host `node_modules` location + `createRequire` anchored
- * there): a bare ESM import cannot work — the plugin is loaded through a symlink and
- * the package is CJS (`type: 'module'`, `main: 'lib/index.cjs'`), spec §5.1/§6.1⓪.
+ * Zero *declared* npm dependencies (package.json carries none). The Config schema is
+ * built from the host-provided `@deepseek-ai/schemastery`, resolved in two steps: a
+ * plain ESM bare import first (a normally installed plugin is resolved by Node from
+ * the profile's `node_modules`), then — only for a symlinked `link:` checkout, where
+ * the package is unreachable from inside the package — the env location chain plus
+ * `createRequire` anchored there, spec §5.1/§6.1⓪.
  * Resolution failure is **fail-loud at module load**: the whole plugin (and with it
  * the vendor skill surface) is unavailable, never a Config-less degradation.
  *
@@ -94,6 +95,14 @@ function locateDshModules() {
 /**
  * 解析宿主 `@deepseek-ai/schemastery`（async；顶层 `await` 调用，见下）。
  *
+ * 解析顺序两段：
+ * ① **裸导入**。装好的插件由 Node 从 profile 的 `node_modules` 解析（提升或 peer 安装
+ *    都命中），**不依赖任何环境变量**——`DSH_HOME` / `DSH_PROFILE` / `DSH_PROFILE_DIR`
+ *    只由 `dsh-shell-env` 在每次 shell 调用时现造，宿主进程里恒为空，`dsh-app-boot` 的
+ *    `.env` 分层又把 `DSH_*` 前缀列入 bootstrap-only 直接拒绝。`exports.import` 指向 ESM
+ *    构建，顺带绕开下面 CJS 路径的 `require(esm)` 竞态（issue #36）。
+ * ② 裸导入未命中（`link:` 的符号链接 checkout：包内向上找不到 profile）→ env 定位链。
+ *
  * `createRequire` **必须以定位到的 node_modules 为锚**（锚点取该目录下的占位文件路径，
  * 且先经 `resolve` 落成绝对路径——定位命中的 `dir` 可能是相对拼写）：
  * 锚在 `index.js` 上即便 `DSH_PROFILE_DIR` 正确也会 `MODULE_NOT_FOUND`（本机实测）——
@@ -120,13 +129,24 @@ function locateDshModules() {
  * @throws {Error} 定位链未命中或宿主未安装该包。
  */
 async function loadSchemastery() {
+  let bareImportFailure = null;
+  try {
+    // `.default` 对两种形态都成立：ESM 构建 `export { Schema as default }`，CJS 替身
+    // 经 ESM 装载时 `module.exports` 也落在 `default` 上。
+    return (await import('@deepseek-ai/schemastery')).default;
+  } catch (error) {
+    bareImportFailure = error;
+  }
+
   const { dir, via, attempted } = locateDshModules();
 
   if (dir === null) {
     throw new Error(
-      `@deepseek-ai/schemastery 未能解析：宿主 node_modules 定位链四级均未命中`
+      `@deepseek-ai/schemastery 未能解析：裸导入未命中（${bareImportFailure?.code ?? bareImportFailure}），`
+        + `宿主 node_modules 定位链四级均未命中`
         + `（已探测：${attempted.length > 0 ? attempted.join('；') : '无任何级别可探测'}）。`
-        + '请设置 DSH_NODE_MODULES / DSH_PROFILE_DIR / DSH_HOME(+DSH_PROFILE) '
+        + '正常安装下即表示 profile 未提升该包（重装依赖即可）；'
+        + '或设置 DSH_NODE_MODULES / DSH_PROFILE_DIR / DSH_HOME(+DSH_PROFILE) '
         + '指向已安装该包的宿主 profile。',
     );
   }
