@@ -25,10 +25,13 @@
 node --test tests/*.test.mjs
 
 # 2) 对照已安装 DSH SDK 的契约检查（spec §7.7 六项，warnings 必须为 0）
+#    profile 依赖树缺 peer（如 @deepseek-ai/dsh-error）时本脚本会报 SDK 导入失败——
+#    那不是仓库回归，改用宿主自带树：--dsh-modules /npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules
 node scripts/check-dsh-compat.mjs
 
-# 3) vendor 树字节比对（上游完整性；--upstream 取 .upstream/ 缓存目录名 <ref>@<sha>）
-node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.8.0@5e8856be0da8e6bc85c4aa28acc614478f7b7137
+# 3) vendor 树字节比对（上游完整性；--upstream 取 .upstream/ 缓存目录名 <ref>@<sha>，
+#    必须与当前 vendor 版本一致——拿旧 ref 比对会整片报字节不符）
+node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.9.0@ce92fb43e4ade9c701f4c869e286f13fce743c72
 ```
 
 > 环境前置：`@deepseek-ai/schemastery` 须可由宿主 profile 的 `node_modules` 解析（详见 README「本地校验」）。若该前置不满足，部分测试文件会在 **import 期**整体失败，而不是单条用例红。
