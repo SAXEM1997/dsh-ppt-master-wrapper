@@ -25,7 +25,7 @@ test('package.json: 身份与入口字段', () => {
   );
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.main, 'index.js');
-  assert.deepEqual(pkg.engines, { node: '>=22.12.0' });
+  assert.deepEqual(pkg.engines, { node: '>=22.12.0', dsh: '>=0.2.2-rc.1' });
 });
 
 test('package.json: 零运行时 npm 依赖', () => {
@@ -67,7 +67,11 @@ test('package.json: exports 四条目', () => {
 
 test('package.json: dsh 字段（engines + bundle.patch）', () => {
   const pkg = readPkg();
-  assert.equal(pkg.dsh.engines.dsh, '>=0.1.1-rc.1');
+  assert.equal(
+    pkg.engines.dsh,
+    '>=0.2.2-rc.1',
+    '顶部 engines.dsh 才是宿主兼容门读取的字段（dsh.engines 不被读取）；0.2.1 无 when/resolve',
+  );
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml');
 });
 

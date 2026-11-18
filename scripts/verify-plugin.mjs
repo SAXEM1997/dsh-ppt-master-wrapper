@@ -262,7 +262,11 @@ function checkRegistration(root, problems) {
   const registered = { providers: [], tools: [] };
   const ctx = {
     skills: { registerProvider: (factory) => registered.providers.push(factory) },
-    tools: { register: (tool) => registered.tools.push(tool) },
+    tools: {
+      register: (tool) => registered.tools.push(tool),
+      // 0.2.2+ 宿主契约（本插件 scope 的唯一机制）：探针只需在场，不在此处解析。
+      resolve: async () => ({ view: () => new Map() }),
+    },
   };
   try {
     apply(ctx, { skillRoots: [root] });

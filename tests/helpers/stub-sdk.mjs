@@ -199,7 +199,8 @@ export async function buildStubSdk(modules, {
   superpowers = 'present', // 'present' | 'absent' | 'no-const'
   superpowersRank = 550,
   rejectBareTools = false,
-  // 工具执行模型（issue #31）：'single' = 0.2.1 及更早（tools.execute 自带实现、
+  // 工具执行模型（issue #31，历史形态；本插件自 2026-11-18 起不再用 execute）：
+  // 'single' = 0.2.1 及更早（tools.execute 自带实现、
   // 入参 {callId,name,arguments}）；'batch' = 0.2.2+ 外置 executor（tools.setExecutor
   // 先装 `@deepseek-ai/dsh-tool-executor-native` 替身、execute 入参 {calls:[…]}、结果
   // 在 results[i].result）。默认 single，保证既有用例与 CI 形态不变。
@@ -210,6 +211,9 @@ export async function buildStubSdk(modules, {
   // 并让 schemastery 替身在入口处断言「cosmokit 已经过 ESM 加载完毕」——锁住
   // 「先 await import() 预热、再同步 require schemastery」这条装载期契约。
   schemasteryCosmokit = 'absent',
+  // 步骤级可见性（dsh-tools 0.2.2-alpha.2+）：默认带 `async resolve()`；
+  // false 用于钉住「宿主低于 0.2.2 ⇒ apply fail-loud」的负向形态。
+  whenCapable = true,
   omit = [],
 } = {}) {
   // 病态路径守卫（Gate 3 P3-2）：本函数对目标**先 rm 再建**（幂等语义），必须在动手前
@@ -414,6 +418,7 @@ export async function buildStubSdk(modules, {
       '// 故运行期可变状态一律落模块级容器；实例上的残留（restrict 的 this.restrictions）',
       '// 仅作观察台账，不参与判定。',
       'const toolDefinitions = new Map(); // name → definition（register 存、disposer 删）',
+      'const toolWhens = new Map();       // name → when（register 第二参；0.2.2 起真宿主形状）',
       'const installedGuards = [];        // guard(fn) 的安装台账（FIFO 遍历）',
       'export class ToolRuntime {',
       '  constructor(ctx, config = {}) {',
@@ -421,7 +426,7 @@ export async function buildStubSdk(modules, {
       '    // 该实例挂在哪个 ctx 上（scoped 判定的唯一依据，与真实实现的 scopeOf(this.ctx) 同语义）。',
       '    this.ctx = ctx;',
       '  }',
-      '  register(definition) {',
+      '  register(definition, options = {}) {',
       '    if (!(this instanceof ToolRuntime)) {',
       '      throw new TypeError("stub: ctx.tools.register 必须以方法形态调用（cordis traceable 层脱挂调用 this=undefined）");',
       '    }',
@@ -438,9 +443,47 @@ export async function buildStubSdk(modules, {
         : []),
       '    registerLog.push(definition.name);',
       '    toolDefinitions.set(definition.name, definition);',
-      '    return () => { toolDefinitions.delete(definition.name); };',
+      '    if (options?.when !== undefined) toolWhens.set(definition.name, options.when);',
+      '    return () => {',
+      '      toolDefinitions.delete(definition.name);',
+      '      toolWhens.delete(definition.name);',
+      '    };',
       '  }',
-      '  // 工具可见范围（2026-10-18）依赖的两条契约，逐字复刻真宿主：',
+      ...(whenCapable ? [
+        '  // 步骤级可见性（dsh-tools 0.2.2-alpha.2+）：逐工具 await when(context)，',
+        '  // 为真才进可见集；条件抛错按 ToolActivationError 冒泡（与真宿主同形状）。',
+        '  async resolve(context = {}) {',
+        '    const signal = context?.signal;',
+        '    const visible = new Map();',
+        '    for (const [name, definition] of toolDefinitions) {',
+        '      const when = toolWhens.get(name);',
+        '      let enabled = true;',
+        '      if (when !== undefined) {',
+        '        try {',
+        '          enabled = await when(context);',
+        '        } catch (cause) {',
+        '          signal?.throwIfAborted?.();',
+        '          const error = new Error(`tool "${name}" activation failed: ${cause?.message ?? cause}`);',
+        '          error.name = "ToolActivationError";',
+        '          throw error;',
+        '        }',
+        '      }',
+        '      signal?.throwIfAborted?.();',
+        '      if (enabled) visible.set(name, definition);',
+        '    }',
+        '    let closed = false;',
+      '    const stepAgent = context?.agent;',
+      '    return {',
+      '      // 与真宿主同语义：view(scope) 只对本次 resolve 的 agent 给出非空集；',
+      '      // dispose 后一律空（compat 探针若忘了传 agent 或忘了 dispose，替身要能抓住）。',
+      '      view: (scope) => (closed || (scope !== undefined && scope !== stepAgent) ? new Map() : visible),',
+      '      dispose: () => { closed = true; },',
+      '    };',
+        '  }',
+      ] : []),
+
+      '  // 工具可见范围（2026-10-18）的旧契约（restrict/guard）——2026-11-18 起本插件改用',
+      '  // 步骤级 when，这两个方法仅为既有 stub 保真用例保留，不参与插件路径。',
       '  // ① restrict 只能在 agent 作用域调用（根 ctx 调用抛错）；② guard 在普通 ctx 可装、返回 disposer。',
       '  // M2a/M8 补强：scoped 半面——经 @deepseek-ai/dsh-scope 的 createScope 产出的 child ctx',
       '  // 带 `__dshScopeKey`（见下方 dsh-scope 替身），此时不再抛错而是安装一层掩码并返回',

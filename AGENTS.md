@@ -18,7 +18,7 @@
   唯一仍为注册期快照的是合成入口技能 `ppt-master-env` 的**正文**（宿主技能目录无更新钩子，
   正文自带脚注指向两个实时工具）。venv 设计文档
   （`2026-10-15-ppt-master-venv-config-design.md`）未登记 R8——其 R# 序列（R3–R12）属另一套编号。
-- 工具名清单**只从 `createTools()` 派生**（`toolNamesOf`），不得写第二份字面量。
+- 工具清单**只从 `createTools()` 的产出注册**，不得写第二份名字字面量（`when` 判定不再需要名单）。
 - 零 npm 依赖（`package.json` 无 `dependencies`/`devDependencies`），测试与脚本只用
   Node 内置模块。
 - `main` 受保护：issue → 分支 → PR → squash merge，严禁直推（实测 `GH006` 拒绝）。
@@ -46,32 +46,22 @@
   **原地改引用、不重挂插件、不重跑 apply**，随后 emit `loader/volatile-update`。
   （该包版本随宿主走：0.2.1 锁 `~1.0.6`、0.2.2 锁 `~1.1.0`——两版语义逐字节相同，
   故不钉行号，改版后按方法名检索。）
-  插件必须持有引用容器、每轮 `ref.get()` 现读，并在该事件上重算。两处既有实现：
-  `scope` 走 `lib/scope-host.js`（每轮现读 + 事件重算），`venv` 走 `lib/venv.js` 的
+  插件必须持有引用容器、每轮现读。两处既有实现：`scope` 走 `lib/scope-host.js` 的
+  `when()`（宿主每步调用一次，每次现读 `opts.scope`），`venv` 走 `lib/venv.js` 的
   `createVenvReader()`（每次调用现读，`index.js` 传**原始** `opts.venv` 而非装配期快照）。
 - **工具 `description` 可以是 getter**：宿主 `register()` 按引用存定义对象，模型侧投影在
   **每次投影**时解构 `definition.description`——0.2.2+ 是 `projectToolSchema()`，0.2.1 及
   更早是 `schemaOf()`，两代均实测；故 `get description()` 能跟上 volatile 换代
   （`ppt_master_info` / `ppt_master_check_env` 即此写法）。
-- **`tools.execute` 有两代形状**（0.2.2 起执行外置）：0.2.2+ 必须先 `tools.setExecutor()`
-  （宿主默认装 `@deepseek-ai/dsh-tool-executor-native`），入参
-  `{calls:[{id,name,arguments}],signal}`、结果在 `results[i].result`，未装 executor 时抛
-  `TOOL_EXECUTOR_UNAVAILABLE`；0.2.1 及更早是单调用 `{callId,name,arguments}`。插件运行面
-  不直接用 `execute`，受影响的是 `check-dsh-compat` 探针——它按 `tools.setExecutor`
-  存在性分流（`executionModelOf` / `firstToolResult`，issue #31）。
-- **`agent/created` 监听器会被宿主 await**：reject ⇒ 会话创建失败。放权威判定时必须
-  `.catch()` + 超时上界（scope 的 `RESOLVE_TIMEOUT_MS=1500`）。
-- **`tools.restrict()` 只能在 agent 作用域调用**（根 ctx 调用抛
-  "requires a scoped context"），且**安装与释放两侧都 emit `tools/change`**——重算必须
-  差异式装层，否则自激；`tools.guard()` 装在根 ctx，返回 disposer。
-- **`cannot create effect on inactive context` 的含义是「会话已销毁」**，不是「作用域尚未
-  激活」：cordis `Fiber.assertActive()` 只在 `fiber.uid === null` 时抛 `INACTIVE_EFFECT`，
-  而 `uid` 仅在 fiber **dispose** 时置空（构造期赋 counter 值；`effect()` 另在 `state === 5`
-  卸载中也抛同一错误）。`restrict()` 内部走
-  `this.layers.effect(this.ctx, …)`，`this.ctx` 是**调用方**上下文（Service 的 shadow
-  语义）⇒ 对 `agent.ctx.tools` 调用用的就是该 agent 自己的 fiber。因此 `agent/created`
-  的监听器里做 async 判定后再装层，必须**先经 `agents.get(id)` 判活**（短命子会话——如
-  mnemon idle review——会在 `await` 期间被销毁）；重试对已死会话无意义（issue #33）。
+- **步骤级可见性 `when`（0.2.2-alpha.2+，本插件 scope 的唯一机制）**：
+  `tools.register(def, { when })` 后，宿主每步调 `tools.resolve({agent, signal})`，逐个
+  `await when(context)`；真才进本步可见集（投影与执行都过滤，隐藏工具调用按
+  `UNKNOWN_TOOL` 失败）。条件**抛错会让步骤准备失败**（`ToolActivationError`），故 `when`
+  必须同步、永不抛、一切不确定收敛成 `false`。**0.2.1 及更早没有 `when`/`resolve`**
+  （npm 0.2.1-rc.5 实测 0 处），第二参会被静默忽略 ⇒ `selected` 失效且无报错；本插件
+  因此把 `engines.dsh` 抬到 `>=0.2.2-rc.1`，并在 `apply` 用 `assertWhenCapable()`
+  自检 `tools.resolve`（缺失即 fail-loud）。`when` 里不要 `await`：异步精化（
+  `judgeAgent` + `resolveByPath`）只排到后台，本步按不可见处理。
 - **schemastery 受控解析**：`index.js` 在模块加载期**先裸导入**
   `import('@deepseek-ai/schemastery')`——装好的插件由 Node 从 profile 的 `node_modules`
   解析（与官方插件、与 `@wenaixi/dsh-ponytail` 同一条路径），**零环境变量依赖**；未命中才
@@ -102,7 +92,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 736 tests / 734 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 736/736。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 697 tests / 695 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 694 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0 |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
@@ -181,7 +171,8 @@ npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：
 - 合成入口 `ppt-master-env` **不落盘**——`verify-plugin.mjs` 字节比对面零变化；
 - `sync-upstream.mjs` 不读取本插件产物（scope/venv 与同步零交互面）；
 - 默认 `scope.mode=global` 下**零新增日志**（`apply.test.mjs`「能力齐全时不得输出降级
-  日志」用例守护）；默认配置行为与"没有该特性"逐字一致。
+  日志」用例守护）；在 ≥0.2.2 宿主上，默认配置行为与"没有该特性"逐字一致（<0.2.2
+  会在装载期 fail-loud，这是有意的兼容门，不是降级）。
 - 默认 `venv` 配置（`enabled=false` + 合法默认路径）下同样**零日志**：`loader/volatile-update`
   订阅只在 `invalidReason` **变化且非 null** 时报一条（同一原因重放不刷）——由
   `apply.test.mjs`「配置改成非法路径 → 保存后立即 warn；同一原因不重复刷」用例守护。
@@ -192,6 +183,10 @@ npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：
 
 `docs/superpowers/specs|plans|clarifications/` 按特性归档（OpenSpec CLI 缺席，Phase 1 走
 跳过路径，`.superpowers/.phase1-skipped` 为证）。
+
+工具可见范围机制已在 2026-11-18 改为步骤级 `when`：现行设计见
+`docs/superpowers/specs/2026-11-18-tool-scope-when-design.md`；`2026-10-18-tool-scope-design.md`
+只保留「为什么当初那样做」的历史，其 §5/§6 的 restrict/guard 实现描述已过时。
 
 §11 审查裁定表**只有一篇 design 有**——`2026-10-18-tool-scope-design.md` §11「审查裁决记录」
 （:260 起），内含 Gate 3 三轮分节裁决；实测 `grep -c '^## 11' docs/superpowers/specs/*.md`

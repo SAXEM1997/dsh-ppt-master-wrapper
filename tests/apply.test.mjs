@@ -28,11 +28,19 @@ import * as venv from '../lib/venv.js';
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'skills-fixture');
 
 /** 记录注册调用的 mock ctx；`skills` 缺省存在，`tools` 由参数决定是否携带。 */
-function makeCtx({ skills = true, tools = true } = {}) {
-  const calls = { providers: [], tools: [] };
+function makeCtx({ skills = true, tools = true, whenCapable = true } = {}) {
+  const calls = { providers: [], tools: [], whens: [] };
   const ctx = {};
   if (skills) ctx.skills = { registerProvider: (factory) => calls.providers.push(factory) };
-  if (tools) ctx.tools = { register: (tool) => calls.tools.push(tool) };
+  if (tools) {
+    ctx.tools = {
+      register: (tool, options) => {
+        calls.tools.push(tool);
+        calls.whens.push(options?.when);
+      },
+      ...(whenCapable ? { resolve: async () => ({ view: () => new Map() }) } : {}),
+    };
+  }
   return { ctx, calls };
 }
 
@@ -111,29 +119,63 @@ test('apply: skills+tools 齐全 → provider 注册一次且 tools.register 恰
   }
 });
 
-test('apply: scope.mode=selected 且宿主缺 ctx.inject ⇒ 降级日志且不崩（工具仍注册）', async () => {
+test('apply: 宿主缺 tools.resolve ⇒ fail-loud（不允许 when 被静默忽略）', async () => {
   const { root, cleanup } = await makePositiveRoot();
   try {
-    const registered = [];
-    const ctx = {
-      skills: { registerProvider: () => {} },
-      tools: { register: (tool) => registered.push(tool.name) },
-    };
-    const warnings = captureWarn(() =>
-      apply(ctx, { skillRoots: [root], scope: { mode: 'selected', workspaceIds: [] } }),
-    );
-
-    assert.equal(registered.length, 3, '工具注册不受 scope 降级影响');
-    assert.ok(
-      warnings.some((line) => /inject/.test(line)),
-      `缺 ctx.inject 时须有一条点名 inject 的降级日志，实际：${JSON.stringify(warnings)}`,
+    const { ctx } = makeCtx({ whenCapable: false });
+    assert.throws(
+      () => apply(ctx, { skillRoots: [root] }),
+      /tools\.resolve/,
+      '0.2.1 会静默忽略 when 第二参，必须拒绝装载而不是装作收窄成功',
     );
   } finally {
     await cleanup();
   }
 });
 
-test('apply: 未配置 scope ⇒ 零降级日志（默认 global 整段短路）', async () => {
+test('apply: 三个工具都拿到同一个 when 谓词（缺一即部分收窄）', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const { ctx, calls } = makeCtx();
+    apply(ctx, { skillRoots: [root], scope: { mode: 'selected', workspaceIds: ['w1'] } });
+    assert.equal(calls.whens.length, 3);
+    assert.ok(calls.whens.every((predicate) => typeof predicate === 'function'));
+    assert.equal(new Set(calls.whens).size, 1, '三个注册必须共用一个判定器');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('apply: scope.mode=selected 且无 registry 注入 ⇒ 工具仍注册，when fail-closed 且只告警一次', async () => {
+  const { root, cleanup } = await makePositiveRoot();
+  try {
+    const registered = [];
+    const whens = [];
+    const ctx = {
+      skills: { registerProvider: () => {} },
+      tools: {
+        register: (tool, options) => {
+          registered.push(tool.name);
+          whens.push(options?.when);
+        },
+        resolve: async () => ({ view: () => new Map() }),
+      },
+    };
+    const agent = { id: 'agent-1', session: { header: { cwd: '/tmp/nowhere' } } };
+    const warnings = captureWarn(() => {
+      apply(ctx, { skillRoots: [root], scope: { mode: 'selected', workspaceIds: ['ws-1'] } });
+      assert.equal(whens[0]({ agent }), false, '无注册表时 selected 必须 fail-closed');
+      assert.equal(whens[0]({ agent }), false);
+    });
+
+    assert.equal(registered.length, 3, '工具照常注册');
+    assert.equal(warnings.filter((line) => /workspaceRegistry/.test(line)).length, 1, '同一原因只告警一次');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('apply: 未配置 scope ⇒ 零降级日志（默认 global 恒可见）', async () => {
   const { root, cleanup } = await makePositiveRoot();
   try {
     const { ctx } = makeCtx();
@@ -636,10 +678,13 @@ test('G3-13: loader 形态引用袋经 apply 端到端去引用——正文与 i
 
 /** 带事件总线与 effect 收集的 mock ctx：`emit` 手动触发宿主事件。 */
 function makeLiveCtx() {
-  const calls = { providers: [], tools: [], listeners: new Map(), effects: [] };
+  const calls = { providers: [], tools: [], whens: [], listeners: new Map(), effects: [] };
   const ctx = {
     skills: { registerProvider: (factory) => calls.providers.push(factory) },
-    tools: { register: (tool) => calls.tools.push(tool) },
+    tools: {
+      register: (tool, options) => { calls.tools.push(tool); calls.whens.push(options?.when); },
+      resolve: async () => ({ view: () => new Map() }),
+    },
     on: (event, handler) => {
       const list = calls.listeners.get(event) ?? [];
       list.push(handler);

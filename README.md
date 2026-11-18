@@ -118,18 +118,18 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 
 ### 工具可见范围（全局 / 指定工作区）
 
-3 个 `ppt_master_*` 工具默认注册为**全局工具**。工作区很多且多数与 PPT 无关时，可把它们从无关工作区的工具表里**真正移除**（宿主装配层 `tools.restrict`，不是前端过滤）：
+3 个 `ppt_master_*` 工具默认注册为**全局工具**。工作区很多且多数与 PPT 无关时，可把它们从无关工作区的工具表里**真正移除**——走宿主的**步骤级可见性**（`tools.register(def, { when })`），不是前端过滤：每个模型步骤宿主都会调 `tools.resolve()` 逐工具判定，为真才出现在本步工具表。
 
 | 键 | 取值 | 默认 |
 |---|---|---|
 | `scope.mode` | `global`（所有工作区可见） / `selected`（仅名单内可见） | `global` |
 | `scope.workspaceIds` | 工作区 id 字符串数组 | `[]` |
 
-`selected` 下：会话按「工作区 `sessionIds` 成员 → 会话 `cwd` 规范路径」两级判定归属，命中且 id 在名单里才可见——**不属于任何工作区的会话也看不到**。降级口径（明示收窄意图，答不出来时不静默放宽）：缺判定服务时按最严口径拒绝并 `console.warn`；注册表瞬时读失败维持上一轮判定；宿主缺 `tools.restrict` 时退化为仅执行层拒绝。配置走卡片的模式单选 + 工作区勾选列表（清单来自宿主 `workspaces` 服务），保存即生效。
+`selected` 下：会话按「工作区 `sessionIds` 成员 → 会话 `cwd` 规范路径」两级判定归属，命中且 id 在名单里才可见——**不属于任何工作区的会话也看不到**。失败口径（明示收窄意图，答不出来时不静默放宽）：注册表未就绪或读取失败、无 `cwd`、路径未命中、名单为空、判定尚未完成 ⇒ 本步一律不可见（fail-closed），注册表未就绪只 `console.warn` 一次；配置保存后下一步生效。
 
-宿主下限：`scope.mode=selected` 除配置卡片外，还依赖宿主注入 `agents` / `workspaceRegistry` 服务与 `tools.restrict` / `tools.guard` 能力；缺任一时按上述降级口径拒绝或降级（不静默放宽），不影响 `global` 模式与其余功能。
+宿主下限：`scope` 依赖步骤级 `when`（`tools.register(def, { when })` + `tools.resolve`），即 **DSH ≥ 0.2.2-rc.1**；更早的宿主没有该能力（0.2.1 会静默忽略 `when`），本版本 `engines.dsh` 声明下限并在装载期 fail-loud，不会出现"配了 selected 却全可见"的静默失效。
 
-已知限制：只收窄**工具**不收窄技能条目；判定基于会话创建时的 `cwd`；已删除工作区的 id 被忽略；释放限制层时宿主抛错则该层可能残留（重启可清）；市场截图 `assets/screenshot-1-config-card.png` 待重制（卡片新增了可见范围节）。
+已知限制：只收窄**工具**不收窄技能条目；判定基于会话创建时的 `cwd`；符号链接的 `cwd` 首步可能不可见，异步规范化后下一步恢复；隐藏工具的调用会以宿主 `UNKNOWN_TOOL` 失败（不再有自定义拒绝文案）；已删除工作区的 id 被忽略；市场截图 `assets/screenshot-1-config-card.png` 待重制（卡片新增了可见范围节）。
 
 ### profile patch（等价通道）
 

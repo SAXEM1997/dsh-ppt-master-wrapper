@@ -173,13 +173,6 @@ test('readWorkspaces: 归一化注册表项，丢弃无 id 的项', () => {
   assert.equal(scope.readWorkspaces('nope').length, 0);
 });
 
-test('toolNamesOf: 按注册顺序取名字，跳过无名项', () => {
-  const tools = [{ name: 'ppt_master_info' }, { name: 'ppt_master_check_env' }, {}, { name: 'x' }];
-  assert.deepEqual(scope.toolNamesOf(tools), ['ppt_master_info', 'ppt_master_check_env', 'x']);
-  assert.deepEqual(scope.toolNamesOf(undefined), []);
-  assert.equal(Object.isFrozen(scope.toolNamesOf([{ name: 'a' }])), true);
-});
-
 // ─── 同步首判 resolveNow（design §5.4，给 agent/created 的窗口用）───
 
 const WORKSPACES = scope.readWorkspaces([
@@ -382,7 +375,7 @@ test('judgeAgent: 判定结果带 agentId 与 cwd（供诊断与 guard 回显）
 
 // ─── M5：throwing `toString` 不得穿透（「任何函数都不向外抛」不变量）──────
 //
-// 最坏路径：装配期 `syncMode()` → `readScopeConfig` 抛 ⇒ `mountToolScope` 抛 ⇒ `apply` 抛
+// 最坏路径：装配期 `readScopeConfig` 抛 ⇒ `when` 的 try 兜住（按不可见），不得让判定异常升格
 // ⇒ 整个插件（含 vendor 技能面）装载失败。敌意对象的 throwing `toString` 是纯逻辑层
 // 唯一还能漏出的转换点，故逐个导出钉死"不抛 + 既定失败形态"。
 
@@ -440,7 +433,7 @@ test('M5: readWorkspaces 遇 throwing toString 的 title/sessionIds ⇒ 不抛�
   assert.deepEqual(list[1].sessionIds, [], 'sessionIds 非数组 ⇒ 空数组');
 });
 
-test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / projectAgent / toolNamesOf）', () => {
+test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / projectAgent）', () => {
   const evil = hostile();
   const selected = { mode: 'selected', workspaceIds: ['w1'] };
 
@@ -457,8 +450,6 @@ test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / 
     { id: 'a' },
     'cwd 取不到文本 ⇒ 退化为无 cwd',
   );
-
-  assert.deepEqual(scope.toolNamesOf([{ name: evil }, { name: 'ok' }]), ['ok']);
 });
 
 test('M5: resolveNow / judgeAgent 遇 throwing toString ⇒ 不抛，返回既定判定形态', async () => {

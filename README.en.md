@@ -117,18 +117,18 @@ GUI sidebar **Plugins → Installed → `dsh-ppt-master-wrapper`** → the card 
 
 ### Tool visibility scope (global / selected workspaces)
 
-The three `ppt_master_*` tools are registered **globally** by default. If most of your workspaces have nothing to do with PPT, the scope keys remove them from those workspaces' tool tables **for real** (the host's assembly-layer `tools.restrict`, not a front-end filter):
+The three `ppt_master_*` tools are registered **globally** by default. If most of your workspaces have nothing to do with PPT, the scope keys remove them from those workspaces' tool tables **for real** — through the host's **per-step visibility** (`tools.register(def, { when })`), not a front-end filter: on every model step the host calls `tools.resolve()` and only tools whose condition holds enter that step's tool set.
 
-| Key | Values | Default |
+| Key | Value | Default |
 |---|---|---|
 | `scope.mode` | `global` (every workspace) / `selected` (only the listed ones) | `global` |
 | `scope.workspaceIds` | array of workspace id strings | `[]` |
 
-Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible**. Degradation (an explicit narrowing intent is never silently widened): missing judgement services → deny under the strictest reading plus one `console.warn`; a transient registry read failure keeps the previous round's judgement; a host without `tools.restrict` degrades to execution-layer denial only. Configure via the card's mode radio + workspace checklist (fed by the host `workspaces` service); saving takes effect immediately.
+Under `selected`: a session's ownership is resolved by "workspace `sessionIds` membership → canonical path of the session `cwd`"; visible only when resolved **and** listed — **sessions belonging to no workspace stay invisible**. Failure policy (an explicit narrowing intent is never silently widened): registry not ready or unreadable, no `cwd`, path miss, empty list, or judgement not finished yet ⇒ invisible for that step (fail-closed), with a single `console.warn` when the registry is not ready; saving the config takes effect on the next step.
 
-Host floor: besides the config card, `scope.mode=selected` also depends on the host injecting the `agents` / `workspaceRegistry` services and the `tools.restrict` / `tools.guard` capabilities; when any is missing the scope falls back or denies under the readings above (never silently widened), with no impact on `global` mode or the rest of the plugin.
+Host floor: `scope` relies on per-step `when` (`tools.register(def, { when })` + `tools.resolve`), i.e. **DSH ≥ 0.2.2-rc.1**; older hosts lack it (0.2.1 silently ignores `when`), so this version declares the floor in `engines.dsh` and fails loud at load time instead of silently showing everything under `selected`.
 
-Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; ids of deleted workspaces are ignored; a restriction layer may linger if the host throws during release (a restart clears it); the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
+Known limitations: only **tools** are narrowed, not the skill entry; judgement uses the `cwd` at session creation; a symlinked `cwd` may be invisible for the first step and visible from the next one after async canonicalisation; calling a hidden tool now fails with the host's `UNKNOWN_TOOL` (no custom denial message); ids of deleted workspaces are ignored; the marketplace screenshot `assets/screenshot-1-config-card.png` awaits regeneration (the card gained the scope section).
 
 ### Profile patch (the equivalent channel)
 

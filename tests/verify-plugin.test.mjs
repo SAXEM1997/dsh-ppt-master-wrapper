@@ -144,7 +144,10 @@ test('runVerify 基线: mock ctx 断言 3 工具注册且 output.schema 为 obje
   const tools = [];
   const ctx = {
     skills: { registerProvider: () => {} },
-    tools: { register: (tool) => tools.push(tool) },
+    tools: {
+      register: (tool) => tools.push(tool),
+      resolve: async () => ({ view: () => new Map() }),
+    },
   };
   apply(ctx, { skillRoots: [miniVendorRoot] });
 

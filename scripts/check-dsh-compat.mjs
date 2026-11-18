@@ -187,33 +187,6 @@ const SDK_PACKAGES = [
   '@deepseek-ai/dsh-tools',
 ];
 
-// ─── tools.execute 的两代契约（0.2.2 起执行外置为 executor）──────────
-
-/**
- * `ctx.tools` 服务的执行模型：0.2.2 起执行能力从 `dsh-tools` 外置为 executor 插件
- * （`dsh-tool-executor-native` / `-ptc`），选择面是 `tools.setExecutor()`；此前版本
- * 没有该方法，`tools.execute()` 自带单调用实现。**能力探测而非版本号比较**——stub 与
- * 未来版本都不必维护版本表。
- *
- * @param {{setExecutor?: unknown}} [tools] 定位到的 SDK 的 `ctx.tools`（或替身）。
- * @returns {'batch' | 'single'} `batch` = 需先装 executor 且入参为 `{calls:[…]}`。
- */
-export function executionModelOf(tools) {
-  return typeof tools?.setExecutor === 'function' ? 'batch' : 'single';
-}
-
-/**
- * 执行结果归一化：批量形状 `{results:[{callId,result}]}` 取首条 result，单调用形状
- * 原样返回。探针只发一条调用，故首条即被测调用（取不到 ⇒ undefined，由调用方判失败）。
- *
- * @param {{results?: Array<{result?: unknown}>} | unknown} outcome 两代 execute 的返回值。
- * @returns {unknown} 单条调用结果（批量时为其 `result` 字段）。
- */
-export function firstToolResult(outcome) {
-  if (outcome === null || typeof outcome !== 'object') return outcome;
-  return Array.isArray(outcome.results) ? outcome.results[0]?.result : outcome;
-}
-
 // ─── resolveDshModules：有序五级 + 无序扫描 ──────────────────────
 
 /** 非空字符串 → 原值；否则 null（空串环境变量视为未设置）。 */
@@ -807,257 +780,71 @@ export async function runCompatCheck(options = {}) {
       ? undefined
       : { skillRoots: options.skillRoots };
 
-  // ── 3b. 工具可见范围（2026-10-18）依赖的两条宿主契约，在**真宿主**上实跑 ──
+  // ── 3b. 工具可见范围（2026-11-18 迁移）唯一的宿主契约：步骤级 `when` ──
   //
-  // `lib/scope-host.js` 的整个收窄面押在 `tools.restrict()` 与 `tools.guard()` 上：
-  // 前者只能在 agent 作用域调用（根 ctx 调用必须抛错——这是"别把限制装到全局"的护栏），
-  // 后者在普通 ctx 上全局生效并返回 disposer。假宿主无法证明这两点，故在这里对真实
-  // ToolRuntime 实跑一次。
+  // 本插件只经 `tools.register(def, { when })` + 宿主 `tools.resolve({ agent, signal })`
+  // 收窄：判定器被逐工具 `await`，为真才进入本步可见集。假宿主证明不了这一点，
+  // 故在真实 ToolRuntime 上注册两个探针（when 恒 false / 恒 true）并 resolve 一次。
+  // `resolve` 缺席即宿主低于 0.2.2-alpha.2 —— 本插件（`engines.dsh >= 0.2.2-rc.1`（顶部字段））
+  // 会拒绝装载，这里必须报 problem 而不是记 note。
   try {
     const ctxScope = mount({ withSkills: false });
-    const toolNames = createTools(toolOptions).map((tool) => tool.name);
-
-    let restrictError;
-    try {
-      ctxScope.tools.restrict({ deny: toolNames });
-    } catch (error) {
-      restrictError = error;
-    }
-    if (restrictError === undefined) {
-      problems.push('§7.7⑦ tools.restrict() 在根 ctx 上未抛错——"per-agent 才能收窄"的护栏失效');
-    } else if (!/scoped context/i.test(String(restrictError.message))) {
-      problems.push(`§7.7⑦ tools.restrict() 根 ctx 抛错文案不含 "scoped context": ${firstLine(restrictError)}`);
-    }
-
-    let guardDisposer;
-    try {
-      guardDisposer = ctxScope.tools.guard(() => undefined);
-    } catch (error) {
-      problems.push(`§7.7⑦ tools.guard() 在普通 ctx 上不可用: ${firstLine(error)}`);
-    }
-    // `guard()` 返回 undefined 正是"契约破裂"的形态——必须报 problem，不能静默通过。
-    if (typeof guardDisposer !== 'function') {
-      problems.push('§7.7⑦ tools.guard() 未返回 disposer（返回 undefined 时 scope-host 会重复安装 guard）');
-    } else {
-      guardDisposer();
-      notes.push(
-        '§7.7⑦ 工具可见范围宿主契约: 真实 ToolRuntime 上 tools.restrict() 在根 ctx 按预期抛 "scoped context"'
-          + '（收窄必须装在 agent.ctx）；tools.guard() 在普通 ctx 可安装且返回 disposer',
-      );
-    }
-
-    // ── guard 拒绝语义（M2b）：guard 返回 string ⇒ 该次工具调用被拒绝 ──
-    //
-    // scope 特性的全部 fail-closed 兜底押在 SDK 的这条契约上（dsh-tools ToolRuntime
-    // 的 guard 契约：「a returned string denies the execution」——执行管线在调度前取
-    // guardReason(exec)，非 undefined 即以 `Error: <理由>` 物化成 isError 结果）。
-    // 只验证「可安装 + 返回 disposer」从未行使过拒绝，等于没押契约。观察通道按真实
-    // API 取用：优先公开执行入口 `tools.execute()` 端到端（注册探针工具 → 装返回固定
-    // 字符串的 guard → 真实调度一次调用 → 断言被拒、理由逐字一致、工具体零执行；再装
-    // 返回 undefined 的 guard 反向断言放行）；无该公开面时回落公开方法
-    // `tools.guardReason(exec)`；两路皆无（stub 宿主）→ 只记 note（同 dsh-scope 缺席
-    // 的处理），真实 SDK 环境两条路径至少其一必须在场。
-    //
-    // **两代执行契约（0.2.2 起，issue #31）**：0.2.2 把执行外置为 executor 插件——
-    // 必须先 `tools.setExecutor(...)`（宿主默认装 `dsh-tool-executor-native`），且
-    // `tools.execute` 入参是批量 `{calls:[{id,name,arguments}],signal}`、结果在
-    // `results[i].result`；未装 executor 时它直接抛 TOOL_EXECUTOR_UNAVAILABLE。
-    // 按能力探测分流（`executionModelOf`），**不按版本号**；0.2.1 及更早仍走单调用。
-    // 有 setExecutor 却取不到 executor 包时降级到 guardReason/note —— 那是 SDK 组合
-    // 缺失，不是本插件契约破裂，不能误报。
-    const GUARD_DENIAL_REASON = 'scope: not visible';
-    const executionModel = executionModelOf(ctxScope.tools);
-    let executorMounted = false;
-    if (executionModel === 'batch') {
-      const nativeEntry = entryOf(resolved.path, '@deepseek-ai/dsh-tool-executor-native');
-      if (nativeEntry === null) {
-        // 0.2.2 宿主组合本应带 native executor（`dsh-base` 的 bundle patch 就装它）。
-        // 缺包 ⇒ 观察通道降级，必须让它在 warnings 里可见，不能只剩一条 note。
-        warnings.push(
-          '§7.7⑦ 0.2.2 执行模型下未找到 @deepseek-ai/dsh-tool-executor-native'
-            + '（宿主组合缺外置执行器）——guard 拒绝语义退回 guardReason/note，端到端未验证',
-        );
-      } else {
-        try {
-          const native = await importModule(nativeEntry.url);
-          if (typeof native?.NativeToolExecutor === 'function') {
-            // 与宿主同形：直接实例化并选择（等价于 `ctx.plugin(executor)`，但免去
-            // fiber 异步激活——探针必须同步可用）。
-            ctxScope.tools.setExecutor(new native.NativeToolExecutor(ctxScope));
-            executorMounted = true;
-          } else {
-            warnings.push(
-              '§7.7⑦ @deepseek-ai/dsh-tool-executor-native 未导出 NativeToolExecutor 构造函数'
-                + '（导出面变更）——guard 拒绝语义退回 guardReason/note，端到端未验证',
-            );
-          }
-        } catch (error) {
-          // executor 包在场却装不上（构造函数签名变了 / 装载期抛错）——值得一条 warning：
-          // 本插件不依赖它，但探针的观察通道会因此降级，别让降级无声发生。
-          warnings.push(
-            `§7.7⑦ 0.2.2 executor 装载失败（${firstLine(error)}）——guard 拒绝语义改走 guardReason/降级`,
-          );
-          executorMounted = false;
-        }
-      }
-    }
-    const guardChannel = executionModel === 'batch'
-      ? (executorMounted
-        ? 'execute'
-        : (typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null))
-      : (typeof ctxScope.tools.execute === 'function'
-        ? 'execute'
-        : (typeof ctxScope.tools.guardReason === 'function' ? 'guardReason' : null));
-    if (executionModel === 'batch' && !executorMounted && guardChannel === 'guardReason') {
-      notes.push(
-        '§7.7⑦ 0.2.2 执行模型未取得 @deepseek-ai/dsh-tool-executor-native，'
-          + 'guard 拒绝语义改走公开方法 guardReason(exec) 观察（执行面端到端未验证）',
-      );
-    }
-    if (guardChannel === null) {
-      notes.push(
-        '§7.7⑦ guard 拒绝语义未验证：本环境 ToolRuntime 无可用执行面（'
-          + (executionModel === 'batch'
-            ? '0.2.2+ 需 @deepseek-ai/dsh-tool-executor-native，且 guardReason 也缺席'
-            : 'execute/guardReason 均缺席')
-          + '——真实 SDK 二者至少其一在场）',
+    if (typeof ctxScope.tools.resolve !== 'function') {
+      problems.push(
+        '§7.7⑦ tools.resolve() 缺席——宿主不提供步骤级可见性（需要 DSH ≥ 0.2.2-rc.1），'
+          + '本插件的 scope 收窄与引擎下限都押在它上面',
       );
     } else {
-      const problemsBeforeGuard = problems.length;
+      const before = problems.length;
+      const agent = { id: 'compat-when-probe' };
+      const signal = new AbortController().signal;
+      const definition = (toolName) => ({
+        name: toolName,
+        description: 'check-dsh-compat §7.7⑦ 步骤级可见性探针',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        output: {
+          schema: { type: 'object', properties: {}, additionalProperties: false },
+          render: () => [{ type: 'text', text: '' }],
+        },
+        execute: async () => ({}),
+      });
+      let seenContext;
+      const releaseHidden = ctxScope.tools.register(definition('compat-when-hidden'), {
+        when: (context) => {
+          seenContext = context;
+          return false;
+        },
+      });
+      const releaseShown = ctxScope.tools.register(definition('compat-when-shown'), {
+        when: () => true,
+      });
+      let selection;
       try {
-        if (guardChannel === 'execute') {
-          // 形状差异只在这里：入参与结果投影随执行模型切换，断言面两代一致。
-          const callProbe = async () => {
-            const signal = new AbortController().signal;
-            if (executionModel === 'batch') {
-              // `arguments` 传 JSON 字符串：真实调用块就是字符串（pipeline 的
-              // parseArguments 对对象只靠 JSON.parse 失败回落，别依赖那条兜底）。
-              return firstToolResult(await ctxScope.tools.execute({
-                calls: [{ id: 'compat-guard-probe', name: 'compat-guard-probe', arguments: '{}' }],
-                signal,
-              }));
-            }
-            return ctxScope.tools.execute({
-              callId: 'compat-guard-probe',
-              name: 'compat-guard-probe',
-              arguments: {},
-              signal,
-            });
-          };
-          let probeBodyRuns = 0;
-          ctxScope.tools.register({
-            name: 'compat-guard-probe',
-            description: 'check-dsh-compat §7.7⑦ 探针工具：以执行计数观测 guard 的拒绝/放行',
-            parameters: { type: 'object', properties: {}, additionalProperties: false },
-            output: {
-              schema: { type: 'object', properties: { ok: { type: 'boolean' } }, additionalProperties: false },
-              render: (args, value) => [{ type: 'text', text: JSON.stringify(value) }],
-            },
-            execute: async () => {
-              probeBodyRuns += 1;
-              return { ok: true };
-            },
-          });
-          // 拒绝半：返回固定字符串的 guard ⇒ 调用被拒、error.message 逐字一致、工具体零执行。
-          const denyGuard = ctxScope.tools.guard(() => GUARD_DENIAL_REASON);
-          let denied;
-          try {
-            denied = await callProbe();
-          } finally {
-            denyGuard();
-          }
-          if (denied?.isError !== true) {
-            problems.push(
-              `§7.7⑦ guard 返回 "${GUARD_DENIAL_REASON}" 未拒绝工具调用（isError=${String(denied?.isError)}）`
-                + '——scope 的 fail-closed 兜底失效',
-            );
-          } else if (denied.error?.message !== GUARD_DENIAL_REASON) {
-            problems.push(
-              `§7.7⑦ guard 拒绝理由不一致: 期望 "${GUARD_DENIAL_REASON}"、实读 ${JSON.stringify(denied.error?.message)}`,
-            );
-          } else if (probeBodyRuns !== 0) {
-            problems.push('§7.7⑦ guard 拒绝后探针工具体仍被执行（拒绝未短路调度）');
-          }
-          // 放行半：返回 undefined 的 guard ⇒ 调用放行、工具体恰执行一次且非错误结果。
-          const allowGuard = ctxScope.tools.guard(() => undefined);
-          let allowed;
-          try {
-            allowed = await callProbe();
-          } finally {
-            allowGuard();
-          }
-          if (allowed?.isError === true || probeBodyRuns !== 1) {
-            problems.push(
-              `§7.7⑦ guard 返回 undefined 未放行工具调用（isError=${String(allowed?.isError)}、`
-                + `探针工具体执行 ${probeBodyRuns} 次）`,
-            );
-          }
-          if (problems.length === problemsBeforeGuard) {
-            notes.push(
-              `§7.7⑦ guard 拒绝语义: 返回 "${GUARD_DENIAL_REASON}" 的 guard 经真实 execute() 拒绝了调用`
-                + '（isError=true、error.message 逐字一致、探针工具体 0 次执行）；'
-                + '返回 undefined 的 guard 放行（工具体恰 1 次执行、非错误结果）'
-                + `（执行模型 ${executionModel}`
-                + (executorMounted ? '，已挂 @deepseek-ai/dsh-tool-executor-native' : '')
-                + '）',
-            );
-          }
-        } else {
-          const denyGuard = ctxScope.tools.guard(() => GUARD_DENIAL_REASON);
-          try {
-            const reason = ctxScope.tools.guardReason({});
-            if (reason !== GUARD_DENIAL_REASON) {
-              problems.push(
-                `§7.7⑦ guardReason 未逐字回报 guard 返回串: 实读 ${JSON.stringify(reason)}`,
-              );
-            } else {
-              notes.push(
-                `§7.7⑦ guard 拒绝语义: 公开方法 guardReason(exec) 逐字回报 guard 返回的 "${GUARD_DENIAL_REASON}"`,
-              );
-            }
-          } finally {
-            denyGuard();
-          }
+        selection = await ctxScope.tools.resolve({ agent, signal });
+        if (seenContext?.agent !== agent || seenContext?.signal !== signal) {
+          problems.push('§7.7⑦ when 收到的 context 不是 resolve 的 { agent, signal } 原样对象');
         }
-      } catch (error) {
-        problems.push(`§7.7⑦ guard 拒绝语义探针失败: ${firstLine(error)}`);
-      }
-    }
-
-    // ── 正向路径：在**真 agent 作用域**里实跑一次 restrict ──
-    // 否定路径只证明"根 ctx 不行"，本特性真正依赖的是"作用域里行"。
-    // `@deepseek-ai/dsh-scope` 是可选的（老宿主可能没有）⇒ 缺失只记 note，不判失败。
-    let scopeModule;
-    try {
-      const scopeEntry = entryOf(resolved.path, '@deepseek-ai/dsh-scope');
-      if (scopeEntry !== null) scopeModule = await importModule(scopeEntry.url);
-    } catch {
-      scopeModule = undefined;
-    }
-    if (typeof scopeModule?.createScope !== 'function') {
-      notes.push('§7.7⑦ 正向路径未验证：本环境无 @deepseek-ai/dsh-scope（或不可导入）');
-    } else {
-      for (const tool of createTools(toolOptions)) ctxScope.tools.register(tool);
-      const scopeHandle = scopeModule.createScope(ctxScope, 'compat-probe');
-      try {
-        const release = scopeHandle.ctx.tools.restrict({ deny: [toolNames[0]] });
-        if (typeof release !== 'function') {
-          problems.push('§7.7⑦ agent 作用域的 tools.restrict() 未返回 disposer');
-        } else {
-          release();
+        const visible = [...selection.view(agent).keys()];
+        if (visible.includes('compat-when-hidden')) {
+          problems.push('§7.7⑦ when=false 的工具仍进入本步可见集（步骤级收窄失效）');
+        }
+        if (!visible.includes('compat-when-shown')) {
+          problems.push('§7.7⑦ when=true 的工具未进入本步可见集（resolve 未执行条件）');
+        }
+        if (problems.length === before) {
           notes.push(
-            `§7.7⑦ 正向路径: 真实 ToolRuntime 上 agent 作用域 tools.restrict({deny:["${toolNames[0]}"]}) `
-              + '返回可调用 disposer（装配层收窄成立）',
+            '§7.7⑦ 步骤级可见性: 真实 ToolRuntime 上 when=false 被排除、when=true 被纳入'
+              + '（tools.register(def,{when}) + tools.resolve 契约成立）',
           );
         }
-      } catch (error) {
-        problems.push(`§7.7⑦ agent 作用域的 tools.restrict() 抛错: ${firstLine(error)}`);
       } finally {
-        if (typeof scopeHandle.dispose === 'function') scopeHandle.dispose();
+        selection?.dispose?.();
+        releaseHidden?.();
+        releaseShown?.();
       }
     }
   } catch (error) {
-    problems.push(`§7.7⑦ 工具可见范围宿主契约探针失败: ${firstLine(error)}`);
+    problems.push(`§7.7⑦ 步骤级可见性探针失败: ${firstLine(error)}`);
   }
 
   // ── 3. ToolRuntime register 验证：createTools() 真实三工具产物（方法形态）──

@@ -46,12 +46,10 @@
     "registry": "https://registry.npmjs.org"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.12.0",
+    "dsh": ">=0.2.2-rc.1"
   },
   "dsh": {
-    "engines": {
-      "dsh": ">=0.1.1-rc.1"
-    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
