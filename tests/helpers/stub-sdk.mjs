@@ -252,7 +252,7 @@ export async function buildStubSdk(modules, {
     // M8：从空壳补到「最小可用」。三条方法签名逐字对齐真实 cordis
     // （node_modules/@deepseek-ai/cordis/lib/index.js）：
     //  - `inject(deps, cb)`＝`this.plugin({inject, apply})`——缺任一服务则**永不回调**
-    //    （cordis 对永不可用服务不回调，这正是 scope-host 注入看门狗依赖的语义），
+    //    （cordis 对永不可用服务不回调，scope-host 依赖这一点：注入未到即 fail-closed），
     //    齐全时同步回调并以该 ctx 自身充当注入视图（`cb(ctx)`，cordis 给的是绑好
     //    服务的 fiber ctx）；返回 disposer（真实为可 await 的 fiber，stub 不模拟异步装载）。
     //  - `on(name, listener)` 登记处理器并返回取消函数（真实返回 disposer）。
