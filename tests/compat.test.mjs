@@ -10,8 +10,6 @@ import { dirname, join } from 'node:path';
 
 import {
   PLUGIN_ENTRY,
-  executionModelOf,
-  firstToolResult,
   hasStaticSchemasteryImport,
   resolveDshModules,
   runCompatCheck,
@@ -443,64 +441,34 @@ test('runCompatCheck 基线: stub SDK 全绿——三真实工具过 register、
   }
 });
 
-// ─── §7.7⑦ 执行模型分流（DSH 0.2.2 起执行外置为 executor）─────────
+// ─── §7.7⑦ 步骤级可见性契约（2026-11-18 迁移）─────────
 //
-// 0.2.2 把工具执行从 dsh-tools 外置为 executor 插件：`tools.setExecutor()` 必须先装
-// executor，`tools.execute` 入参由单调用 `{callId,name,arguments}` 改为批量
-// `{calls:[{id,name,arguments}]}`、结果在 `results[i].result`；未装 executor 时直接抛
-// TOOL_EXECUTOR_UNAVAILABLE。探针若仍按 0.2.1 形状调用，会在真 0.2.2 上以「探针失败」
-// 误报契约破裂（2026-11-04 实测签名），故按能力分流——两条分支都必须被钉住。
+// 本插件只经 `tools.register(def, { when })` + 宿主 `tools.resolve({agent,signal})`
+// 收窄；0.2.1 没有 `resolve`（npm 实测 0 处），会静默忽略 when 第二参 ⇒ selected
+// 静默失效。故 compat 必须在真/替身 ToolRuntime 上验证「false 被排除、true 被纳入」，
+// 并在缺席时报 problem（本插件的 `dsh.engines.dsh >= 0.2.2-rc.1` 押在它上面）。
 
-test('executionModelOf: 有 setExecutor ⇒ batch（0.2.2+）；无 ⇒ single（0.2.1 及 stub 默认形态）', () => {
-  assert.equal(executionModelOf({ setExecutor() {} }), 'batch');
-  assert.equal(executionModelOf({ execute() {} }), 'single', '0.2.1 无 setExecutor —— 单调用契约');
-  assert.equal(executionModelOf(undefined), 'single', '无 tools 面按 single（后续 guardReason/note 兜底）');
-});
-
-test('firstToolResult: 批量结果取 results[0].result；单调用结果原样返回', () => {
-  const single = { isError: true, error: { message: 'scope: not visible' } };
-  assert.equal(firstToolResult(single), single, '单调用形状不得被改写');
-  const batch = { results: [{ callId: 'c1', result: single }] };
-  assert.equal(firstToolResult(batch), single, '批量形状取首条 result');
-  assert.equal(firstToolResult({ results: [] }), undefined, '空批量 → undefined（由调用方判失败）');
-});
-
-test('runCompatCheck: 0.2.2 执行模型——探针自装 native executor 并以批量形状端到端验证 guard 拒绝', async () => {
-  const [sdk, fixture] = await Promise.all([
-    makeStubSdk({ executorModel: 'batch' }),
-    makePositiveFixture(),
-  ]);
+test('runCompatCheck: 步骤级可见性——when=false 被排除、when=true 被纳入（stub ToolRuntime）', async () => {
+  const [sdk, fixture] = await Promise.all([makeStubSdk(), makePositiveFixture()]);
   try {
     const result = await runCompatCheck({
       dshModules: sdk.modules,
       skillRoots: [fixture.root],
       env: {},
     });
-    assert.deepEqual(result.problems, [], `批量路径不得有问题项: ${result.problems.join(' | ')}`);
-    // 执行面必须真被走到：note 里既有拒绝/放行结论，也标注了走的是批量形状。
-    const guardNote = result.notes.find((note) => note.includes('guard 拒绝语义'));
-    assert.ok(guardNote !== undefined, `须产出 guard 拒绝语义 note（实际: ${JSON.stringify(result.notes)}）`);
-    assert.match(guardNote, /batch/, `note 须标注批量执行模型: ${guardNote}`);
-    // 探针确实安装了 executor（stub 侧台账），证明走的是批量分支而非单调用分支。
-    const toolsStub = await stubModule(sdk.modules, '@deepseek-ai/dsh-tools');
-    assert.equal(toolsStub.executorLog.length, 1, '探针须恰好安装一个 executor');
-    // 入参形状自证：两次 execute（拒绝半 + 放行半）都必须是 {calls:[{id,name,arguments}]}，
-    // 且 arguments 是 JSON 字符串（真实调用块形态）。替身对非批量入参直接抛，故此断言
-    // 同时钉住「探针不会退回单调用形状」。
-    assert.equal(toolsStub.batchCalls.length, 2, '拒绝半与放行半各一次批量调用');
-    for (const call of toolsStub.batchCalls) {
-      assert.equal(call.length, 1, '每次批量调用只含一个 call');
-      assert.equal(call[0].name, 'compat-guard-probe');
-      assert.equal(call[0].argType, 'string', 'arguments 须为 JSON 字符串');
-    }
+    assert.deepEqual(result.problems, [], `不得有问题项: ${result.problems.join(' | ')}`);
+    assert.ok(
+      result.notes.some((note) => note.includes('步骤级可见性')),
+      `须产出步骤级可见性 note（实际: ${JSON.stringify(result.notes)}）`,
+    );
   } finally {
     await Promise.all([sdk.cleanup(), fixture.cleanup()]);
   }
 });
 
-test('runCompatCheck: 有 setExecutor 但缺 executor 包 ⇒ 不误报（降级 guardReason/note，problems 空）', async () => {
+test('runCompatCheck: 宿主缺 tools.resolve ⇒ §7.7⑦ 报 problem（0.2.1 静默失效不可接受）', async () => {
   const [sdk, fixture] = await Promise.all([
-    makeStubSdk({ executorModel: 'batch', omit: ['@deepseek-ai/dsh-tool-executor-native'] }),
+    makeStubSdk({ whenCapable: false }),
     makePositiveFixture(),
   ]);
   try {
@@ -509,15 +477,9 @@ test('runCompatCheck: 有 setExecutor 但缺 executor 包 ⇒ 不误报（降级
       skillRoots: [fixture.root],
       env: {},
     });
-    assert.deepEqual(result.problems, [], `缺 executor 包不得判失败: ${result.problems.join(' | ')}`);
     assert.ok(
-      result.notes.some((note) => note.includes('guardReason') || note.includes('未验证')),
-      `须以 note 说明降级（实际: ${JSON.stringify(result.notes)}）`,
-    );
-    // 降级必须可见：缺 executor 包要在 warnings 里点名，不能只剩一条容易被忽略的 note。
-    assert.ok(
-      result.warnings.some((warning) => warning.includes('dsh-tool-executor-native')),
-      `缺 executor 包须有 warning 点名（实际: ${JSON.stringify(result.warnings)}）`,
+      result.problems.some((problem) => problem.includes('tools.resolve')),
+      `须点名 tools.resolve 缺席（实际: ${JSON.stringify(result.problems)}）`,
     );
   } finally {
     await Promise.all([sdk.cleanup(), fixture.cleanup()]);

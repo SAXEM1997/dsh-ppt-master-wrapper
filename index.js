@@ -20,8 +20,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { toolNamesOf } from './lib/scope.js';
-import { mountToolScope } from './lib/scope-host.js';
+import { mountToolScope, assertWhenCapable } from './lib/scope-host.js';
 import { createSkillProvider, parseFrontmatter } from './lib/skill-provider.js';
 import { createTools } from './lib/tools.js';
 import { assembleInjectionBag, effectiveInterpreter, snapshotVenvConfig } from './lib/venv.js';
@@ -419,23 +418,22 @@ export function apply(ctx, opts) {
   // omitted on the production path (Task 9 consumes it through `createTools`).
   // Method form here too, for the same traceable-`this` reason as above.
   const toolDefinitions = createTools({ skillRoots: bag.skillRoots, venv: venvSource });
-  for (const tool of toolDefinitions) {
-    tools.register(tool);
-  }
 
-  // 工具可见范围（`docs/superpowers/specs/2026-10-18-tool-scope-design.md`）。
-  // 名字清单从**注册产出**派生（不写第二份字面量）：`tools.restrict()` 对未知全局工具名会
-  // 直接抛错，名字与注册一旦漂移，限制层就装不上而失败只表现为"没隐藏"。
-  // `scopeConfig` 传的是**原始 volatile 引用容器**：宿主对 volatile-only 配置变更不重挂插件
-  // （`cordis-plugin-loader` 的 `_commitVolatile()`），所以必须让子系统每轮现读，
-  // 这也是上面"唯一形态差转换点 / 下游只见普通值"不变量在 `scope` 上的**唯一例外**。
-  // 在 tools.register 之后挂载：`restrict()` 只接受已注册的全局工具名。
+  // 工具可见范围（`docs/superpowers/specs/2026-11-18-tool-scope-when-design.md`）。
+  // 唯一路径是宿主**步骤级** `when`：`register(def, { when })` 后由 `tools.resolve()`
+  // 每步逐个判定。故先自检 `tools.resolve` 在场（0.2.1 会静默忽略第二参 ⇒ selected
+  // 失效且无报错，必须 fail-loud），再挂载判定器，最后带 `when` 注册。
+  // `scopeConfig` 传的是**原始 volatile 引用容器**：宿主对 volatile-only 配置变更不重挂
+  // 插件（`cordis-plugin-loader` 的 `_commitVolatile()`），故 `when` 每次现读，绝不拍平。
+  assertWhenCapable(tools);
   const scopeHandle = mountToolScope(ctx, {
     scopeConfig: opts?.scope,
-    toolNames: toolNamesOf(toolDefinitions),
     warn: (message) => console.warn(message),
   });
-  // 限制层与 guard 装在**别人**（agent / 根 ctx）身上，插件卸载不会自动回收，必须显式拆。
+  for (const tool of toolDefinitions) {
+    tools.register(tool, { when: scopeHandle.when });
+  }
+  // 判定器持有注册表引用与异步精化的缓存，插件卸载时显式释放。
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => () => scopeHandle.dispose(), `${name}: tool scope`);
   }

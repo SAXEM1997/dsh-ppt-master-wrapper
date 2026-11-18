@@ -1,3 +1,8 @@
+> **历史文档（2026-11-18 起部分过时）**：工具可见范围的宿主机制已改为步骤级 `when`
+> （`tools.register(def, { when })` + `tools.resolve`），本文 §5/§6 的 per-agent `restrict`、
+> 根 `guard`、看门狗与生命周期订阅均已删除。现行设计见
+> `docs/superpowers/specs/2026-11-18-tool-scope-when-design.md`；本文保留作决策史。
+
 # 设计：插件工具可见范围——全局 / 指定工作区（2026-10-18）
 
 > 任务名：`2026-10-18-tool-scope`（`Plan: medium`）。

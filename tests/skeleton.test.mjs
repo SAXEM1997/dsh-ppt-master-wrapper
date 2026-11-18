@@ -67,7 +67,7 @@ test('package.json: exports 四条目', () => {
 
 test('package.json: dsh 字段（engines + bundle.patch）', () => {
   const pkg = readPkg();
-  assert.equal(pkg.dsh.engines.dsh, '>=0.1.1-rc.1');
+  assert.equal(pkg.dsh.engines.dsh, '>=0.2.2-rc.1', '步骤级 when 自 0.2.2-alpha.2 起提供；0.2.1 会静默忽略');
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml');
 });
 

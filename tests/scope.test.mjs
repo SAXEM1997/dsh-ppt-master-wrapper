@@ -173,13 +173,6 @@ test('readWorkspaces: 归一化注册表项，丢弃无 id 的项', () => {
   assert.equal(scope.readWorkspaces('nope').length, 0);
 });
 
-test('toolNamesOf: 按注册顺序取名字，跳过无名项', () => {
-  const tools = [{ name: 'ppt_master_info' }, { name: 'ppt_master_check_env' }, {}, { name: 'x' }];
-  assert.deepEqual(scope.toolNamesOf(tools), ['ppt_master_info', 'ppt_master_check_env', 'x']);
-  assert.deepEqual(scope.toolNamesOf(undefined), []);
-  assert.equal(Object.isFrozen(scope.toolNamesOf([{ name: 'a' }])), true);
-});
-
 // ─── 同步首判 resolveNow（design §5.4，给 agent/created 的窗口用）───
 
 const WORKSPACES = scope.readWorkspaces([
@@ -440,7 +433,7 @@ test('M5: readWorkspaces 遇 throwing toString 的 title/sessionIds ⇒ 不抛�
   assert.deepEqual(list[1].sessionIds, [], 'sessionIds 非数组 ⇒ 空数组');
 });
 
-test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / projectAgent / toolNamesOf）', () => {
+test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / projectAgent）', () => {
   const evil = hostile();
   const selected = { mode: 'selected', workspaceIds: ['w1'] };
 
@@ -457,8 +450,6 @@ test('M5: usableText 的调用面全部不抛（isVisible / describeWorkspace / 
     { id: 'a' },
     'cwd 取不到文本 ⇒ 退化为无 cwd',
   );
-
-  assert.deepEqual(scope.toolNamesOf([{ name: evil }, { name: 'ok' }]), ['ok']);
 });
 
 test('M5: resolveNow / judgeAgent 遇 throwing toString ⇒ 不抛，返回既定判定形态', async () => {
