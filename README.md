@@ -168,6 +168,14 @@ GUI 侧边栏 **插件页 → 已安装 → `dsh-ppt-master-wrapper`** → 包�
 
 **其他**：插件装载失败并连带技能面消失，通常是 `@deepseek-ai/schemastery` 解析失败——装好的插件靠**裸导入**从 profile 的 `node_modules` 取它（与官方插件同一条路径），故先确认 profile 里确实提升了该包；`DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` 只是 `link:` 开发形态的兜底，宿主进程里通常为空，不要指望它们（详见 [AGENTS.md](AGENTS.md) §3）。**入口技能缺失**：宿主拒绝不带 `resourceBase` 的合成候选时仅入口技能缺席，vendor 技能与工具不受影响。
 
+**Windows 沙箱宿主：预览服务的 `--daemon` 不可用（已知上游问题）**：这类宿主把命令放进不允许进程 breakaway 的 Job Object（含 DSH），`confirm_ui` / `svg_editor` / `spec_review` 的 `--daemon` 会先打印 `pid=…`、随后与启动命令一起被回收（锁文件残留，`--wait-only` 会再起一个）。临时做法是在**宿主后台任务**里跑前台服务（不加 `--daemon`，`--timeout 0` 保持存活）：
+
+```bash
+python <skill>/scripts/confirm_ui/server.py <project> --timeout 0
+```
+
+页面与 `--wait-only` / `--shutdown` 照常工作。上游跟踪 [hugohe3/ppt-master#357](https://github.com/hugohe3/ppt-master/issues/357)；vendor 树逐字节，本仓库不能就地修。
+
 ## 同步上游更新
 
 ```bash
