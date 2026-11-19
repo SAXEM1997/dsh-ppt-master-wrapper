@@ -16,7 +16,7 @@
  * @module dsh-ppt-master-wrapper/scripts/check-pack
  */
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,14 +27,14 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const LOCAL_TEMPLATE_REL = 'skills/ppt-master/templates/local';
 
 /**
- * 该目录是否存在（含空目录：空目录也会被 npm 以目录条目形式带入包体）。
+ * 该保留路径上是否有任何东西——目录（模板库，空目录也会被 npm 以目录条目带入）
+ * 或普通文件（不该出现在这个路径，同样会被打包）都算。
  *
  * @param {string} [root] 仓库根（缺省 `REPO_ROOT`）。
  * @returns {boolean}
  */
 export function hasLocalTemplateLibrary(root = REPO_ROOT) {
-  const path = join(root, LOCAL_TEMPLATE_REL);
-  return existsSync(path) && statSync(path).isDirectory();
+  return existsSync(join(root, LOCAL_TEMPLATE_REL));
 }
 
 const USAGE = '用法: node scripts/check-pack.mjs [--root <dir>]';
