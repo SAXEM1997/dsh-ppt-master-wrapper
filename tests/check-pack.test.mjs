@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,17 @@ test('hasLocalTemplateLibrary: 只在目录存在时为真（文件不算）', (
   try {
     assert.equal(hasLocalTemplateLibrary(root), false, '空树不应拦截');
     mkdirSync(join(root, LOCAL_TEMPLATE_REL), { recursive: true });
+    assert.equal(hasLocalTemplateLibrary(root), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('check-pack: 保留路径上是普通文件也算（同样会被打包）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-pack-file-'));
+  try {
+    mkdirSync(join(root, 'skills/ppt-master/templates'), { recursive: true });
+    writeFileSync(join(root, LOCAL_TEMPLATE_REL), 'not a directory');
     assert.equal(hasLocalTemplateLibrary(root), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
