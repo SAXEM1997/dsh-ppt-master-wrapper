@@ -239,7 +239,7 @@ export const Config = z.object({
       .default(false)
       .description(
         'venv 隔离开关：true 时在下方路径创建/复用独立 venv 并以其中解释器运行上游脚本；'
-          + 'false（默认）沿用系统 python3/pip3。',
+          + 'false（默认）沿用系统解释器（python3，缺失或低于 3.10 时回退 python）与系统 pip3。',
       )
       .volatile(),
     path: z

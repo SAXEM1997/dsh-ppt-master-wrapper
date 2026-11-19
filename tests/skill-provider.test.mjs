@@ -634,8 +634,8 @@ test('入口 skill: 半成品也落「开但未就绪」文案——有 bin/pyth
 
 test('入口 skill: 态3（venv 关）——系统 python3（Windows 可回退 python）；disabled×invalid 同落此态', async () => {
   const off = await entryContent(venvConfig('~/.ppt-master/venv', false));
-  assert.ok(off.includes('venv 未启用：使用系统 `python3`'));
-  assert.ok(off.includes('Windows 上若只有 `python` 就用 `python`'), '态3 须给 Windows 的回退命令');
+  assert.ok(off.includes('venv 未启用：系统解释器优先 `python3`'));
+  assert.ok(off.includes('缺失或低于 3.10 时改用达标的 `python`'), '态3 须给回退命令与触发条件');
   assert.ok(!off.includes('配置无效'), 'disabled 优先：路径合法与否都不落态4');
   assert.ok(!off.includes('替换字面 `python3`'));
   assert.ok(!off.includes('先调用 `ppt_master_setup_deps` 准备环境'));
@@ -666,7 +666,7 @@ test('入口 skill: opts.venv 缺 enabled 键（测试/嵌入面直呼工厂）�
   const content = await entryContent({ path: missing });
 
   assert.ok(
-    content.includes('venv 未启用：使用系统 `python3`'),
+    content.includes('venv 未启用：系统解释器优先 `python3`'),
     `缺 enabled 键 ⇒ 态3（系统模式），实际正文：${content}`,
   );
   assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'), '不得落态2（未启用）');
