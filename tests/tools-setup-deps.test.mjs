@@ -358,23 +358,25 @@ test('setup_deps: 调用序列 = pip3 可用性探测 → 一条 pip3 install �
     assert.deepEqual(install[0].args, payload.installCmd.slice(1), 'stub 收到的 argv 与 installCmd 同源');
     assert.equal(install[0].command, payload.installCmd[0]);
 
-    // 探测组即 T6 复跑：python3 --version → guard → 逐 dist 一次元数据查询。
+    // 探测组：pip3 归属解释器核对（python3 --version）→ T6 复跑（python3 --version →
+    // guard → 逐 dist 一次元数据查询）。
     const argvOf = (call) => call.args.join(' ');
-    assert.equal(probes.length, 4, `--version + guard + 2 dist：${probes.map(argvOf).join(' | ')}`);
-    assert.ok(probes[0].args.includes('--version'), '先探测解释器');
-    assert.ok(String(probes[1].args.at(-1)).endsWith('attribution_guard.py'), '再跑 guard');
+    assert.equal(probes.length, 5, `pip3 归属核对 + --version + guard + 2 dist：${probes.map(argvOf).join(' | ')}`);
+    assert.ok(probes[0].args.includes('--version'), '先核对 pip3 所属解释器');
+    assert.ok(probes[1].args.includes('--version'), '再探测解释器');
+    assert.ok(String(probes[2].args.at(-1)).endsWith('attribution_guard.py'), '再跑 guard');
     assert.deepEqual(
-      probes.slice(2).map((call) => call.args.at(-1)),
+      probes.slice(3).map((call) => call.args.at(-1)),
       FIXTURE_DISTS,
       '最后逐个发行版元数据查询（要求文件解析顺序）',
     );
 
     assert.equal(calls.length > 0 && calls[0].command, 'pip3', '第一条调用是 pip3 可用性探测');
     assert.ok(calls[0].args.includes('--version'), '先探 pip3 是否可用，再安装');
-    assert.equal(calls.indexOf(install[0]), 1, '安装排在 pip3 可用性探测之后');
+    assert.equal(calls.indexOf(install[0]), 2, '安装排在 pip3 探测与归属核对之后');
     assert.ok(
-      calls.indexOf(install[0]) < calls.indexOf(probes[0]),
-      '先安装、后自检——自检不得抢在安装之前',
+      calls.indexOf(install[0]) < calls.indexOf(probes[1]),
+      '先安装、后自检——自检不得抢在安装之前（首个 python3 探测是 pip3 归属核对，可以在安装前）',
     );
     assert.deepEqual(
       payload.checkEnv.deps.map((dep) => dep.dist),
@@ -736,6 +738,40 @@ test('setup_deps: pip3 自称 Python 2 → 跳过它，改用解释器的 -m pip
       'python3', '-m', 'pip', 'install', '-r', join(skill, 'requirements.txt'),
     ], 'Python 2 的 pip3 不被驱动');
     assert.equal(payload.installExit, 0);
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: pip3 属于更旧的 python3 时，改用 check_env 解析出的解释器的 -m pip', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command === 'pip3') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.9 (python 3.9)\n', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: 'should not run\n', exitCode: 1 };
+      }
+      if (command === 'python3') {
+        if (args.includes('--version')) return { stdout: 'Python 3.9.13\n', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: '', exitCode: 1 };
+      }
+      if (command !== 'python') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.13 (python 3.13)\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (args.includes('--version')) return { stdout: 'Python 3.13.1\n', stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, [
+      'python', '-m', 'pip', 'install', '-r', join(skill, 'requirements.txt'),
+    ], '安装目标 = check_env/guard 实际使用的 3.13，而不是 pip3 所属的 3.9');
+    assert.equal(payload.installExit, 0);
+    assert.deepEqual(payload.checkEnv.python, { found: true, version: '3.13.1', meetsSkillRequirement: true });
+    assert.equal(payload.checkEnv.pythonCommand, 'python');
   } finally {
     remove();
   }
