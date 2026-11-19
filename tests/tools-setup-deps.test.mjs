@@ -148,15 +148,28 @@ function stubExec(run, extra = {}) {
  * `calls` 逐条记录 `{command, args, options}`——**数组顺序即调用顺序**，是本文件
  * 「先安装、后自检」断言的唯一事实来源。
  */
-function recordingExec({ installExit = STUB_INSTALL_EXIT, onCall } = {}) {
+function recordingExec({
+  installExit = STUB_INSTALL_EXIT,
+  pip3Available = true,
+  pythonPipAvailable = true,
+  onCall,
+} = {}) {
   const calls = [];
+  const pipProbe = (available) => (available
+    ? { stdout: 'pip 24.0 from /usr/lib/python3\n', stderr: '', exitCode: 0 }
+    : { stdout: '', stderr: 'pip unavailable\n', exitCode: 1 });
   const run = async (command, args, options) => {
     calls.push({ command, args, options });
     onCall?.(command, args, options);
     if (command === 'pip3') {
+      if (args.includes('--version')) return pipProbe(pip3Available);
       return { stdout: 'Successfully installed …\n', stderr: '', exitCode: installExit };
     }
     if (command !== 'python3') throw enoentError(command);
+    if (args[0] === '-m' && args[1] === 'pip') {
+      if (args.includes('--version')) return pipProbe(pythonPipAvailable);
+      return { stdout: 'Successfully installed …\n', stderr: '', exitCode: installExit };
+    }
     if (args.includes('--version')) return { stdout: STUB_PYTHON_VERSION, stderr: '', exitCode: 0 };
     if (String(args.at(-1)).endsWith('.py')) {
       return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
@@ -169,7 +182,8 @@ function recordingExec({ installExit = STUB_INSTALL_EXIT, onCall } = {}) {
 /** 调用分桶：安装调用（pip3）与探测调用（python3）。 */
 function partitionCalls(calls) {
   return {
-    install: calls.filter((call) => call.command === 'pip3'),
+    // 安装 = 真正带 `install` 子命令的那条；pip 可用性探测也走 pip3，须排除。
+    install: calls.filter((call) => call.args[0] === 'install'),
     probes: calls.filter((call) => call.command === 'python3'),
   };
 }
@@ -359,7 +373,9 @@ test('setup_deps: 调用序列 = 一条 pip3 install 在前，check_env 子进�
       '最后逐个发行版元数据查询（要求文件解析顺序）',
     );
 
-    assert.equal(calls.indexOf(install[0]), 0, '安装是第一条子进程调用');
+    assert.equal(calls.length > 0 && calls[0].command, 'pip3', '第一条调用是 pip3 可用性探测');
+    assert.ok(calls[0].args.includes('--version'), '先探 pip3 是否可用，再安装');
+    assert.equal(calls.indexOf(install[0]), 1, '安装排在 pip3 可用性探测之后');
     assert.ok(
       calls.indexOf(install[0]) < calls.indexOf(probes[0]),
       '先安装、后自检——自检不得抢在安装之前',
@@ -530,6 +546,96 @@ test('setup_deps: requirements.txt 缺失仍构造同一命令（幂等由 pip �
       [],
       '无 requirements 文件 → 无发行版可探测（T6：不 throw）',
     );
+  } finally {
+    remove();
+  }
+});
+
+// ─── 系统模式 pip 解析：pip3 → 解释器 -m pip → pip ─────────────
+
+test('setup_deps: pip3 缺失、python3 带 pip 模块 → 改用 python3 -m pip 安装（Windows 的 python 形态同构）', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const calls = [];
+    const run = async (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === 'pip3') throw enoentError('pip3');
+      if (command !== 'python3') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') {
+        if (args.includes('--version')) {
+          return { stdout: 'pip 24.3.1 from /usr/lib/python3/dist-packages\n', stderr: '', exitCode: 0 };
+        }
+        return { stdout: 'Successfully installed PyYAML-6.0.1\n', stderr: '', exitCode: 0 };
+      }
+      if (args.includes('--version')) return { stdout: STUB_PYTHON_VERSION, stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, [
+      'python3', '-m', 'pip', 'install', '-r', join(skill, 'requirements.txt'),
+    ], 'pip3 不可用 ⇒ 用命中解释器的 pip 模块');
+    assert.equal(payload.installExit, 0, '安装经 python3 -m pip 成功');
+    assert.ok(calls.some((c) => c.command === 'pip3' && c.args.includes('--version')), '先探 pip3');
+    assert.ok(
+      calls.some((c) => c.command === 'python3' && c.args[0] === '-m' && c.args[1] === 'pip' && c.args.includes('--version')),
+      '再探解释器的 pip 模块',
+    );
+    const rendered = toolNamed('ppt_master_setup_deps').output.render({}, payload)[0].text;
+    assert.match(rendered.split('\n')[0], /^install: python3 -m pip install -r /, '渲染写明实际 pip 命令');
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: pip3 与 -m pip 都不可用、只有 pip → 退到 pip', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command === 'pip') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (command === 'pip3') return { stdout: '', stderr: 'broken pip3\n', exitCode: 1 };
+      if (command !== 'python3') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') return { stdout: '', stderr: 'No module named pip\n', exitCode: 1 };
+      if (args.includes('--version')) return { stdout: STUB_PYTHON_VERSION, stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, [
+      'pip', 'install', '-r', join(skill, 'requirements.txt'),
+    ], '两候选不可用 ⇒ 退到 bare pip');
+    assert.equal(payload.installExit, 0);
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: 三个 pip 候选都不可用 → 如实报 -1（仍复跑自检），失败文案点出尝试过的命令', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const calls = [];
+    const run = async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'pip3' || command === 'pip') throw enoentError(command);
+      if (command !== 'python3') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') throw enoentError('python3 -m pip');
+      if (args.includes('--version')) return { stdout: STUB_PYTHON_VERSION, stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, ['pip3', 'install', '-r', join(skill, 'requirements.txt')], '回落到历史命令');
+    assert.equal(payload.installExit, -1, 'spawn 失败按 -1 报，不 throw');
+    assert.deepEqual(payload.checkEnv.deps.map((d) => d.dist), FIXTURE_DISTS, '失败仍复跑自检');
+    const rendered = toolNamed('ppt_master_setup_deps').output.render({}, payload)[0].text;
+    assert.match(rendered, /install: pip3 install -r/, '渲染保留实际尝试的命令');
+    assert.match(rendered, /install did not succeed/, '失败行照旧');
   } finally {
     remove();
   }
@@ -727,9 +833,12 @@ function createCalls(calls) {
   );
 }
 
-/** 安装 argv（`pip3 …` / `<venv>/bin/pip3 …`）调用表。 */
+/** 安装 argv（`pip3 …` / `<venv>/bin/pip3 …`）调用表——排除 pip 可用性探测（`--version`）。 */
 function installCalls(calls) {
-  return calls.filter((call) => call.command === 'pip3' || call.command.endsWith('/bin/pip3'));
+  return calls.filter(
+    (call) => (call.command === 'pip3' || call.command.endsWith('/bin/pip3'))
+      && call.args[0] === 'install',
+  );
 }
 
 /**

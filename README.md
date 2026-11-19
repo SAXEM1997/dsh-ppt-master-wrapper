@@ -55,7 +55,7 @@ flowchart TB
 | **DeepSeek Harness** | 运行宿主 | 插件本体需 **DSH ≥ 0.2.2-rc.1**（`engines.dsh` + 装载期 `assertWhenCapable` 双重把关）。更早宿主会**整插件拒绝装载**（三个工具与 vendored 技能都不可用），因为 `when` 会被静默忽略、范围隔离失效；仍在使用 0.2.1 的用户请停留在 `v6.9.0-r2`（该版是本仓库最后一个不依赖步骤级 `when` 的发布） |
 | **Node.js ≥ 22.12** | 插件与工具运行时 | 纯内置模块，无 npm 依赖；22.12 是装载链路的下限（`require(esm)`） |
 | **python3 ≥ 3.10**（Windows 上 `python` ≥ 3.10 亦可） | 上游脚本套件与完整性门 | 建议 `python3-venv` 可用（venv 模式依赖其 ensurepip；仅 POSIX 布局） |
-| **pip3** | 安装上游 Python 依赖 | venv 模式下改用 `<venv>/bin/pip3`，不受 PEP 668 拦截 |
+| **pip3**（或 `python -m pip` / `pip`） | 安装上游 Python 依赖 | 系统模式按 `pip3` → 命中的解释器 `-m pip` → `pip` 自动解析；venv 模式下改用 `<venv>/bin/pip3`，不受 PEP 668 拦截 |
 | **git** / **tar** | 同步脚本 | 仅同步上游时需要 |
 
 ### 安装到 DSH
@@ -84,7 +84,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 ### 首次使用
 
 1. **环境自检**：调用 `ppt_master_check_env`，确认 Python 就绪（`python3`，Windows 上可能是 `python`）、完整性门通过、Python 依赖已安装。
-2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等），或手动 `pip3 install -r skills/ppt-master/requirements.txt`。
+2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等），或手动 `python -m pip install -r skills/ppt-master/requirements.txt`。
 3. **配置 `.env`（按需）**：上游图像生成脚本需要图像后端配置。在**会话工作目录**（上游 `.env` 查找顺序第 1 位；插件根目录为第 3 顺位兜底）执行
    `cp skills/ppt-master/.env.example .env`，按文件内注释填写 `IMAGE_BACKEND` 与对应 key/model
    （也可用进程环境变量提供同样配置）。`.env` 已列入 `.gitignore`；插件工具不读取、不回显其内容。
@@ -95,7 +95,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 |---|---|---|
 | `ppt_master_info` | 无 | 插件版本、上游版本、`SKILL_DIR` 绝对路径与上游 repo 链接。纯读。 |
 | `ppt_master_check_env` | 无 | 环境自检：Python 就绪度（`python3`，缺失或低于 3.10 时回退达标的 `python`，并写明实际命中的命令）；运行 `attribution_guard.py`；探测 Python 依赖安装状态；提示 `.env` 是否存在。只读。 |
-| `ppt_master_setup_deps` | `user?`、`breakSystemPackages?` | 幂等安装 `requirements.txt`，完成后自动复跑自检。**唯一有副作用的工具**；venv 的创建/删除只发生在它。 |
+| `ppt_master_setup_deps` | `user?`、`breakSystemPackages?` | 幂等安装 `requirements.txt`（系统模式自动解析安装器），完成后自动复跑自检。**唯一有副作用的工具**；venv 的创建/删除只发生在它。 |
 
 三个工具均 **venv 感知**（payload 带 `venv` 小节；`venv.enabled=true` 时工具描述追加解释器提示）。`user` / `breakSystemPackages` **仅系统模式生效**，venv 模式下被忽略并在返回中注明。
 
@@ -210,7 +210,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（721 用例）
+├── tests/                            # node:test 全套（724 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -224,11 +224,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 721/721；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 724/724；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 721/719/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 724/722/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 
