@@ -239,6 +239,28 @@ test('runVerify: 被验树多出 upstream 没有的文件 → problems 拦截（
   }
 });
 
+test('runVerify: templates/local/ 属个人模板库（运行时数据）→ 不产生「仅存在于被验树」误报', async () => {
+  const pair = await makePair();
+  try {
+    const localDir = join(pair.rootSkill, 'templates', 'local', 'brands', 'mine');
+    await mkdir(localDir, { recursive: true });
+    await writeFile(join(localDir, 'meta.json'), '{"id":"mine"}\n');
+    await writeFile(join(localDir, 'theme.css'), ':root{}\n');
+
+    const result = await runVerify(pair.root, { upstream: pair.upstream });
+    assert.equal(someProblem(result, /templates\/local/), false, '个人模板库不得被当成 vendor 分歧');
+    assert.equal(someProblem(result, /仅存在于被验树/), false);
+
+    // 钉子：豁免面只有 templates/local/，同一目录树里别处的多余文件仍要拦。
+    await writeFile(join(pair.rootSkill, 'templates', 'extra.md'), 'not a local template\n');
+    const again = await runVerify(pair.root, { upstream: pair.upstream });
+    assert.equal(someProblem(again, /仅存在于被验树/), true);
+    assert.equal(someProblem(again, /templates\/extra\.md/), true);
+  } finally {
+    await pair.cleanup();
+  }
+});
+
 test('runVerify: upstream 缺整个同名 skill 目录 → problems 指明', async () => {
   const pair = await makePair();
   try {

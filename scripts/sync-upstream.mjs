@@ -837,6 +837,60 @@ export function stageSkills(upstreamRoot, stagingRoot) {
   return copied;
 }
 
+// ── installSkills：vendor 面替换（保留个人模板库）──────────────────
+
+/**
+ * 个人模板库在 skill 面内的相对路径（上游 v6.10.0 起）。
+ *
+ * 上游把「通过 Create Template 注册的个人模板」放进 `templates/local/<kind_dir>/`，
+ * 并在自家 `.gitignore` 里忽略该路径——也就是说它**不属于 release 内容**，而是运行时
+ * 产生的用户数据，且上游 `update_repo.py` 明确承诺它「跨仓库更新保留」。因此替换
+ * vendor 面时必须先把它挪开再还原：`rmSync` 全树删除会静默毁掉用户数据。
+ */
+export const LOCAL_TEMPLATE_REL = 'templates/local';
+
+/**
+ * 把 staging 的 skill 面替换进 vendor（单向 上游→vendor）。
+ *
+ * vendor 多出的 **skill 目录**属包装层人工变更，保留；但 skill 目录**内部**的多余文件
+ * 会被整树替换掉——唯一的例外是个人模板库（见 `LOCAL_TEMPLATE_REL`），它先被暂存到
+ * `.upstream/`（同一文件系统，`renameSync` 不跨设备）再还原。
+ *
+ * @param {string} vendorSkillsRoot vendor 的 `skills/` 根。
+ * @param {string} stagingRoot staging 根（`.skills-staging/`）。
+ * @param {string[]} stagedSkills 要替换的 skill 目录名。
+ * @param {{ stashRoot?: string }} [options] 暂存根（默认 `<vendorSkillsRoot>/../.upstream`）。
+ * @returns {{ skill: string, files: number }[]} 被保留的个人模板库条目（按 skill 名排序）。
+ */
+export function installSkills(vendorSkillsRoot, stagingRoot, stagedSkills, options = {}) {
+  const stashRoot = options.stashRoot ?? join(dirname(vendorSkillsRoot), '.upstream');
+  const preserved = [];
+
+  for (const skill of stagedSkills) {
+    const target = join(vendorSkillsRoot, skill);
+    const localDir = join(target, LOCAL_TEMPLATE_REL);
+    let stash = null;
+    if (existsSync(localDir)) {
+      stash = join(stashRoot, `local-templates-${skill}`);
+      rmSync(stash, { recursive: true, force: true });
+      mkdirSync(stashRoot, { recursive: true });
+      renameSync(localDir, stash);
+      preserved.push({ skill, files: walkRelativeFiles(stash).length });
+    }
+
+    rmSync(target, { recursive: true, force: true });
+    cpSync(join(stagingRoot, skill), target, { recursive: true });
+
+    if (stash !== null) {
+      const restored = join(target, LOCAL_TEMPLATE_REL);
+      mkdirSync(dirname(restored), { recursive: true });
+      renameSync(stash, restored);
+    }
+  }
+
+  return preserved.sort((left, right) => compareByteOrder(left.skill, right.skill));
+}
+
 // ── aux-dir 状态记录（`.upstream/last-aux-dirs.json`）────────────
 
 /** aux-dir 状态文件路径：显式参数优先，否则 `<vendorSkillsRoot 父级>/.upstream/…`。 */
@@ -2182,11 +2236,11 @@ export async function main(options, deps_) {
     logInfo(`联动改写: ${CLIENT_REL} 无变化（两常量已与目标一致）`);
   }
 
-  // 替换 skill 面（单向 上游→vendor：vendor 多出的 skill 目录属包装层人工变更，保留）。
-  for (const skill of stagedSkills) {
-    const target = join(vendorSkillsRoot, skill);
-    rmSync(target, { recursive: true, force: true });
-    cpSync(join(stagingRoot, skill), target, { recursive: true });
+  // 替换 skill 面（单向 上游→vendor：vendor 多出的 skill 目录属包装层人工变更，保留；
+  // skill 内部的个人模板库 templates/local/ 先暂存再还原，见 installSkills）。
+  const preservedLocal = installSkills(vendorSkillsRoot, stagingRoot, stagedSkills);
+  for (const entry of preservedLocal) {
+    logInfo(`个人模板库已保留: ${entry.skill}/${LOCAL_TEMPLATE_REL}（${entry.files} 个文件）`);
   }
 
   // bump：package.json version（last-sync 的 version+head 于下方 wrapper commit

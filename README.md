@@ -195,7 +195,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（702 用例）
+├── tests/                            # node:test 全套（705 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -209,11 +209,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 702/702；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 705/705；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 702/700/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 705/703/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 
@@ -238,6 +238,7 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # �
 | `v6.9.0-r1` | npm 渠道与发布可追溯性。`package.json` 增 `publishConfig`（钉死 `registry.npmjs.org`——本机默认 registry 是镜像站，镜像不能发布）；双语 README 安装段把 npm 提为方式一，并补 semver 提示（`6.9.0-r1` 属**预发布**，`^6.9.0` 不含它，锁定修订版须写全版本号）；维护者手册新增 npm 发布流程。发布改由 `.github/workflows/publish.yml` 在 CI 侧执行 `npm stage publish`——维护机出口上行被限到 ~23 KB/s，17.7 MB 的 tarball 传不完（三次实测均中途 ECONNRESET），runner 上行正常；维护者带 2FA `npm stage approve` 完成发布。该 workflow 现按必填 `version` 输入检出 `refs/tags/v<version>` 并断言 `package.json.version` 与之一致：旧版从触发那一刻的 main 取码，正是这一点让已发布的 6.9.0 与 tag `v6.9.0` 不是同一棵树；同时对 `npm stage publish` 启用 `--provenance`（`id-token: write`），由 npm 签发把包绑定到 commit 与 workflow 的签名证明。无运行时行为变更 |
 | `v6.9.0-r2` | 装载期解析回到正路（**运行时行为有变**）：宿主进程里 `DSH_HOME` / `DSH_PROFILE` / `DSH_PROFILE_DIR` **恒为空**——它们只由 `dsh-shell-env` 在每次 shell 调用时现造，`dsh-app-boot` 的 `.env` 分层又把 `DSH_*` 前缀列为 bootstrap-only 直接拒绝；原实现只认这三个环境变量，故 Desktop 直启、或从普通终端启动 `dsh` 时装载即抛「定位链四级均未命中」，整个插件不启用（即 `1 entry did not activate` 那一行）。现改为**先裸导入** `@deepseek-ai/schemastery`（装好的插件由 Node 从 profile 的 `node_modules` 解析，与官方插件同一条路径），未命中才落回 env 定位链——那条链现在只服务 `link:` 的符号链接开发形态 |
 | `v6.9.0-r3` | 工具可见范围改用宿主**步骤级 `when`**（**运行时行为有变；引擎下限抬到 DSH ≥ 0.2.2-rc.1**）：删除 per-agent `tools.restrict` 装配层、根 ctx `tools.guard` 兜底、`agent/created` 订阅、注入看门狗与复检定时器（净删约 2100 行）；三个工具改为 `tools.register(def, { when })`，由宿主每步 `tools.resolve` 逐个 `await`。判定同步、永不抛；`global` 不读注册表；`selected` 全程 fail-closed。两级判定：`resolveNow`（会话成员 + 字符串路径）同步回答本步，未命中且有 `cwd` 时排一次异步精化（`judgeAgent` + `resolveByPath`，单飞 + 2s 节流 + 代际）。缓存按 **agent 对象**（WeakMap）而非 id：正缓存绑定 `cwd`、命中依据（`member`/`path`）与注册表指纹，`no-match` 负缓存与注册表指纹绑定（清单变了才重排）。**行为差异**：隐藏工具被调用由自定义中文解释变为宿主 `UNKNOWN_TOOL`；0.2.1 及更早**整插件拒绝装载**（`engines.dsh` + 装载期 `assertWhenCapable` 双重把关），仍用 0.2.1 的用户请停留在 `v6.9.0-r1`。测试 734 → 702（旧机制用例随代码删除，补 when 语义与缓存失效用例） |
+| `v6.10.0` | 上游同步（规则①）：vendor v6.10.0 逐字节（`refs/tags/v6.10.0@d8f704b…`），`lib/client.js` 两常量与 `package.json.version` 联动为 `6.10.0`；包装层 `v6.9.0-r1..r3` 按规则①归零。结构变化 **0 项**（49 files，+2146 −344，无删除、无目录增删）；`requirements.txt` 逐字未变 ⇒ venv 无需重建；`SKILL.md` 只改 `metadata.version`，入口技能正文的替换规则仍成立。**适配要点**：上游本版把「个人模板库」定在 `skills/ppt-master/templates/local/<kind_dir>/`（上游自家 `.gitignore` 该路径，release 里从不出现），包装层因此三处配套：`sync-upstream.mjs` 新增 `installSkills()` 在替换 vendor 面前暂存并还原该目录（原实现会静默删除用户数据）；`verify-plugin` 第⑥项把它列为唯一面内豁免（运行时数据，不算 vendor 分歧）；根 `.gitignore` 忽略该路径。测试 702 → **705**。个人模板库位于插件包内，`dsh plugin add` 升级会随包替换 ⇒ 升级前请自行备份 |
 
 > 版本规则：`base` 镜像上游 release，包装层修订追加 `-rN`。逐项明细见 [AGENTS.md](AGENTS.md) §5。
 
