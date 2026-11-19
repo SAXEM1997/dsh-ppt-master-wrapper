@@ -368,9 +368,16 @@ function compareByteOrder(left, right) {
  */
 const LOCAL_TEMPLATE_PREFIX = 'templates/local/';
 
-/** 该相对路径是否属于个人模板库（运行时数据，不参与 vendor 逐字节比对）。 */
-function isLocalTemplatePath(rel) {
-  return rel === 'templates/local' || rel.startsWith(LOCAL_TEMPLATE_PREFIX);
+/**
+ * 该相对路径是否属于个人模板库（运行时数据，不参与 vendor 逐字节比对）。
+ *
+ * 兼容两种分隔符：`node:path` 的 `relative()` 在 Windows 上返回 `templates\\local\\…`，
+ * 而豁免判据按 POSIX 写；只认 `/` 会让豁免在 Windows 上静默失效（个人模板被误报成
+ * 「仅存在于被验树」）。导出供测试直接覆盖两种形态。
+ */
+export function isLocalTemplatePath(rel) {
+  const normalized = String(rel).split('\\').join('/');
+  return normalized === 'templates/local' || normalized.startsWith(LOCAL_TEMPLATE_PREFIX);
 }
 
 function compareSkillPair(skillDir, skillName, upstreamDir, problems) {

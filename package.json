@@ -63,5 +63,8 @@
         "react"
       ]
     }
+  },
+  "scripts": {
+    "prepack": "node scripts/check-pack.mjs"
   }
 }
