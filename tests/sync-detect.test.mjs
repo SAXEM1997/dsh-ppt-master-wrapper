@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import {
   checkMarketplaceVersion,
   classifyChanges,
+  installSkills,
   stageSkills,
 } from '../scripts/sync-upstream.mjs';
 
@@ -899,4 +900,59 @@ test('checkMarketplaceVersion: 读取上游仓库根路径，而非 skills/.clau
   const result = checkMarketplaceVersion(upstreamTreeRoot, '0.1.0');
 
   assert.equal(result.ok, false, '误取 plugin.json 的 version 会在此误判为一致');
+});
+
+// ─── installSkills：个人模板库跨替换保留（上游 v6.10.0 起）──────────
+
+test('installSkills: vendor 面的 templates/local/ 跨替换保留，其余多余文件照旧被替换掉', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-install-'));
+  try {
+    const vendorSkills = join(root, 'skills');
+    const staging = join(root, '.skills-staging');
+    const stash = join(root, '.upstream');
+
+    // vendor：旧版 SKILL.md + 一个过期文件 + 个人模板库
+    mkdirSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine'), { recursive: true });
+    writeFileSync(join(vendorSkills, 'ppt-master', 'SKILL.md'), 'old\n');
+    writeFileSync(join(vendorSkills, 'ppt-master', 'stale.txt'), 'stale\n');
+    writeFileSync(
+      join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine', 'meta.json'),
+      '{"id":"mine"}\n',
+    );
+
+    // staging：上游新版（无 templates/local，release 里从不出现）
+    mkdirSync(join(staging, 'ppt-master'), { recursive: true });
+    writeFileSync(join(staging, 'ppt-master', 'SKILL.md'), 'new\n');
+
+    const preserved = installSkills(vendorSkills, staging, ['ppt-master'], { stashRoot: stash });
+
+    assert.deepEqual(preserved, [{ skill: 'ppt-master', files: 1 }], '保留条目与文件数可上报');
+    assert.equal(readFileSync(join(vendorSkills, 'ppt-master', 'SKILL.md'), 'utf8'), 'new\n', 'vendor 面被替换');
+    assert.equal(existsSync(join(vendorSkills, 'ppt-master', 'stale.txt')), false, '非模板库的多余文件仍被清掉');
+    assert.equal(
+      readFileSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine', 'meta.json'), 'utf8'),
+      '{"id":"mine"}\n',
+      '个人模板库逐字节还原',
+    );
+    assert.equal(existsSync(join(stash, 'local-templates-ppt-master')), false, '暂存目录已归位');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('installSkills: 无个人模板库时不产生保留条目，也不留下暂存目录', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-install-empty-'));
+  try {
+    const vendorSkills = join(root, 'skills');
+    const staging = join(root, '.skills-staging');
+    mkdirSync(join(vendorSkills, 'ppt-master'), { recursive: true });
+    writeFileSync(join(vendorSkills, 'ppt-master', 'SKILL.md'), 'old\n');
+    mkdirSync(join(staging, 'ppt-master'), { recursive: true });
+    writeFileSync(join(staging, 'ppt-master', 'SKILL.md'), 'new\n');
+
+    assert.deepEqual(installSkills(vendorSkills, staging, ['ppt-master'], { stashRoot: join(root, '.upstream') }), []);
+    assert.equal(readFileSync(join(vendorSkills, 'ppt-master', 'SKILL.md'), 'utf8'), 'new\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

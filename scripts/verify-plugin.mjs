@@ -360,10 +360,22 @@ function compareByteOrder(left, right) {
  *
  * 比对范围写死为**方向性 skill 面比对**——只有被验树的 skill 目录参与配对；
  * upstream 根文件与 `skills/` 一级非 skill 目录天然豁免（spec §4.1 步骤 3 自证）。
+ *
+ * **唯一的面内豁免**：`templates/local/`（上游 v6.10.0 起）。该路径是上游给「个人模板库」
+ * 定的运行时落点，上游自家 `.gitignore` 就忽略它，故 release 里从不出现——把它的文件判成
+ * 「仅存在于被验树」是拿运行时用户数据当 vendor 分歧报，属误报。除它之外没有第二个豁免：
+ * 其余任何多出的文件仍按原样拦截。
  */
+const LOCAL_TEMPLATE_PREFIX = 'templates/local/';
+
+/** 该相对路径是否属于个人模板库（运行时数据，不参与 vendor 逐字节比对）。 */
+function isLocalTemplatePath(rel) {
+  return rel === 'templates/local' || rel.startsWith(LOCAL_TEMPLATE_PREFIX);
+}
+
 function compareSkillPair(skillDir, skillName, upstreamDir, problems) {
-  const leftFiles = walkFiles(skillDir);
-  const rightFiles = walkFiles(upstreamDir);
+  const leftFiles = walkFiles(skillDir).filter((file) => !isLocalTemplatePath(relative(skillDir, file)));
+  const rightFiles = walkFiles(upstreamDir).filter((file) => !isLocalTemplatePath(relative(upstreamDir, file)));
   const rightRelative = new Map(rightFiles.map((file) => [relative(upstreamDir, file), file]));
 
   for (const file of leftFiles) {

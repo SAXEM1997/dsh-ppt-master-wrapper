@@ -21,7 +21,7 @@
 ## PR 前必须跑的校验
 
 ```bash
-# 1) 全套测试（当前 702 例；CI 等价环境 702/700，2 条 skip 为显式声明）
+# 1) 全套测试（当前 705 例；CI 等价环境 705/703，2 条 skip 为显式声明）
 node --test tests/*.test.mjs
 
 # 2) 对照已安装 DSH SDK 的契约检查（spec §7.7 六项，warnings 必须为 0）
@@ -31,7 +31,7 @@ node scripts/check-dsh-compat.mjs
 
 # 3) vendor 树字节比对（上游完整性；--upstream 取 .upstream/ 缓存目录名 <ref>@<sha>，
 #    必须与当前 vendor 版本一致——拿旧 ref 比对会整片报字节不符）
-node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.9.0@ce92fb43e4ade9c701f4c869e286f13fce743c72
+node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.10.0@d8f704bc8c1552d53a8769b55d1eecd22c782042
 ```
 
 > 环境前置：`@deepseek-ai/schemastery` 须可由宿主 profile 的 `node_modules` 解析（详见 README「本地校验」）。若该前置不满足，部分测试文件会在 **import 期**整体失败，而不是单条用例红。
