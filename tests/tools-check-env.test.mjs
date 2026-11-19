@@ -57,7 +57,7 @@ const CHECK_ENV_INDEX = 1;
 /** 工具入参 schema：无参数（与 T4 stub 逐字相同）。 */
 const EMPTY_PARAMETERS = { type: 'object', properties: {}, additionalProperties: false };
 
-/** 诊断对象五字段的逐字名单（output.schema 属性集 = 返回对象字段集）。 */
+/** 诊断对象六字段的逐字名单（output.schema 属性集 = 返回对象字段集）。 */
 const DIAGNOSTIC_FIELDS = ['python', 'pythonCommand', 'guard', 'deps', 'envFileExists', 'venv'];
 
 /** fixture 的依赖真值（诊断对象里的 `deps[].dist`，`envFileExists` 用例已写盘）。 */
@@ -1127,6 +1127,39 @@ test('check_env: python3 低于 3.10 而 python 达标 → 优先达标候选（
     assert.deepEqual(payload.deps, [
       { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
     ]);
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env: python3 与 python 都达标 → python3 胜出且不再多探一个 python', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  const calls = [];
+  try {
+    const exec = stubExec(async (command, args) => {
+      calls.push(command);
+      if (command === 'python3') {
+        if (args.includes('--version')) return { stdout: 'Python 3.13.13\n', stderr: '', exitCode: 0 };
+        if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
+        return { stdout: '6.0.0\n', stderr: '', exitCode: 0 };
+      }
+      throw enoentError(command);
+    });
+    const payload = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...exec },
+    );
+
+    assert.deepEqual(payload.python, {
+      found: true,
+      version: '3.13.13',
+      meetsSkillRequirement: true,
+    });
+    assert.equal(payload.pythonCommand, 'python3', '首选达标即返回，不进入回退分支');
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 0 });
+    assert.ok(!calls.includes('python'), 'python3 已达标时不得再 spawn python（零额外探测）');
   } finally {
     removeReq();
     remove();
