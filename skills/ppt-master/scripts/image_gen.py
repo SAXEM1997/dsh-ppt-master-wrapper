@@ -108,7 +108,7 @@ BACKEND_REGISTRY = {
         "module": "backend_openai",
         "tier": "core",
         "label": "OpenAI / OpenAI-compatible",
-        "default_model": "gpt-image-2.5-sunburst",
+        "default_model": "gpt-image-2.6-sunburst",
         "default_image_size": "1K",
         "key_hint": "OPENAI_API_KEY",
         "aliases": ["openai-compatible", "openai_compatible"],
@@ -144,9 +144,9 @@ BACKEND_REGISTRY = {
         "module": "backend_volcengine",
         "tier": "core",
         "label": "Volcengine Seedream",
-        "default_model": "doubao-seedream-4-5-251128",
+        "default_model": "doubao-seedream-5-0-pro-260628",
         "default_image_size": "2K",
-        "key_hint": "LAS_API_KEY / VOLCENGINE_API_KEY / ARK_API_KEY",
+        "key_hint": "ARK_API_KEY / VOLCENGINE_API_KEY / LAS_API_KEY",
         "aliases": ["ark", "doubao", "seedream"],
     },
     "tencent": {
@@ -1514,7 +1514,7 @@ def main() -> None:
         if not getattr(backend, "SUPPORTS_GIF", False):
             print(
                 f"Error: backend '{backend_name}' does not support GIF output "
-                "(--gif-frames). Use --backend openai with --model gpt-image-2.6-sunburst."
+                "(--gif-frames). Use --backend openai (gpt-image-2.6-*)."
             )
             sys.exit(1)
         gen_kwargs["gif_frames"] = args.gif_frames
