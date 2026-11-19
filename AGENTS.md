@@ -31,8 +31,8 @@
 1. **venv 开、已建且就绪**（`<path>/bin/python3` 与 `<path>/bin/pip3` **两者**可用）
    → 上游脚本一律用 `<path>/bin/python3` 替换字面 `python3`（含 `SKILL.md` 第 2 步
    guard 调用），并代入 `SKILL_DIR`；
-2. **venv 开但未建** → 先调 `ppt_master_setup_deps`，此前不用系统 python3 跑业务脚本；
-3. **venv 关** → 系统 `python3`；
+2. **venv 开但未建** → 先调 `ppt_master_setup_deps`，此前不用系统解释器（`python3`；Windows 上可能只有 `python`）跑业务脚本；
+3. **venv 关** → 系统 `python3`（Windows 上若只有 `python` 就用 `python`；实际命中的命令以 `ppt_master_check_env` 的 `python:` 行为准）；
 4. **配置无效** → 按正文修正后走系统模式。
 
 **未就绪子态**（有 `bin/python3` 缺 `bin/pip3` 的半成品）按②处理；恢复＝删除重建
@@ -95,7 +95,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 715 tests / 713 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 712 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 720 tests / 718 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 717 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0。**profile 树缺 peer 依赖时本机会失败**（实测 `dsh-llm` 的 peerDependency `@deepseek-ai/dsh-error` 未提升 ⇒ `SDK 包 @deepseek-ai/dsh-tools 动态导入失败`）；那是环境问题不是回归，改用宿主自带树 `--dsh-modules /npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules`（该树缺 `superpowers-dsh`，故 warnings 1） |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
