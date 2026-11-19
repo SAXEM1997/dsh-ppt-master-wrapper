@@ -956,3 +956,75 @@ test('installSkills: 无个人模板库时不产生保留条目，也不留下�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('installSkills: 上次运行遗留的暂存（唯一副本）先还原，不被当成缓存删掉', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-install-leftover-'));
+  try {
+    const vendorSkills = join(root, 'skills');
+    const staging = join(root, '.skills-staging');
+    const stash = join(root, '.upstream');
+    // 崩溃现场：vendor 的 skill 目录已被删除，用户数据只剩暂存区那一份
+    mkdirSync(join(stash, 'local-templates-ppt-master', 'brands', 'mine'), { recursive: true });
+    writeFileSync(join(stash, 'local-templates-ppt-master', 'brands', 'mine', 'meta.json'), '{"id":"mine"}\n');
+    mkdirSync(join(staging, 'ppt-master'), { recursive: true });
+    writeFileSync(join(staging, 'ppt-master', 'SKILL.md'), 'new\n');
+
+    installSkills(vendorSkills, staging, ['ppt-master'], { stashRoot: stash });
+
+    assert.equal(
+      readFileSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine', 'meta.json'), 'utf8'),
+      '{"id":"mine"}\n',
+      '遗留暂存必须先归位再替换',
+    );
+    assert.equal(existsSync(join(stash, 'local-templates-ppt-master')), false, '归位后不留暂存');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('installSkills: 复制 staging 失败时，用户数据仍被放回原位（不留在暂存区）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-install-fail-'));
+  try {
+    const vendorSkills = join(root, 'skills');
+    const staging = join(root, '.skills-staging'); // 故意不建：cpSync 必然失败
+    const stash = join(root, '.upstream');
+    mkdirSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'decks', 'mine'), { recursive: true });
+    writeFileSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'decks', 'mine', 'meta.json'), '{"id":"mine"}\n');
+
+    assert.throws(() => installSkills(vendorSkills, staging, ['ppt-master'], { stashRoot: stash }));
+
+    assert.equal(
+      readFileSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'decks', 'mine', 'meta.json'), 'utf8'),
+      '{"id":"mine"}\n',
+      '复制失败也不得把用户数据留在 .upstream',
+    );
+    assert.equal(existsSync(join(stash, 'local-templates-ppt-master')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('classifyChanges: vendor 里的个人模板库不产生结构信号，也不被当成 vendor 分歧', () => {
+  const workspace = makeWorkspace();
+  try {
+    neutralize(workspace);
+    mkdirSync(join(workspace.vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine'), { recursive: true });
+    writeFileSync(
+      join(workspace.vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'mine', 'meta.json'),
+      '{"id":"mine"}\n',
+    );
+
+    const result = classifyChanges(
+      workspace.vendorSkills,
+      workspace.staging,
+      workspace.upstream,
+      workspace.auxStatePath,
+    );
+
+    assert.deepEqual(kindsOf(result.red), [], '个人模板库不得触发 🔴 结构变化');
+    assert.equal(result.vendorDiff, false, '运行时用户数据不算 vendor 分歧');
+    assert.equal(result.green, false, '也不得被当成常规内容更新');
+  } finally {
+    rmSync(workspace.root, { recursive: true, force: true });
+  }
+});

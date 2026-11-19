@@ -75,6 +75,13 @@ Option 4 — intranet mirror (optional, same source as GitHub): replace the URL 
 
 > **A note on npm versions**: wrapper revisions are named like `6.9.0-r1`, which semver treats as a **prerelease** (`6.9.0-r1 < 6.9.0`). The npm side always publishes the newest build under the `latest` tag, so `dsh plugin add dsh-ppt-master-wrapper` gets it; but a range such as `^6.9.0` will **not** include `6.9.0-r1` — pin the full version when you need a specific revision.
 
+> **Back up your personal templates before upgrading.** Since upstream v6.10.0, templates created
+> through Create Template live under `skills/ppt-master/templates/local/` (git-ignored upstream, so
+> they are runtime data rather than release content). That path sits inside the plugin package, and
+> `dsh plugin add` replaces the package wholesale on upgrade — copy that directory somewhere outside
+> the package first. This repo's `sync-upstream.mjs` only protects it during **in-repo** syncs; it
+> cannot stop a package manager from overwriting the plugin directory.
+
 ### First run
 
 1. **Environment check**: call `ppt_master_check_env` — confirms python3 readiness, the integrity gate, and installed Python dependencies.
@@ -194,7 +201,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (705 cases)
+├── tests/                            # full node:test suite (708 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -208,11 +215,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (705/705 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
+node --test tests/*.test.mjs          # full suite (708/708 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 705/703/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 708/706/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 
