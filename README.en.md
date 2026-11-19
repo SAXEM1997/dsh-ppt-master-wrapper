@@ -169,6 +169,14 @@ After a plugin upgrade adds new configuration fields, compare and complete exist
 
 **Other**: a failed plugin load that takes the skill surface down with it is usually `@deepseek-ai/schemastery` resolution failure — an installed plugin resolves it by **bare import** from the profile's `node_modules` (the same path first-party plugins use), so first confirm the profile actually hoists the package; `DSH_NODE_MODULES` / `DSH_PROFILE_DIR` / `DSH_HOME` are only the fallback for `link:` development setups and are normally empty inside the host process (details in [AGENTS.md](AGENTS.md) §3). **Missing entry skill**: if the host rejects the synthetic candidate without `resourceBase`, only the entry skill is absent — the vendored skill and the tools are unaffected.
 
+**Windows sandbox hosts: `--daemon` does not work for the preview servers (known upstream issue)**: such hosts place the command in a Job Object that forbids process breakaway (DSH included), so `confirm_ui` / `svg_editor` / `spec_review` print `pid=…`, then die together with the launching command (stale lock files remain, and `--wait-only` starts another server). The workaround is to run the foreground server inside a **host background task** (no `--daemon`, `--timeout 0` to keep it alive):
+
+```bash
+python <skill>/scripts/confirm_ui/server.py <project> --timeout 0
+```
+
+The page, `--wait-only` and `--shutdown` keep working as usual. Upstream tracking: [hugohe3/ppt-master#357](https://github.com/hugohe3/ppt-master/issues/357); the vendor tree is byte-identical, so this repository cannot patch it in place.
+
 ## Syncing a new upstream release
 
 ```bash
