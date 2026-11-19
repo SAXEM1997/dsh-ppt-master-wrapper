@@ -777,6 +777,62 @@ test('setup_deps: pip3 属于更旧的 python3 时，改用 check_env 解析出�
   }
 });
 
+test('setup_deps: pip3 归属不一致且解释器没有 -m pip 时，保留 pip3（没有更好的选择）', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command === 'pip3') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.9 (python 3.9)\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (command === 'python3') {
+        if (args.includes('--version')) return { stdout: 'Python 3.9.13\n', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: '', exitCode: 1 };
+      }
+      if (command !== 'python') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') return { stdout: '', stderr: 'No module named pip\n', exitCode: 1 };
+      if (args.includes('--version')) return { stdout: 'Python 3.13.1\n', stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.equal(payload.installCmd[0], 'pip3', '没有可用的替代安装器时仍保留 pip3');
+    assert.equal(payload.checkEnv.pythonCommand, 'python', '自检仍如实报告它解析出的解释器');
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: pip3 的 --version 不带解释器括号 → 无证据时不改历史目标', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command === 'pip3') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.9/site-packages\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (command === 'python3') {
+        if (args.includes('--version')) return { stdout: 'Python 3.9.13\n', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: '', exitCode: 1 };
+      }
+      if (command !== 'python') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.13 (python 3.13)\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (args.includes('--version')) return { stdout: 'Python 3.13.1\n', stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.equal(payload.installCmd[0], 'pip3', '输出无法证明归属时保留 pip3（历史目标）');
+  } finally {
+    remove();
+  }
+});
+
 test('setup_deps: 只有低于 3.10 的 python 时仍用它的 -m pip 安装（与自检/guard 的解释器一致）', async () => {
   const { root, skill, remove } = makeSkillDir();
   try {

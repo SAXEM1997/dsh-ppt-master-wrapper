@@ -22,7 +22,7 @@ jobs:
       - name: Build stub SDK tree
         run: node tests/helpers/stub-sdk.mjs .ci-stub
 
-      # 预期基线：731 tests / 729 pass / 0 fail / 2 skip（本机默认环境实测 731/728/1/2，红的是 ~/.ppt-master/.env 触发的 envFileExists；CI 等价环境 731/729/0/2，无该文件。须 unset DSH_HOME，否则测试会沿 profiles/web 解析到真实 SDK 而不 skip）。
+      # 预期基线：733 tests / 731 pass / 0 fail / 2 skip（本机默认环境实测 733/730/1/2，红的是 ~/.ppt-master/.env 触发的 envFileExists；CI 等价环境 733/731/0/2，无该文件。须 unset DSH_HOME，否则测试会沿 profiles/web 解析到真实 SDK 而不 skip）。
       # 本机若存在 ~/.ppt-master/.env，setup_deps 的 envFileExists 用例会额外红一条（与 SDK 无关；CI 无该文件）。
       # 2 条 skip 是显式声明（@deepseek-ai/dsh-tools 经包自身解析不可达——本包零依赖，
       # stub 树不经包解析链，故 skip 非失败）。失败时 TAP 输出逐用例定位。
