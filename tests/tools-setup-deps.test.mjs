@@ -680,8 +680,8 @@ test('setup_deps: pip 探测期间 abort → 立即上抛，不安装', async ()
     const calls = [];
     const aborted = new Error('aborted');
     aborted.name = 'AbortError';
-    const run = async (command) => {
-      calls.push({ command });
+    const run = async (command, args) => {
+      calls.push({ command, args });
       if (command === 'pip3') throw aborted;
       throw enoentError(command);
     };
@@ -689,7 +689,8 @@ test('setup_deps: pip 探测期间 abort → 立即上抛，不安装', async ()
       () => toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) }),
       /aborted/,
     );
-    assert.ok(!calls.some((call) => call.command === 'pip3' && call.args?.includes('install')), '中止后没有安装调用');
+    assert.ok(calls.length > 0, '探测确实跑过（中止发生在探测中）');
+    assert.ok(!calls.some((call) => call.args.includes('install')), '中止后没有安装调用');
   } finally {
     remove();
   }
@@ -712,7 +713,61 @@ test('setup_deps: pip 探测遇到非 spawn 级错误 → 上抛，不静默换�
   }
 });
 
-test('setup_deps: 三个 pip 候选都不可用 → 如实报 -1（仍复跑自检），失败文案点出尝试过的命令', async () => {
+test('setup_deps: pip3 自称 Python 2 → 跳过它，改用解释器的 -m pip', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command === 'pip3') {
+        if (args.includes('--version')) return { stdout: 'pip 9.0.1 from /usr/lib/python2.7 (python 2.7)\n', stderr: '', exitCode: 0 };
+        return { stdout: '', stderr: 'should not run\n', exitCode: 1 };
+      }
+      if (command !== 'python3') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3 (python 3.11)\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (args.includes('--version')) return { stdout: STUB_PYTHON_VERSION, stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, [
+      'python3', '-m', 'pip', 'install', '-r', join(skill, 'requirements.txt'),
+    ], 'Python 2 的 pip3 不被驱动');
+    assert.equal(payload.installExit, 0);
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: 只有低于 3.10 的 python 时仍用它的 -m pip 安装（与自检/guard 的解释器一致）', async () => {
+  const { root, skill, remove } = makeSkillDir();
+  try {
+    const run = async (command, args) => {
+      if (command !== 'python') throw enoentError(command);
+      if (args[0] === '-m' && args[1] === 'pip') {
+        if (args.includes('--version')) return { stdout: 'pip 24.0 from /usr/lib/python3.9 (python 3.9)\n', stderr: '', exitCode: 0 };
+        return { stdout: 'Successfully installed\n', stderr: '', exitCode: 0 };
+      }
+      if (args.includes('--version')) return { stdout: 'Python 3.9.13\n', stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: 'guard fixture\n', stderr: '', exitCode: STUB_GUARD_EXIT };
+      return { stdout: `${args.at(-1)}-1.0.0\n`, stderr: '', exitCode: 0 };
+    };
+    const payload = await toolNamed('ppt_master_setup_deps').execute({}, { skillRoots: [root], ...stubExec(run) });
+
+    assert.deepEqual(payload.installCmd, [
+      'python', '-m', 'pip', 'install', '-r', join(skill, 'requirements.txt'),
+    ], '安装目标 = 自检与 guard 会用的那个解释器（即使低于 3.10）');
+    assert.equal(payload.installExit, 0);
+    assert.deepEqual(payload.checkEnv.python, { found: true, version: '3.9.13', meetsSkillRequirement: false });
+    assert.equal(payload.checkEnv.pythonCommand, 'python');
+  } finally {
+    remove();
+  }
+});
+
+test('setup_deps: 三个 pip 候选都不可用（spawn 失败）→ 回落 pip3 并如实报 -1，仍复跑自检', async () => {
   const { root, skill, remove } = makeSkillDir();
   try {
     const calls = [];
