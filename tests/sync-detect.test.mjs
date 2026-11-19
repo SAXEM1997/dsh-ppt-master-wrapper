@@ -1028,3 +1028,28 @@ test('classifyChanges: vendor 里的个人模板库不产生结构信号，也�
     rmSync(workspace.root, { recursive: true, force: true });
   }
 });
+
+test('installSkills: 遗留暂存与现场个人模板同时存在时按「缺什么补什么」合并，两边都不丢', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-install-merge-'));
+  try {
+    const vendorSkills = join(root, 'skills');
+    const staging = join(root, '.skills-staging');
+    const stash = join(root, '.upstream');
+    // 崩溃现场留下旧模板；用户随后又注册了新模板（localDir 已有）
+    mkdirSync(join(stash, 'local-templates-ppt-master', 'brands', 'old'), { recursive: true });
+    writeFileSync(join(stash, 'local-templates-ppt-master', 'brands', 'old', 'meta.json'), '{"id":"old"}\n');
+    mkdirSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'new'), { recursive: true });
+    writeFileSync(join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands', 'new', 'meta.json'), '{"id":"new"}\n');
+    mkdirSync(join(staging, 'ppt-master'), { recursive: true });
+    writeFileSync(join(staging, 'ppt-master', 'SKILL.md'), 'new\n');
+
+    installSkills(vendorSkills, staging, ['ppt-master'], { stashRoot: stash });
+
+    const local = join(vendorSkills, 'ppt-master', 'templates', 'local', 'brands');
+    assert.equal(readFileSync(join(local, 'old', 'meta.json'), 'utf8'), '{"id":"old"}\n', '遗留旧模板补齐');
+    assert.equal(readFileSync(join(local, 'new', 'meta.json'), 'utf8'), '{"id":"new"}\n', '现场新模板保留');
+    assert.equal(existsSync(join(stash, 'local-templates-ppt-master')), false, '合并后不留暂存');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

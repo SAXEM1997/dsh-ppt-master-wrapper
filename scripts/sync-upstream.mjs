@@ -876,11 +876,17 @@ export function installSkills(vendorSkillsRoot, stagingRoot, stagedSkills, optio
     const localDir = join(target, LOCAL_TEMPLATE_REL);
     const stash = join(stashRoot, `local-templates-${skill}`);
 
-    // 上次运行若在「已暂存、未还原」之间失败，stash 是用户数据的**唯一副本**。
-    // 先把它放回去再继续，绝不能像普通缓存那样直接删掉。
-    if (existsSync(stash) && !existsSync(localDir)) {
-      mkdirSync(dirname(localDir), { recursive: true });
-      movePath(stash, localDir);
+    // 上次运行若在「已暂存、未还原」之间失败，stash 里是用户数据的**唯一副本**。
+    // 先把它放回去再继续，绝不能像普通缓存那样直接删掉。两边都在（崩溃后用户又新建了
+    // 模板）时按「缺什么补什么」合并——stash 不会被覆盖丢失，localDir 的新文件也保留。
+    if (existsSync(stash)) {
+      if (existsSync(localDir)) {
+        cpSync(stash, localDir, { recursive: true, force: false, errorOnExist: false });
+        rmSync(stash, { recursive: true, force: true });
+      } else {
+        mkdirSync(dirname(localDir), { recursive: true });
+        movePath(stash, localDir);
+      }
     }
 
     let stashed = false;

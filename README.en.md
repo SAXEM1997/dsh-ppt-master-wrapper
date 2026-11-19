@@ -201,7 +201,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (708 cases)
+├── tests/                            # full node:test suite (709 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -215,11 +215,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (708/708 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
+node --test tests/*.test.mjs          # full suite (709/709 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 708/706/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 709/707/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 
