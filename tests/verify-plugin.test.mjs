@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
-import { normalizedSha256, parseExpectedDigest, runVerify } from '../scripts/verify-plugin.mjs';
+import { isLocalTemplatePath, normalizedSha256, parseExpectedDigest, runVerify } from '../scripts/verify-plugin.mjs';
 import { apply } from '../index.js';
 
 /**
@@ -515,4 +515,23 @@ test('CLI: --skip-guard → exit 0 且输出含「guard 未运行」标记', asy
     scriptPath, '--root', miniVendorRoot, '--upstream', miniUpstreamRoot, '--skip-guard',
   ]);
   assert.match(stdout, /guard 未运行/);
+});
+
+test('isLocalTemplatePath: 两种分隔符都认（Windows 的 relative() 用反斜杠）', () => {
+  for (const rel of [
+    'templates/local',
+    'templates/local/brands/mine/meta.json',
+    'templates\\local',
+    'templates\\local\\brands\\mine\\meta.json',
+  ]) {
+    assert.equal(isLocalTemplatePath(rel), true, rel);
+  }
+  for (const rel of [
+    'templates/localish/x.json',
+    'templates/localized/x.json',
+    'templates/extra.md',
+    'scripts/templates/local/x.json',
+  ]) {
+    assert.equal(isLocalTemplatePath(rel), false, rel);
+  }
 });

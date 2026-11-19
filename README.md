@@ -78,7 +78,8 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 > **升级前请备份个人模板**：上游 v6.10.0 起，通过 Create Template 注册的个人模板落在
 > `skills/ppt-master/templates/local/`（上游自家 `.gitignore` 该路径，属运行时数据而非发布内容）。
 > 它位于插件包内，`dsh plugin add` 升级会随包替换——升级前请把该目录复制到包外。
-> 本仓库的 `sync-upstream.mjs` 只保证**仓库内**同步时保留它，管不到包管理器覆盖插件目录。
+> 本仓库的 `sync-upstream.mjs` 只保证**仓库内**同步时保留它，管不到包管理器覆盖插件目录；
+> 发布侧另有 `prepack` 哨兵（`scripts/check-pack.mjs`）确保用户模板不会被带进包体。
 
 ### 首次使用
 
@@ -200,7 +201,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（709 用例）
+├── tests/                            # node:test 全套（714 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -214,11 +215,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 709/709；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 714/714；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 709/707/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 714/712/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 
