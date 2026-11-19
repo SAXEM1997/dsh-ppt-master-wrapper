@@ -82,7 +82,7 @@ const SETUP_PARAMETERS = {
 const SETUP_FIELDS = ['installCmd', 'installExit', 'checkEnv', 'venv', 'cleanup'];
 
 /** T6 诊断对象的逐字字段集（嵌套 `checkEnv` 复用该形态；`venv` 小节为 T8 增量）。 */
-const DIAGNOSTIC_FIELDS = ['python', 'guard', 'deps', 'envFileExists', 'venv'];
+const DIAGNOSTIC_FIELDS = ['python', 'pythonCommand', 'guard', 'deps', 'envFileExists', 'venv'];
 
 /** fixture 的依赖真值（stub 下每个发行版都由元数据子进程回答）。 */
 const FIXTURE_DISTS = ['pyyaml', 'python-pptx'];
@@ -302,7 +302,7 @@ test('setup_deps: output.schema 属性集=五字段、嵌套 checkEnv 复用 T6 
   const checkEnv = schema.properties.checkEnv;
   assert.equal(checkEnv.type, 'object');
   assert.equal(checkEnv.additionalProperties, false);
-  assert.deepEqual(Object.keys(checkEnv.properties), DIAGNOSTIC_FIELDS, 'checkEnv 属性集=诊断五字段');
+  assert.deepEqual(Object.keys(checkEnv.properties), DIAGNOSTIC_FIELDS, 'checkEnv 属性集=诊断六字段');
   assert.equal(checkEnv.properties.python.additionalProperties, false);
   assert.deepEqual(checkEnv.properties.python.properties.version, {
     oneOf: [{ type: 'string' }, { type: 'null' }],
@@ -476,7 +476,12 @@ test('setup_deps: checkEnv 仍受 T6 契约约束（无 python3 → deps 全 UNK
       },
     );
     assert.equal(payload.installExit, 0);
-    assert.deepEqual(payload.checkEnv.python, { found: false, version: null, meetsSkillRequirement: null });
+    assert.deepEqual(payload.checkEnv.python, {
+      found: false,
+      version: null,
+      meetsSkillRequirement: null,
+    });
+    assert.equal(payload.checkEnv.pythonCommand, null);
     assert.deepEqual(payload.checkEnv.guard, { skipped: true });
     assert.ok(payload.checkEnv.deps.every((dep) => dep.installed === 'UNKNOWN'));
   } finally {

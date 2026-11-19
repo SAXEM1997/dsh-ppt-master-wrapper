@@ -85,7 +85,7 @@ Option 4 — intranet mirror (optional, same source as GitHub): replace the URL 
 
 ### First run
 
-1. **Environment check**: call `ppt_master_check_env` — confirms python3 readiness, the integrity gate, and installed Python dependencies.
+1. **Environment check**: call `ppt_master_check_env` — confirms Python readiness (`python3`, or `python` on Windows), the integrity gate, and installed Python dependencies.
 2. **Install Python dependencies**: call `ppt_master_setup_deps` (idempotent), or run `pip3 install -r skills/ppt-master/requirements.txt` manually.
 3. **Configure `.env` (as needed)**: upstream image-generation scripts need an image backend. In your **session working directory** (position 1 of upstream's `.env` lookup order; the package root is the position-3 fallback) run
    `cp skills/ppt-master/.env.example .env` and fill in `IMAGE_BACKEND` plus the provider key/model per the comments inside (process environment variables work too). `.env` is gitignored; plugin tools never read or echo its contents.
@@ -95,7 +95,7 @@ Option 4 — intranet mirror (optional, same source as GitHub): replace the URL 
 | Tool | Parameters | Behaviour |
 |---|---|---|
 | `ppt_master_info` | none | Plugin version, upstream version, absolute `SKILL_DIR`, upstream repo link. Read-only. |
-| `ppt_master_check_env` | none | Environment check: python3 readiness; runs `attribution_guard.py`; probes Python dependency state; hints whether `.env` exists. Read-only. |
+| `ppt_master_check_env` | none | Environment check: Python readiness (`python3`, falling back to `python`, and naming the command that answered); runs `attribution_guard.py`; probes Python dependency state; hints whether `.env` exists. Read-only. |
 | `ppt_master_setup_deps` | `user?`, `breakSystemPackages?` | Idempotent `requirements.txt` install, re-runs the check afterwards. **The only tool with side effects**; venv creation/removal happens only here. |
 
 All three tools are **venv-aware** (payloads carry a `venv` section; with `venv.enabled=true` the tool descriptions gain an interpreter hint). `user` / `breakSystemPackages` are **effective in system mode only** — ignored in venv mode, noted in the response.
@@ -210,7 +210,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # client half / tools / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ upstream vendor tree (byte-for-byte)
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # full node:test suite (715 cases)
+├── tests/                            # full node:test suite (720 cases)
 ├── docs/superpowers/                 # design & plan documents (development history)
 ├── .github/                          # CI and issue/PR templates
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -224,11 +224,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # contract check: spec §7.7 six (+⑦) design-precondition probes
-node --test tests/*.test.mjs          # full suite (715/715 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
+node --test tests/*.test.mjs          # full suite (720/720 with a real SDK on the machine; with `~/.ppt-master/.env` present, only the `envFileExists` case goes red)
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # integrity check (needs the cache dir)
 ```
 
-Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 715/713/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
+Machines without the host SDK (CI included): build the default stub tree with `node tests/helpers/stub-sdk.mjs .ci-stub`, then run the first two commands with `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` (expected: 720/718/2 skipped — skips are declared explicitly); mechanisms and red-light signatures in [AGENTS.md](AGENTS.md) §4, CI in `.github/workflows/ci.yml`.
 
 ## Version history
 

@@ -58,7 +58,7 @@ const CHECK_ENV_INDEX = 1;
 const EMPTY_PARAMETERS = { type: 'object', properties: {}, additionalProperties: false };
 
 /** 诊断对象五字段的逐字名单（output.schema 属性集 = 返回对象字段集）。 */
-const DIAGNOSTIC_FIELDS = ['python', 'guard', 'deps', 'envFileExists', 'venv'];
+const DIAGNOSTIC_FIELDS = ['python', 'pythonCommand', 'guard', 'deps', 'envFileExists', 'venv'];
 
 /** fixture 的依赖真值（诊断对象里的 `deps[].dist`，`envFileExists` 用例已写盘）。 */
 const FIXTURE_DIST_ALL = [
@@ -237,7 +237,7 @@ test('check_env: output.schema 嵌套逐字（python/guard/deps/envFileExists/ve
   assert.equal(schema.type, 'object');
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.type === 'json', false, "不得用 type:'json'（SDK 静默降级为空契约）");
-  assert.deepEqual(Object.keys(schema.properties), DIAGNOSTIC_FIELDS, '属性集即诊断五字段');
+  assert.deepEqual(Object.keys(schema.properties), DIAGNOSTIC_FIELDS, '属性集即诊断六字段');
 
   // python：version 可空（oneOf 形态）、meetsSkillRequirement 三态可空布尔。
   assert.equal(schema.properties.python.type, 'object');
@@ -254,6 +254,12 @@ test('check_env: output.schema 嵌套逐字（python/guard/deps/envFileExists/ve
   assert.deepEqual(schema.properties.python.properties.meetsSkillRequirement, {
     oneOf: [{ type: 'boolean' }, { type: 'null' }],
   });
+  // 命中的命令名放在**顶层** `pythonCommand`：`python` 形状与 `venv.python` 共用，
+  // 放进嵌套会让 venv 变体声明一个它从不产出的字段。
+  assert.deepEqual(schema.properties.pythonCommand, {
+    oneOf: [{ type: 'string' }, { type: 'null' }],
+  });
+  assert.deepEqual(schema.properties.python.required, ['found', 'version', 'meetsSkillRequirement']);
 
   // guard：ran 形态（ran/exitCode）与 skipped 形态的二选一。
   // `const` 必须带同级 `type`——SDK 的 assertSupportedJsonSchema 拒绝裸 const
@@ -578,7 +584,7 @@ test('check_env: python 元数据 hit → installed:true、source:metadata、imp
         { skillRoots: [root], ...healthyExec() },
       );
 
-      assert.deepEqual(Object.keys(payload), DIAGNOSTIC_FIELDS, '返回对象恰为诊断五字段');
+      assert.deepEqual(Object.keys(payload), DIAGNOSTIC_FIELDS, '返回对象恰为诊断六字段');
       assert.deepEqual(payload.python, {
         found: true,
         version: '3.11.2',
@@ -987,6 +993,163 @@ test('check_env: PNFE（元数据已定论）→ installed:false、source:metada
 });
 
 // ─── 诊断对象：spawn 级失败（无 python3 / 无 guard） ──────────────
+
+test('check_env: python3 缺失、python 3.13 可用 → 回退到 python，并在 payload/渲染里写明命令名', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  const calls = [];
+  try {
+    const exec = stubExec(async (command, args) => {
+      calls.push(command);
+      if (command === 'python3') throw enoentError('python3');
+      if (command !== 'python') throw enoentError(command);
+      if (args.includes('--version')) return { stdout: 'Python 3.13.13\n', stderr: '', exitCode: 0 };
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
+      return { stdout: '6.0.0\n', stderr: '', exitCode: 0 };
+    });
+    const payload = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...exec },
+    );
+
+    assert.deepEqual(payload.python, {
+      found: true,
+      version: '3.13.13',
+      meetsSkillRequirement: true,
+    }, '回退命中 python 时探测三字段照旧');
+    assert.equal(payload.pythonCommand, 'python', '顶层 pythonCommand 写明实际命中的命令');
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 0 }, 'guard 必须走实际可用的解释器');
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
+    ], '依赖探测必须走实际可用的解释器');
+    assert.ok(calls.includes('python'), 'python 被真正调用过');
+
+    const rendered = toolNamed('ppt_master_check_env').output.render({}, payload)[0].text;
+    assert.match(rendered.split('\n')[0], /^python: 3\.13\.13$/, '渲染行写明 python（不是 python3）');
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env: python3 与 python 都没有 → 报缺失，渲染写明两个候选都试过', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    const exec = stubExec(async (command) => {
+      throw enoentError(command);
+    });
+    const payload = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...exec },
+    );
+    assert.deepEqual(payload.python, {
+      found: false,
+      version: null,
+      meetsSkillRequirement: null,
+    });
+    assert.equal(payload.pythonCommand, null);
+    assert.deepEqual(payload.guard, { skipped: true });
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+    ]);
+    const rendered = toolNamed('ppt_master_check_env').output.render({}, payload)[0].text;
+    assert.match(rendered.split('\n')[0], /^python3: not found \(also tried python\)$/);
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env: python 是 Python 2 残留时不回退（仍按解释器缺失处理）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  const calls = [];
+  try {
+    const exec = stubExec(async (command, args) => {
+      calls.push([command, args.includes('--version') ? '--version' : 'other']);
+      if (command === 'python3') throw enoentError('python3');
+      if (command === 'python' && args.includes('--version')) {
+        return { stdout: 'Python 2.7.18\n', stderr: '', exitCode: 0 };
+      }
+      throw enoentError(command);
+    });
+    const payload = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...exec },
+    );
+    assert.deepEqual(payload.python, {
+      found: false,
+      version: null,
+      meetsSkillRequirement: null,
+    }, 'Python 2 不能满足路由契约，必须继续报缺失');
+    assert.equal(payload.pythonCommand, null);
+    assert.deepEqual(payload.guard, { skipped: true }, '不得用 Python 2 跑 guard');
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: 'UNKNOWN', source: 'unknown' },
+    ], '不得用 Python 2 跑依赖探测');
+    assert.ok(
+      calls.every(([command, kind]) => !(command === 'python' && kind === 'other')),
+      '除了 --version 之外，不得以 python 启动任何探针',
+    );
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env: python3 低于 3.10 而 python 达标 → 优先达标候选（不被旧 python3 挡住）', async () => {
+  const { root, remove } = makeSkillRoot();
+  const { file, remove: removeReq } = makeRequirementsFile(['PyYAML']);
+  try {
+    const exec = stubExec(async (command, args) => {
+      if (args.includes('--version')) {
+        if (command === 'python3') return { stdout: 'Python 3.8.10\n', stderr: '', exitCode: 0 };
+        if (command === 'python') return { stdout: 'Python 3.13.13\n', stderr: '', exitCode: 0 };
+        throw enoentError(command);
+      }
+      if (command !== 'python') throw enoentError(command);
+      if (String(args.at(-1)).endsWith('.py')) return { stdout: '', stderr: '', exitCode: 0 };
+      return { stdout: '6.0.0\n', stderr: '', exitCode: 0 };
+    });
+    const payload = await toolNamed('ppt_master_check_env').execute(
+      { requirementsPath: file },
+      { skillRoots: [root], ...exec },
+    );
+
+    assert.deepEqual(payload.python, {
+      found: true,
+      version: '3.13.13',
+      meetsSkillRequirement: true,
+    }, '达标候选覆盖低于底线的 python3');
+    assert.equal(payload.pythonCommand, 'python');
+    assert.deepEqual(payload.guard, { ran: true, exitCode: 0 }, 'guard 走达标的 python');
+    assert.deepEqual(payload.deps, [
+      { dist: 'pyyaml', importName: 'yaml', installed: true, source: 'metadata' },
+    ]);
+  } finally {
+    removeReq();
+    remove();
+  }
+});
+
+test('check_env: python3 探针被 abort 中止时不得吞掉并回退（非 spawn 失败一律上抛）', async () => {
+  const { root, remove } = makeSkillRoot();
+  try {
+    const aborted = new Error('aborted');
+    aborted.name = 'AbortError';
+    const exec = stubExec(async (command) => {
+      if (command === 'python3') throw aborted;
+      throw enoentError(command);
+    });
+    await assert.rejects(
+      () => toolNamed('ppt_master_check_env').execute({}, { skillRoots: [root], ...exec }),
+      /aborted/,
+    );
+  } finally {
+    remove();
+  }
+});
 
 test('check_env: 无 python3（spawn ENOENT）→ found=false、guard.skipped、deps 全 UNKNOWN，整体不 throw', async () => {
   const restoreHome = isolateHome().restore;
@@ -1768,8 +1931,8 @@ test('check_env venv.on-ready：venv 注入直达 payload 与探测路由（runC
     ]);
     assert.deepEqual(
       versionProbeTargets(calls),
-      ['python3', venvPython],
-      'venv 版本探测目标 = 生效解释器的 pythonPath 本身',
+      ['python3', 'python', venvPython],
+      '系统 3.9.18 低于 3.10 底线 ⇒ 继续试 python（ENOENT 后回落），venv 版本探测目标 = 生效解释器的 pythonPath 本身',
     );
     const { guards, inlines } = probeBuckets(calls);
     assert.deepEqual(guards.map((call) => call.command), [venvPython], 'guard 走 venv python');

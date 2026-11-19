@@ -585,8 +585,8 @@ test('入口 skill: 态2（venv 开+未建）——先 setup_deps、之前不得
   const content = await entryContent(venvConfig(missing));
   assert.ok(content.includes('先调用 `ppt_master_setup_deps` 准备环境'), '态2 须前置路由到 setup_deps');
   assert.ok(
-    content.includes('不要以系统 `python3` 运行任何上游业务脚本'),
-    '态2 须禁止在准备前以系统 python3 跑业务脚本',
+    content.includes('不要以系统解释器（`python3`，Windows 上可能只有 `python`）运行任何上游业务脚本'),
+    '态2 须禁止在准备前以系统解释器跑业务脚本',
   );
   assert.ok(!content.includes('替换字面 `python3`'), '态2 无可用解释器，不得给出态1 契约');
   assert.ok(!content.includes('venv 未启用'));
@@ -632,9 +632,10 @@ test('入口 skill: 半成品也落「开但未就绪」文案——有 bin/pyth
   }
 });
 
-test('入口 skill: 态3（venv 关）——系统 python3；disabled×invalid 同落此态', async () => {
+test('入口 skill: 态3（venv 关）——系统 python3（Windows 可回退 python）；disabled×invalid 同落此态', async () => {
   const off = await entryContent(venvConfig('~/.ppt-master/venv', false));
-  assert.ok(off.includes('venv 未启用：使用系统 `python3`（现状系统模式）。'));
+  assert.ok(off.includes('venv 未启用：使用系统 `python3`'));
+  assert.ok(off.includes('Windows 上若只有 `python` 就用 `python`'), '态3 须给 Windows 的回退命令');
   assert.ok(!off.includes('配置无效'), 'disabled 优先：路径合法与否都不落态4');
   assert.ok(!off.includes('替换字面 `python3`'));
   assert.ok(!off.includes('先调用 `ppt_master_setup_deps` 准备环境'));
@@ -649,7 +650,7 @@ test('入口 skill: 态4（配置无效）——修正指引 + 按系统模式�
   assert.ok(content.includes('配置无效'), '态4 须显式声明配置无效');
   assert.ok(content.includes('绝对路径'), '态4 须给出修正方向（绝对路径 / ~/ 前缀）');
   assert.ok(content.includes('按系统模式继续'), '态4 须按系统模式继续');
-  assert.ok(content.includes('系统 `python3`'));
+  assert.ok(content.includes('`python3`'), '态4 须指明系统解释器命令');
   assert.ok(!content.includes('venv 未启用'), 'invalid≠off：态4 与态3 文案必须可区分');
   assert.ok(!content.includes('替换字面 `python3`'));
   assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'));
@@ -665,7 +666,7 @@ test('入口 skill: opts.venv 缺 enabled 键（测试/嵌入面直呼工厂）�
   const content = await entryContent({ path: missing });
 
   assert.ok(
-    content.includes('venv 未启用：使用系统 `python3`（现状系统模式）。'),
+    content.includes('venv 未启用：使用系统 `python3`'),
     `缺 enabled 键 ⇒ 态3（系统模式），实际正文：${content}`,
   );
   assert.ok(!content.includes('先调用 `ppt_master_setup_deps` 准备环境'), '不得落态2（未启用）');
