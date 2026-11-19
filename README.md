@@ -84,7 +84,7 @@ dsh plugin --profile <name> add link:/path/to/dsh-ppt-master-wrapper
 ### 首次使用
 
 1. **环境自检**：调用 `ppt_master_check_env`，确认 Python 就绪（`python3`，Windows 上可能是 `python`）、完整性门通过、Python 依赖已安装。
-2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等），或手动 `python -m pip install -r skills/ppt-master/requirements.txt`。
+2. **安装 Python 依赖**：调用 `ppt_master_setup_deps`（幂等），或手动 `pip3 install -r skills/ppt-master/requirements.txt`（Windows 上 `python -m pip install -r …`）。
 3. **配置 `.env`（按需）**：上游图像生成脚本需要图像后端配置。在**会话工作目录**（上游 `.env` 查找顺序第 1 位；插件根目录为第 3 顺位兜底）执行
    `cp skills/ppt-master/.env.example .env`，按文件内注释填写 `IMAGE_BACKEND` 与对应 key/model
    （也可用进程环境变量提供同样配置）。`.env` 已列入 `.gitignore`；插件工具不读取、不回显其内容。
@@ -210,7 +210,7 @@ dsh-ppt-master-wrapper/
 ├── lib/                              # 客户端半边 / 工具 / venv / skill provider / scope
 ├── skills/ppt-master/                # ★ 上游 vendor 树（逐字节，零改写）
 ├── scripts/                          # sync-upstream / verify-plugin / check-dsh-compat
-├── tests/                            # node:test 全套（724 用例）
+├── tests/                            # node:test 全套（728 用例）
 ├── docs/superpowers/                 # 设计与计划文档（开发史）
 ├── .github/                          # CI 与 issue/PR 模板
 └── README / AGENTS.md / CONTRIBUTING.md / NOTICE / LICENSE
@@ -224,11 +224,11 @@ dsh-ppt-master-wrapper/
 
 ```bash
 node scripts/check-dsh-compat.mjs     # 契约检查：spec §7.7 六项（+⑦）设计成立性前置
-node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 724/724；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
+node --test tests/*.test.mjs          # 全套测试（本机真实 SDK 环境 726/726（2 条 skip）；若存在 `~/.ppt-master/.env`，仅 `envFileExists` 1 例变红）
 node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>   # 完整性校验（需缓存目录）
 ```
 
-无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 724/722/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
+无宿主 SDK 的机器（含 CI）：`node tests/helpers/stub-sdk.mjs .ci-stub` 建默认 stub 树，以 `DSH_NODE_MODULES=$PWD/.ci-stub/node_modules` 跑前两条（预期 728/726/2 skip，skip 为显式声明）；机制与红灯形态见 [AGENTS.md](AGENTS.md) §4，CI 见 `.github/workflows/ci.yml`。
 
 ## 版本历史
 

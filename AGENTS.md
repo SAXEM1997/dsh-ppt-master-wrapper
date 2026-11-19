@@ -96,7 +96,7 @@
 
 | 命令 | 用途 | 基线 |
 |---|---|---|
-| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 724 tests / 722 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 721 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
+| `node --test tests/*.test.mjs` | 全套（目录参数在 Node 22 失效，必须 glob） | 728 tests / 726 pass / 0 fail / 2 skip（无宿主 SDK、以默认 stub 树补齐依赖时；CI 即此形态——skip 判据是 stub 未导出 assertSupportedJsonSchema）；本机真实 SDK 环境 725 pass / 1 fail（同上 `envFileExists`）。**例外**：本机存在 `~/.ppt-master/.env` 时 `setup_deps` 的 `envFileExists` 用例会额外红一条（与 SDK 无关，CI 无该文件） |
 | `node scripts/check-dsh-compat.mjs` | 对照已装 DSH SDK 的契约检查（§7.7 六项 + §7.7⑦ 工具可见范围契约） | OK、warnings 0。**profile 树缺 peer 依赖时本机会失败**（实测 `dsh-llm` 的 peerDependency `@deepseek-ai/dsh-error` 未提升 ⇒ `SDK 包 @deepseek-ai/dsh-tools 动态导入失败`）；那是环境问题不是回归，改用宿主自带树 `--dsh-modules /npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules`（该树缺 `superpowers-dsh`，故 warnings 1） |
 | `node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/<ref>@<sha>` | 完整性 + provider/工具面校验 | 需显式 `--upstream`（缺省 fail-loud exit 1） |
 
