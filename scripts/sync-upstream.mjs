@@ -849,6 +849,11 @@ export function stageSkills(upstreamRoot, stagingRoot) {
  */
 export const LOCAL_TEMPLATE_REL = 'templates/local';
 
+/** 该相对路径是否属于个人模板库（运行时用户数据，不参与 vendor 面对比）。 */
+function isLocalTemplateRel(rel) {
+  return rel === LOCAL_TEMPLATE_REL || rel.startsWith(`${LOCAL_TEMPLATE_REL}/`);
+}
+
 /**
  * 把 staging 的 skill 面替换进 vendor（单向 上游→vendor）。
  *
@@ -869,26 +874,55 @@ export function installSkills(vendorSkillsRoot, stagingRoot, stagedSkills, optio
   for (const skill of stagedSkills) {
     const target = join(vendorSkillsRoot, skill);
     const localDir = join(target, LOCAL_TEMPLATE_REL);
-    let stash = null;
+    const stash = join(stashRoot, `local-templates-${skill}`);
+
+    // 上次运行若在「已暂存、未还原」之间失败，stash 是用户数据的**唯一副本**。
+    // 先把它放回去再继续，绝不能像普通缓存那样直接删掉。
+    if (existsSync(stash) && !existsSync(localDir)) {
+      mkdirSync(dirname(localDir), { recursive: true });
+      movePath(stash, localDir);
+    }
+
+    let stashed = false;
     if (existsSync(localDir)) {
-      stash = join(stashRoot, `local-templates-${skill}`);
-      rmSync(stash, { recursive: true, force: true });
       mkdirSync(stashRoot, { recursive: true });
-      renameSync(localDir, stash);
+      movePath(localDir, stash);
+      stashed = true;
       preserved.push({ skill, files: walkRelativeFiles(stash).length });
     }
 
-    rmSync(target, { recursive: true, force: true });
-    cpSync(join(stagingRoot, skill), target, { recursive: true });
-
-    if (stash !== null) {
-      const restored = join(target, LOCAL_TEMPLATE_REL);
-      mkdirSync(dirname(restored), { recursive: true });
-      renameSync(stash, restored);
+    try {
+      rmSync(target, { recursive: true, force: true });
+      cpSync(join(stagingRoot, skill), target, { recursive: true });
+    } finally {
+      // 复制失败也必须把用户数据放回原位——此时 target 可能不存在或只复制了一半，
+      // 都要重建目录承接，宁可留下半棵 vendor 树也不能把个人模板留在暂存区。
+      if (stashed) {
+        mkdirSync(dirname(localDir), { recursive: true });
+        rmSync(localDir, { recursive: true, force: true });
+        movePath(stash, localDir);
+      }
     }
   }
 
   return preserved.sort((left, right) => compareByteOrder(left.skill, right.skill));
+}
+
+/**
+ * 移动目录：优先 `renameSync`（同设备、原子），跨设备（`EXDEV`）退化为复制 + 删除。
+ *
+ * 暂存根默认在同一仓库内，正常路径走 rename；但 `.upstream/` 被换成符号链接或挂载点时
+ * 会跨设备，此时直接抛 `EXDEV` 会让同步在**已经删了 vendor 面**之后中断，故留退路。
+ */
+function movePath(from, to) {
+  try {
+    renameSync(from, to);
+    return;
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+  }
+  cpSync(from, to, { recursive: true });
+  rmSync(from, { recursive: true, force: true });
 }
 
 // ── aux-dir 状态记录（`.upstream/last-aux-dirs.json`）────────────
@@ -1019,7 +1053,9 @@ export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, aux
     const stagedDir = join(stagingRoot, name);
 
     // ── 全树逐字节比对：任何差异都置 vendorDiff（含红/黄涉及的文件）──
-    const vendorFiles = walkRelativeFiles(vendorDir);
+    // 个人模板库是运行时用户数据（上游也 gitignore 它），不算 vendor 分歧：
+    // 留在比对里会让「无上游变更」的同步被误判成有 diff。
+    const vendorFiles = walkRelativeFiles(vendorDir).filter((rel) => !isLocalTemplateRel(rel));
     const stagedFiles = walkRelativeFiles(stagedDir);
     const vendorFileSet = new Set(vendorFiles);
     const stagedFileSet = new Set(stagedFiles);
@@ -1059,7 +1095,10 @@ export function classifyChanges(vendorSkillsRoot, stagingRoot, upstreamRoot, aux
 
     // ── 四个架构级目录的一级条目增删 ──
     for (const dirName of STRUCTURAL_DIRS) {
-      const before = firstLevelEntries(join(vendorDir, dirName));
+      // `templates/local/` 是用户注册的个人模板库——它在 vendor 侧出现、上游侧永不出现，
+      // 若不排除，每次同步都会被判成「templates/ 一级条目被删除」的 🔴 结构变化。
+      const before = firstLevelEntries(join(vendorDir, dirName))
+        .filter((entry) => !(dirName === 'templates' && entry === 'local'));
       const after = firstLevelEntries(join(stagedDir, dirName));
       const added = after.filter((entry) => !before.includes(entry));
       const removed = before.filter((entry) => !after.includes(entry));
