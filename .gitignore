@@ -13,3 +13,6 @@ node_modules/
 *.tmp
 .specpowers/
 skills/ppt-master/templates/local/
+
+# npm pack 产物（发布前本地校验用）
+*.tgz

@@ -130,7 +130,7 @@ Release 说明**中英双语各一份**，结构＝「一段严谨口吻的总�
 格式细则见 `docs/agents/maintainer-ops.md` §5。
 
 npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：推 `v<version>` tag 触发
-`.github/workflows/release.yml`——门禁（tag 与 manifest 一致、notes 存在、版本记账三处齐、
+`.github/workflows/release.yml`——门禁（tag 与 manifest 一致、notes 存在、版本记账四处齐、
 stub 树全套、`npm pack`）→ `npm publish --provenance`（仓库 secret `NPM_TOKEN`，版本已存在则
 跳过）→ 取回已发布 tarball 比对 registry shasum → `gh release create --notes-file`。移除 2FA
 人工闸门后，**坏 tag 会立刻进 registry**，门禁是唯一防线。若 `NPM_TOKEN` 受 npm「限制绕过 2FA
