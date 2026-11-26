@@ -101,7 +101,7 @@ npm view @deepseek-ai/dsh@<版本> dependencies --json | grep loader
 
 ## 5. Release 说明的写法
 
-**结构固定三段，中英双语各一份**（先中文后英文，英文段单独 `---` 分隔）：
+**结构固定四段：`## 总结` + `## 变更`，`---`，`## Summary` + `## Changes`**（先中文后英文）。第 3 项不新增标题，并入前两段：
 
 1. **总结段**：一段话，用**专业、严谨**的口吻说清「改了什么、影响谁、要不要升」。陈述事实
    与范围，不用感叹句、不用营销词、不承诺未验证的效果。读者只看这一段就该能决定要不要升。
@@ -169,11 +169,14 @@ git tag -a v6.10.0-r2 -m v6.10.0-r2
 git push origin v6.10.0-r2
 
 # 3. release.yml 自动执行：门禁 → npm publish → shasum 校验 → gh release create
-# 4. 失败或补跑（dry_run 默认 true）：
-gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=true
+# 4. 补跑：不传 source_ref（checkout tag），dry_run 必须显式 false（它默认 true）
+gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=false
 ```
 
-重跑安全：registry 已有该版本时发布会跳过；Release 已存在时不重建。
+重跑安全有前提：**tag 仍指向已发布的树**。版本已存在时发布会跳过，但随后用本地打包的 sha1
+与 registry `dist.shasum` 比对，不一致直接失败、不建 Release。若 tag 从未成功发布（门禁就
+失败），可以删掉重打：`git push origin :v<version>`，修 main 后重新打 tag；**一旦该版本已进
+registry，永不移动 tag**——有改动就发 `-rN+1`。
 
 ### 门禁
 
@@ -181,7 +184,7 @@ gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=true
 - `docs/releases/v<version>.md` 存在且非空；
 - README 双语与 AGENTS §5 都有 ``| `v<version>` |`` 行；
 - stub 树跑全套测试、`npm pack --dry-run`（`prepack` 会拦个人模板库）；
-- `npm whoami` 预检 `NPM_TOKEN`，发布后取回已发布 tarball 与 registry shasum 比对。
+- `npm whoami` 预检 `NPM_TOKEN`；发布前 `npm pack` 本地打包记 sha1，发布后与 registry 的 `dist.shasum` 比对（相同才建 Release）。
 
 ### 兜底：2FA stage
 
@@ -204,18 +207,11 @@ token 只走环境变量或 CI secret，**不写进仓库任何文件**。`publi
 （`registry.npmmirror.com` 没有 `/-/stage` 端点，会 404），故这几条必须显式
 `--registry=https://registry.npmjs.org`。
 
-### 本机直发（备用路径）
+### 本机直发（已取消）
 
-上行恢复后可以直接发，省掉 CI 一跳：
-
-```bash
-export NPM_TOKEN='npm_…'
-npm publish --tag latest --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
-```
-
-代价是**没有 provenance**——离开 GitHub Actions 就没有 OIDC 身份，包无法被签名绑定到 commit。
-所以 CI 仍是默认路径。若 npm 要求 2FA，交互式会提示 OTP；非交互场景改用 `publish.yml` 的
-stage + `npm stage approve` 路径。
+不再支持从本机 `npm publish`：它会绕过 tag 校验、notes、版本记账、测试与 provenance，正是
+`v6.9.0` 那个「tag 与产物对不上」事故的成因。上行受限或 `NPM_TOKEN` 失效时，走 `publish.yml`
+的 `npm stage publish` + 维护者 `npm stage approve` 兜底。
 
 ### 发布前必查（workflow 已自动执行前两条）
 

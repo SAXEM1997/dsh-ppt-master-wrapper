@@ -78,6 +78,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.v.outputs.ref }}
+          persist-credentials: false
 
       - name: The tag and the manifest name the same version
         run: |
@@ -118,7 +119,7 @@ jobs:
           }
           echo "$NOTES: $(wc -l < "$NOTES") lines"
 
-      # 版本记账三处联动，漏一处 Release 页面就会与文档对不上。
+      # 版本记账四处联动，漏一处 Release 页面就会与文档对不上。
       - name: Version bookkeeping is present
         run: |
           set -euo pipefail
@@ -142,7 +143,24 @@ jobs:
       - name: Pack gate
         run: npm pack --dry-run >/dev/null
 
-      - name: Publish unless this version already exists
+      # 先打一次本地包并记下 sha1：后面与 registry 的 dist.shasum 比对，才能证明
+      # 「发布的字节 == 这个 tag 的树」。用 npm pack 从 registry 取回再比 registry
+      # 自己的 shasum 是同义反复，永远发现不了 tag 与产物不一致。
+      - name: Pack this tree and record its sha1
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack --json > "$RUNNER_TEMP/pack.json"
+          node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const [entry] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/pack.json", "utf8"));
+            const sha1 = crypto.createHash("sha1").update(fs.readFileSync(entry.filename)).digest("hex");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha1=${sha1}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `file=${entry.filename}\n`);
+          '
+
+      - name: Publish to npm when this version is new
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -153,15 +171,23 @@ jobs:
             npm publish --dry-run --tag latest
             exit 0
           fi
-          if npm view "dsh-ppt-master-wrapper@$VERSION" version >/dev/null 2>&1; then
+          set +e
+          OUT=$(npm view "dsh-ppt-master-wrapper@$VERSION" version 2>&1)
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
             echo "dsh-ppt-master-wrapper@$VERSION is already published; skipping (re-run path)"
-          else
+          elif printf '%s' "$OUT" | grep -qE 'E404|404 Not Found'; then
             npm publish --provenance --tag latest
+          else
+            echo "::error::npm view failed for a reason other than E404"
+            printf '%s\n' "$OUT"
+            exit 1
           fi
 
-      # registry 元数据可能先于 tarball 可下载；取**已发布**的字节并与 registry 的
-      # shasum 比对，才能证明 Release 指向的正是用户安装的产物。
-      - name: Verify the published tarball against the registry shasum
+      # registry 元数据可能先于 tarball 可下载；本地包的 sha1 与 registry 的
+      # dist.shasum 必须一致——不一致说明 tag 的树与该版本已发布的产物不是同一份。
+      - name: Verify the registry bytes match this tree
         if: github.event_name == 'push' || inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -169,15 +195,16 @@ jobs:
           set -euo pipefail
           NAME="dsh-ppt-master-wrapper"
           VERSION="${{ steps.v.outputs.version }}"
+          LOCAL="${{ steps.pack.outputs.sha1 }}"
           for attempt in $(seq 1 12); do
             if npm pack "$NAME@$VERSION" >/dev/null 2>&1; then
-              EXPECTED=$(npm view "$NAME@$VERSION" dist.shasum)
-              ACTUAL=$(sha1sum "$NAME-$VERSION.tgz" | cut -d' ' -f1)
-              [ "$ACTUAL" = "$EXPECTED" ] || {
-                echo "::error::sha1 $ACTUAL != registry $EXPECTED"
+              REGISTRY=$(npm view "$NAME@$VERSION" dist.shasum)
+              [ "$REGISTRY" = "$LOCAL" ] || {
+                echo "::error::registry sha1 $REGISTRY != this tree $LOCAL"
+                echo "::error::the tag and the published bytes are not the same artifact"
                 exit 1
               }
-              echo "sha1 $ACTUAL matches the registry"
+              echo "sha1 $LOCAL matches the registry"
               exit 0
             fi
             echo "attempt $attempt: tarball not downloadable yet"
@@ -196,7 +223,10 @@ jobs:
           NOTES="docs/releases/v$VERSION.md"
           # checkout 已经证明这个 tag 存在，不再用 --verify-tag（它依赖本地 tag 引用，
           # actions/checkout 只取该 ref 时未必留下本地 tag）。
-          gh release view "v$VERSION" >/dev/null 2>&1 \
-            || gh release create "v$VERSION" \
-                 --title "v$VERSION" \
-                 --notes-file "$NOTES"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release edit "v$VERSION" --notes-file "$NOTES" --draft=false
+          else
+            gh release create "v$VERSION" \
+              --title "v$VERSION" \
+              --notes-file "$NOTES"
+          fi
