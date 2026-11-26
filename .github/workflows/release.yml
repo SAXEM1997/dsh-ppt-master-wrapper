@@ -37,7 +37,7 @@ permissions:
   id-token: write # --provenance 的 OIDC 签名
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -94,6 +94,26 @@ jobs:
           fi
           echo "manifest ok: $GOT"
 
+      # CONTRIBUTING 要求附注 tag 打在合并提交上；轻量 tag 或从分支打出的 tag 直接拒。
+      - name: The tag is annotated and on main
+        if: steps.v.outputs.pinned_tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          git fetch --depth=1 origin "refs/tags/v$VERSION"
+          TYPE=$(git cat-file -t "refs/tags/v$VERSION")
+          [ "$TYPE" = "tag" ] || {
+            echo "::error::v$VERSION is a lightweight tag; use git tag -a"
+            exit 1
+          }
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          case "$STATUS" in
+            behind|identical) echo "tag is on main ($STATUS)" ;;
+            *) echo "::error::v$VERSION points at $GITHUB_SHA, which is not on main ($STATUS)"; exit 1 ;;
+          esac
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -119,7 +139,7 @@ jobs:
           }
           echo "$NOTES: $(wc -l < "$NOTES") lines"
 
-      # 版本记账四处联动，漏一处 Release 页面就会与文档对不上。
+      # 版本记账四处联动，漏一处 Release 页面或卡片就会与文档对不上。
       - name: Version bookkeeping is present
         run: |
           set -euo pipefail
@@ -130,7 +150,17 @@ jobs:
               exit 1
             }
           done
-          echo "bookkeeping ok"
+          CLIENT=$(node -e "
+            const s = require('fs').readFileSync('lib/client.js', 'utf8');
+            const m = s.match(/const PLUGIN_VERSION = '([^']+)'/);
+            if (!m) { console.error('PLUGIN_VERSION not found in lib/client.js'); process.exit(2); }
+            process.stdout.write(m[1]);
+          ")
+          [ "$CLIENT" = "$VERSION" ] || {
+            echo "::error file=lib/client.js::PLUGIN_VERSION is $CLIENT, expected $VERSION"
+            exit 1
+          }
+          echo "bookkeeping ok (rows + lib/client.js)"
 
       # runner 上没有宿主 SDK：与 ci.yml 一样先建默认 stub 树，2 条 skip 是显式声明。
       - name: Test (stub SDK tree)
@@ -153,11 +183,20 @@ jobs:
           npm pack --json > "$RUNNER_TEMP/pack.json"
           node -e '
             const fs = require("fs");
+            const path = require("path");
             const crypto = require("crypto");
             const [entry] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/pack.json", "utf8"));
             const sha1 = crypto.createHash("sha1").update(fs.readFileSync(entry.filename)).digest("hex");
+            const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true })
+              .reduce((n, d) => n + (d.isDirectory() ? walk(path.join(dir, d.name)) : 1), 0);
+            const onDisk = walk("skills");
+            const inTarball = entry.files.filter((f) => f.path.startsWith("skills/")).length;
+            if (onDisk !== inTarball) {
+              console.error(`vendor files on disk=${onDisk} in tarball=${inTarball} — the package would fail attribution_guard.py`);
+              process.exit(1);
+            }
+            console.log(`vendor files: on disk=${onDisk} in tarball=${inTarball}`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha1=${sha1}\n`);
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `file=${entry.filename}\n`);
           '
 
       - name: Publish to npm when this version is new
@@ -228,5 +267,6 @@ jobs:
           else
             gh release create "v$VERSION" \
               --title "v$VERSION" \
-              --notes-file "$NOTES"
+              --notes-file "$NOTES" \
+              --verify-tag
           fi

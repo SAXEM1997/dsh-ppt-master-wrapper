@@ -125,14 +125,14 @@
 `UPSTREAM_VERSION`（`applyVersionLinkage`，改写进同步 commit）；README 版本表仍是人工。
 
 Release 说明**中英双语各一份**，结构＝「一段严谨口吻的总结 + **每个 PR 一行**的变更列表」；
-机制细节归 issue/PR，不塞进 release body。自 `v6.10.0-r1` 起，说明文件放
+机制细节归 issue/PR，不塞进 release body。从下一个发布起（首个带 `docs/releases/` 的版本），说明文件放
 `docs/releases/v<version>.md`，随 release PR 一起评审——它同时是 GitHub Release 的正文。
 格式细则见 `docs/agents/maintainer-ops.md` §5。
 
 npm 是**第二条发布渠道**（插件市场据此解析版本与更新）：推 `v<version>` tag 触发
 `.github/workflows/release.yml`——门禁（tag 与 manifest 一致、notes 存在、版本记账四处齐、
 stub 树全套、`npm pack`）→ `npm publish --provenance`（仓库 secret `NPM_TOKEN`，版本已存在则
-跳过）→ 取回已发布 tarball 比对 registry shasum → `gh release create --notes-file`。移除 2FA
+跳过）→ 本地打包的 sha1 与 registry `dist.shasum` 比对（相同才建 Release）→ `gh release create --notes-file`。移除 2FA
 人工闸门后，**坏 tag 会立刻进 registry**，门禁是唯一防线。若 `NPM_TOKEN` 受 npm「限制绕过 2FA
 的 token」新政影响，兜底是 `publish.yml` 的 `npm stage publish` + 维护者 `npm stage approve`。
 `publishConfig.registry` 钉死 npmjs（本机默认 registry 是镜像站；`npm stage list|approve` 不读

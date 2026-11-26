@@ -151,7 +151,7 @@ release body——那属于 PR 描述和 AGENTS，release 页面只服务「要�
 ## 6. npm 发布：tag 触发，token 直发（2FA stage 为兜底）
 
 GitHub Release 与 npm 是两条独立渠道：Release 回答「要不要升级」，npm 让**插件市场**能解析
-版本、比对更新并一键安装。自 `v6.10.0-r1` 起两者都由同一个 tag 推送完成。
+版本、比对更新并一键安装。从下一个发布起（首个带 `docs/releases/` 的版本），两者都由同一个 tag 推送完成；`v6.10.0-r1` 及其之前仍是 stage + 2FA 手工路径。
 
 ### 为什么上传在 CI 而不在本机
 
@@ -184,12 +184,15 @@ registry，永不移动 tag**——有改动就发 `-rN+1`。
 - `docs/releases/v<version>.md` 存在且非空；
 - README 双语与 AGENTS §5 都有 ``| `v<version>` |`` 行；
 - stub 树跑全套测试、`npm pack --dry-run`（`prepack` 会拦个人模板库）；
-- `npm whoami` 预检 `NPM_TOKEN`；发布前 `npm pack` 本地打包记 sha1，发布后与 registry 的 `dist.shasum` 比对（相同才建 Release）。
+- `lib/client.js` 的 `PLUGIN_VERSION` 与 tag 一致；tag 必须是附注 tag 且指向 `main` 上的提交；
+- `npm pack` 时核对 `skills/` 在磁盘与 tarball 中的文件数一致（否则用户侧 `attribution_guard.py` 必失败）；
+- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包记 sha1，发布后与 registry 的 `dist.shasum` 比对（相同才建 Release）。
 
 ### 兜底：2FA stage
 
-`NPM_TOKEN` 若受 npm「限制绕过 2FA 的 token」新政影响，`npm whoami` 或 publish 会先失败；
-此时改用仍保留的 `publish.yml`：`npm stage publish --provenance` 暂存，维护者带 2FA
+`NPM_TOKEN` 若受 npm「限制绕过 2FA 的 token」新政影响，可能 `whoami` 通过、`publish` 被拒；
+token 本身失效则 `whoami` 就失败。两种情况都改用仍保留的 `publish.yml`（它在 CI 侧跑同样的
+`npm stage publish --provenance`，但需要先修好 secret 里的 token），再由维护者带 2FA
 `npm stage approve <stage-id> --registry=https://registry.npmjs.org` 完成发布。拒绝用
 `npm stage reject <stage-id>`：该版本号不会被占用，改完可重发。
 
