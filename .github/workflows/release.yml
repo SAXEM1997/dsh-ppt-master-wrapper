@@ -69,6 +69,21 @@ jobs:
           }
           echo "manifest ok: $GOT"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Toolchain
+        run: |
+          node --version
+          npm --version
+
+      - name: Token preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
       - name: The release notes for this version exist
         run: |
           set -euo pipefail
@@ -92,16 +107,6 @@ jobs:
           done
           echo "bookkeeping ok"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Toolchain
-        run: |
-          node --version
-          npm --version
-
       # runner 上没有宿主 SDK：与 ci.yml 一样先建默认 stub 树，2 条 skip 是显式声明。
       - name: Test (stub SDK tree)
         run: |
@@ -112,11 +117,6 @@ jobs:
       # `prepack`（check-pack）也在这里跑：个人模板库若在仓库里，打包阶段直接失败。
       - name: Pack gate
         run: npm pack --dry-run >/dev/null
-
-      - name: Token preflight
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm whoami
 
       - name: Publish unless this version already exists
         env:
