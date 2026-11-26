@@ -173,8 +173,8 @@ git push origin v6.10.0-r2
 gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=false
 ```
 
-重跑安全有前提：**tag 仍指向已发布的树**。版本已存在时发布会跳过，但随后用本地打包的 sha1
-与 registry `dist.shasum` 比对，不一致直接失败、不建 Release。若 tag 从未成功发布（门禁就
+重跑安全有前提：**tag 仍指向已发布的树**。版本已存在时发布会跳过，但随后把本地打包与
+registry 产物解包逐文件比对，不一致直接失败、不建 Release。若 tag 从未成功发布（门禁就
 失败），可以删掉重打：`git push origin :v<version>`，修 main 后重新打 tag；**一旦该版本已进
 registry，永不移动 tag**——有改动就发 `-rN+1`。
 
@@ -186,7 +186,7 @@ registry，永不移动 tag**——有改动就发 `-rN+1`。
 - stub 树跑全套测试、`npm pack --dry-run`（`prepack` 会拦个人模板库）；
 - `lib/client.js` 的 `PLUGIN_VERSION` 与 tag 一致；tag 必须是附注 tag 且指向 `main` 上的提交；
 - `npm pack` 时核对 `skills/` 在磁盘与 tarball 中的文件数一致（否则用户侧 `attribution_guard.py` 必失败）；
-- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包记 sha1，发布后与 registry 的 `dist.shasum` 比对（相同才建 Release）。
+- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包，发布后取回 registry 产物、解包逐文件比对（一致才建 Release）。tarball 的 sha1 不能跨环境比——tar 元数据不同，同一份内容也会得到不同字节。
 
 ### 兜底：2FA stage
 
