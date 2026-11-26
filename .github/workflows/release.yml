@@ -197,6 +197,7 @@ jobs:
             }
             console.log(`vendor files: on disk=${onDisk} in tarball=${inTarball}`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha1=${sha1}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `file=${entry.filename}\n`);
           '
 
       - name: Publish to npm when this version is new
@@ -224,9 +225,11 @@ jobs:
             exit 1
           fi
 
-      # registry 元数据可能先于 tarball 可下载；本地包的 sha1 与 registry 的
-      # dist.shasum 必须一致——不一致说明 tag 的树与该版本已发布的产物不是同一份。
-      - name: Verify the registry bytes match this tree
+      # tarball 不能按字节比：同一份内容在不同环境/时刻打出的 tar 元数据不同
+      # （实测 npm 11.19.1 下本地与 registry 的 sha1 不同，但解包后逐文件一致）。
+      # 真正要证明的是「用户装到的文件 == 这个 tag 的树」，所以解包后做内容 diff。
+      # --prefer-online 用来绕过 publish 之前那次 E404 留下的负缓存。
+      - name: Verify the published contents match this tree
         if: github.event_name == 'push' || inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -234,16 +237,19 @@ jobs:
           set -euo pipefail
           NAME="dsh-ppt-master-wrapper"
           VERSION="${{ steps.v.outputs.version }}"
-          LOCAL="${{ steps.pack.outputs.sha1 }}"
-          for attempt in $(seq 1 12); do
-            if npm pack "$NAME@$VERSION" >/dev/null 2>&1; then
-              REGISTRY=$(npm view "$NAME@$VERSION" dist.shasum)
-              [ "$REGISTRY" = "$LOCAL" ] || {
-                echo "::error::registry sha1 $REGISTRY != this tree $LOCAL"
-                echo "::error::the tag and the published bytes are not the same artifact"
+          LOCAL="${{ steps.pack.outputs.file }}"
+          for attempt in $(seq 1 20); do
+            rm -rf "$RUNNER_TEMP/registry" "$RUNNER_TEMP/reg-x" "$RUNNER_TEMP/local-x"
+            mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/reg-x" "$RUNNER_TEMP/local-x"
+            if npm pack "$NAME@$VERSION" --prefer-online --pack-destination "$RUNNER_TEMP/registry" >/dev/null 2>&1; then
+              tar -xzf "$RUNNER_TEMP/registry/$NAME-$VERSION.tgz" -C "$RUNNER_TEMP/reg-x"
+              tar -xzf "$LOCAL" -C "$RUNNER_TEMP/local-x"
+              if ! diff -r "$RUNNER_TEMP/local-x/package" "$RUNNER_TEMP/reg-x/package"; then
+                echo "::error::the published contents differ from this tag's tree"
                 exit 1
-              }
-              echo "sha1 $LOCAL matches the registry"
+              fi
+              FILES=$(find "$RUNNER_TEMP/reg-x/package" -type f | wc -l)
+              echo "contents match ($FILES files)"
               exit 0
             fi
             echo "attempt $attempt: tarball not downloadable yet"
