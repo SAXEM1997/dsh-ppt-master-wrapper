@@ -1,0 +1,178 @@
+name: release
+
+# 推 tag 即发布：`v<version>` → 门禁 → `npm publish` → 校验已发布的包 → GitHub Release。
+# 与 dsh-boost 的 release.yml 同一形状（tag 触发、NPM_TOKEN 直发、notes 入库），
+# 差异只在本仓库的记账门禁与 provenance。
+#
+# 为什么顺序是「发布 → Release」而不是反过来：Release 页面等于「宣布可安装的版本」。
+# 先建 Release 再发布，npm 一旦拒收，页面就指向一个装不上的包——且这是读者看不出来的失败。
+#
+# 三条会静默出错的规则（每条都对应下面一道门）：
+#   1. tag 与 package.json 不一致：npm 按 manifest 发布，tag/Release 却声称另一个版本。
+#   2. notes 文件缺失或为空：Release body 变成空壳；npm 页面还会永久固化 tarball 里的 README。
+#   3. 版本已存在时重复发布：npm 直接 409。这里先查 registry，存在则跳过，重跑安全。
+#
+# 凭证是仓库 secret `NPM_TOKEN`（与 dsh-boost 相同做法），不再走 npm stage + 2FA。
+# 若 token 受 npm「限制绕过 2FA 的 token」新政影响，`npm whoami` 或 publish 会先失败；
+# 兜底是仍保留的 `.github/workflows/publish.yml`（stage + 维护者 2FA 批准）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本（如 6.10.0-r1）；仅用于 dry-run 或补跑'
+        required: true
+      dry_run:
+        description: '只跑门禁与打包校验，不发布、不建 Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # gh release create
+  id-token: write # --provenance 的 OIDC 签名
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Resolve the version from the tag or the input
+        id: v
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "releasing $VERSION"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ steps.v.outputs.version }}
+
+      - name: The tag and the manifest name the same version
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          GOT=$(node -p "require('./package.json').version")
+          [ "$GOT" = "$VERSION" ] || {
+            echo "::error::tag v$VERSION but package.json.version is $GOT"
+            exit 1
+          }
+          echo "manifest ok: $GOT"
+
+      - name: The release notes for this version exist
+        run: |
+          set -euo pipefail
+          NOTES="docs/releases/v${{ steps.v.outputs.version }}.md"
+          [ -s "$NOTES" ] || {
+            echo "::error file=$NOTES::missing — the release body is this file, in Chinese then English"
+            exit 1
+          }
+          echo "$NOTES: $(wc -l < "$NOTES") lines"
+
+      # 版本记账三处联动，漏一处 Release 页面就会与文档对不上。
+      - name: Version bookkeeping is present
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          for f in README.md README.en.md AGENTS.md; do
+            grep -q "| \`v$VERSION\` |" "$f" || {
+              echo "::error file=$f::missing the | \`v$VERSION\` | row"
+              exit 1
+            }
+          done
+          echo "bookkeeping ok"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Toolchain
+        run: |
+          node --version
+          npm --version
+
+      # runner 上没有宿主 SDK：与 ci.yml 一样先建默认 stub 树，2 条 skip 是显式声明。
+      - name: Test (stub SDK tree)
+        run: |
+          set -euo pipefail
+          node tests/helpers/stub-sdk.mjs .ci-stub
+          DSH_NODE_MODULES="$PWD/.ci-stub/node_modules" node --test tests/*.test.mjs
+
+      # `prepack`（check-pack）也在这里跑：个人模板库若在仓库里，打包阶段直接失败。
+      - name: Pack gate
+        run: npm pack --dry-run >/dev/null
+
+      - name: Token preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
+      - name: Publish unless this version already exists
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry run: not publishing"
+            npm publish --dry-run --tag latest
+            exit 0
+          fi
+          if npm view "dsh-ppt-master-wrapper@$VERSION" version >/dev/null 2>&1; then
+            echo "dsh-ppt-master-wrapper@$VERSION is already published; skipping (re-run path)"
+          else
+            npm publish --provenance --tag latest
+          fi
+
+      # registry 元数据可能先于 tarball 可下载；取**已发布**的字节并与 registry 的
+      # shasum 比对，才能证明 Release 指向的正是用户安装的产物。
+      - name: Verify the published tarball against the registry shasum
+        if: github.event_name == 'push' || inputs.dry_run != true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          NAME="dsh-ppt-master-wrapper"
+          VERSION="${{ steps.v.outputs.version }}"
+          for attempt in $(seq 1 12); do
+            if npm pack "$NAME@$VERSION" >/dev/null 2>&1; then
+              EXPECTED=$(npm view "$NAME@$VERSION" dist.shasum)
+              ACTUAL=$(sha1sum "$NAME-$VERSION.tgz" | cut -d' ' -f1)
+              [ "$ACTUAL" = "$EXPECTED" ] || {
+                echo "::error::sha1 $ACTUAL != registry $EXPECTED"
+                exit 1
+              }
+              echo "sha1 $ACTUAL matches the registry"
+              exit 0
+            fi
+            echo "attempt $attempt: tarball not downloadable yet"
+            sleep 30
+          done
+          echo "::error::$NAME@$VERSION never became downloadable"
+          exit 1
+
+      - name: Create the GitHub Release (idempotent)
+        if: github.event_name == 'push' || inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          NOTES="docs/releases/v$VERSION.md"
+          # checkout 已经证明这个 tag 存在，不再用 --verify-tag（它依赖本地 tag 引用，
+          # actions/checkout 只取该 ref 时未必留下本地 tag）。
+          gh release view "v$VERSION" >/dev/null 2>&1 \
+            || gh release create "v$VERSION" \
+                 --title "v$VERSION" \
+                 --notes-file "$NOTES"
