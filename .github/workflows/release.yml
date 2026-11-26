@@ -27,6 +27,10 @@ on:
         description: '只跑门禁与打包校验，不发布、不建 Release'
         type: boolean
         default: true
+      source_ref:
+        description: 'dry-run 专用：从这个 ref 取代码（默认取 tag；真发布永远只认 tag）'
+        required: false
+        default: ''
 
 permissions:
   contents: write # gh release create
@@ -41,22 +45,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - name: Resolve the version from the tag or the input
+      - name: Resolve the version and the ref to check out
         id: v
         run: |
           set -euo pipefail
+          SOURCE_REF="${{ inputs.source_ref }}"
+          DRY="${{ inputs.dry_run }}"
           if [ "${{ github.event_name }}" = "push" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            REF="refs/tags/v$VERSION"
+            PINNED_TAG=true
           else
             VERSION="${{ inputs.version }}"
+            if [ -n "$SOURCE_REF" ]; then
+              [ "$DRY" = "true" ] || {
+                echo "::error::source_ref is only allowed with dry_run=true"
+                exit 1
+              }
+              REF="$SOURCE_REF"
+              PINNED_TAG=false
+            else
+              REF="refs/tags/v$VERSION"
+              PINNED_TAG=true
+            fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "releasing $VERSION"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "pinned_tag=$PINNED_TAG" >> "$GITHUB_OUTPUT"
+          echo "releasing $VERSION from $REF (tag-pinned: $PINNED_TAG)"
 
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/v${{ steps.v.outputs.version }}
+          ref: ${{ steps.v.outputs.ref }}
 
       - name: The tag and the manifest name the same version
         run: |
@@ -67,6 +88,9 @@ jobs:
             echo "::error::tag v$VERSION but package.json.version is $GOT"
             exit 1
           }
+          if [ "${{ steps.v.outputs.pinned_tag }}" != "true" ]; then
+            echo "dry run from ${{ steps.v.outputs.ref }}: manifest matches, tag existence not asserted"
+          fi
           echo "manifest ok: $GOT"
 
       - uses: actions/setup-node@v4
