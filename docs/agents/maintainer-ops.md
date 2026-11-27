@@ -168,7 +168,7 @@ tarball 传不完——2026-11-09 三次 `npm stage publish` 全部在中途 `EC
 git tag -a v6.10.0-r2 -m v6.10.0-r2
 git push origin v6.10.0-r2
 
-# 3. release.yml 自动执行：门禁 → npm publish → shasum 校验 → gh release create
+# 3. release.yml 自动执行：门禁 → npm publish → 产物逐文件比对 → gh release create
 # 4. 补跑：不传 source_ref（checkout tag），dry_run 必须显式 false（它默认 true）
 gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=false
 ```
@@ -177,6 +177,9 @@ gh workflow run release.yml -f version=6.10.0-r2 -f dry_run=false
 registry 产物解包逐文件比对，不一致直接失败、不建 Release。若 tag 从未成功发布（门禁就
 失败），可以删掉重打：`git push origin :v<version>`，修 main 后重新打 tag；**一旦该版本已进
 registry，永不移动 tag**——有改动就发 `-rN+1`。
+两条约束：① `--tag latest` 会把 npm 的 `latest` 指向本次发布的版本，所以**只在最新版本线
+上打 tag**；回填一个从未发布过的旧版本会把 `latest` 顶回去。② Release 正文由 workflow 从
+**tag 内**的 notes 文件渲染，补跑会重写正文；对已建 Release 的手工修订会在下次补跑时丢失。
 
 ### 门禁
 
@@ -186,13 +189,14 @@ registry，永不移动 tag**——有改动就发 `-rN+1`。
 - stub 树跑全套测试、`npm pack --dry-run`（`prepack` 会拦个人模板库）；
 - `lib/client.js` 的 `PLUGIN_VERSION` 与 tag 一致；tag 必须是附注 tag 且指向 `main` 上的提交；
 - `npm pack` 时核对 `skills/` 在磁盘与 tarball 中的文件数一致（否则用户侧 `attribution_guard.py` 必失败）；
-- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包，发布后取回 registry 产物、解包逐文件比对（一致才建 Release）。tarball 的 sha1 不能跨环境比——tar 元数据不同，同一份内容也会得到不同字节。
+- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包，发布后取回 registry 产物、解包逐文件比对（一致才建 Release）。不按字节比：tar 元数据（文件模式、压缩实现）会让同一份内容得到不同字节；要证明的是文件内容一致。
 
 ### 兜底：2FA stage
 
 `NPM_TOKEN` 若受 npm「限制绕过 2FA 的 token」新政影响，可能 `whoami` 通过、`publish` 被拒；
-token 本身失效则 `whoami` 就失败。两种情况都改用仍保留的 `publish.yml`（它在 CI 侧跑同样的
-`npm stage publish --provenance`，但需要先修好 secret 里的 token），再由维护者带 2FA
+token 本身失效则 `whoami` 就失败。两种情况都改用仍保留的 `publish.yml`（它需要先修好 secret
+里的 token；注意它**只**做 tag/manifest 断言与 vendor 文件数校验，notes、记账、附注 tag/on-main
+与测试都不跑——切过去之前先手工确认这些门禁），由维护者带 2FA
 `npm stage approve <stage-id> --registry=https://registry.npmjs.org` 完成发布。拒绝用
 `npm stage reject <stage-id>`：该版本号不会被占用，改完可重发。
 
