@@ -189,7 +189,7 @@ registry，永不移动 tag**——有改动就发 `-rN+1`。
 - stub 树跑全套测试、`npm pack --dry-run`（`prepack` 会拦个人模板库）；
 - `lib/client.js` 的 `PLUGIN_VERSION` 与 tag 一致；tag 必须是附注 tag 且指向 `main` 上的提交；
 - `npm pack` 时核对 `skills/` 在磁盘与 tarball 中的文件数一致（否则用户侧 `attribution_guard.py` 必失败）；
-- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包，发布后取回 registry 产物、解包逐文件比对（一致才建 Release）。不按字节比：tar 元数据（文件模式、压缩实现）会让同一份内容得到不同字节；要证明的是文件内容一致。
+- `npm whoami` 预检 `NPM_TOKEN`；发布前本地打包，发布后取回 registry 产物、解包逐文件比对（一致才建 Release）。不按字节比：tar 元数据（文件模式、压缩实现）可能让同一份内容得到不同字节；要证明的是文件内容一致。
 
 ### 兜底：2FA stage
 

@@ -70,7 +70,6 @@ jobs:
             fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "pinned_tag=$PINNED_TAG" >> "$GITHUB_OUTPUT"
           echo "releasing $VERSION from $REF (tag-pinned: $PINNED_TAG)"
@@ -108,10 +107,13 @@ jobs:
             echo "::error::v$VERSION is a lightweight tag; use git tag -a"
             exit 1
           }
-          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          # 用 checkout 出来的提交，而不是 $GITHUB_SHA：dispatch 时后者是触发分支的
+          # 提交（通常是 main），拿它比 main 永远 identical，门禁形同虚设。
+          HEAD_SHA=$(git rev-parse HEAD)
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$HEAD_SHA" --jq .status)
           case "$STATUS" in
             behind|identical) echo "tag is on main ($STATUS)" ;;
-            *) echo "::error::v$VERSION points at $GITHUB_SHA, which is not on main ($STATUS)"; exit 1 ;;
+            *) echo "::error::v$VERSION points at $HEAD_SHA, which is not on main ($STATUS)"; exit 1 ;;
           esac
 
       - uses: actions/setup-node@v4
@@ -224,7 +226,7 @@ jobs:
             exit 1
           fi
 
-      # tarball 不能按字节比：同一份内容在不同环境/时刻打出的 tar 元数据不同
+      # tarball 不按字节比：同一份内容在不同环境/时刻打出的 tar 元数据可能不同，
       # 真正要证明的是「用户装到的文件 == 这个 tag 的树」，所以解包后做内容 diff；
       # --prefer-online 用来绕过 publish 之前那次 E404 留下的负缓存。
       - name: Verify the published contents match this tree

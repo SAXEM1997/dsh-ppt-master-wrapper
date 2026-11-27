@@ -1,6 +1,6 @@
 # Release notes
 
-每个版本一份 `v<version>.md`。它**就是 GitHub Release 的正文**：`release.yml` 在打 tag 后
+每个版本一份 `v<version>.md`。它在 tag 时**就是 GitHub Release 的正文**（tag 后不再改它：补跑会用 tag 内的旧文件重写正文）：`release.yml` 在打 tag 后
 读取这个文件建 Release，文件缺失或为空会让发布在门禁阶段失败。
 
 ## 写法
