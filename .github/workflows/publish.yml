@@ -1,5 +1,9 @@
 name: Publish
 
+# **兜底路径**：仅在 `.github/workflows/release.yml` 的 token 不可用时手工启用。
+# 它只做 tag/manifest 断言与 vendor 文件数校验——notes、版本记账、附注 tag/on-main、
+# stub 测试都不跑；切过来之前先手工确认这些门禁，且同样需要可用的 `NPM_TOKEN`。
+#
 # 手动触发：把**指定 tag** 的包体 stage 到 npm，再由维护者带 2FA 执行
 # `npm stage approve <stage-id>` 完成发布。
 #
