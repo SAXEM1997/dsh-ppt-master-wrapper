@@ -51,8 +51,11 @@ node scripts/verify-plugin.mjs --upstream .upstream/refs/tags/v6.10.0@d8f704bc8c
 | 上游发布新版本（同步脚本规则①） | base 改为上游版本，`-r` 后缀归零，如 `6.7.0-r3 → 6.7.1` |
 | 仅包装层自身修订（同上游版本） | 追加 `-rN`，如 `6.7.1 → 6.7.1-r1` |
 | 仅文档 / CI / 仓库治理 | **不 bump**，不打 tag |
+| 发布链本身需要一次真实 tag 验证 | 例外：可发一个只动版本号的 `-rN`，并在 PR 与 notes 里写明目的 |
 
-发布：附注 tag `v<version>`（写要点）→ GitHub Release（双语说明 + 验证结果）→ 同步内网镜像 `origin`。
+发布：附注 tag `v<version>`（写要点，必须打在当前 `main` 的合并提交上）→ 推 tag 即触发
+`.github/workflows/release.yml`（门禁 → npm 发布 → 产物比对 → GitHub Release）→ 同步内网镜像 `origin`。
+已发布的 tag 永不移动；需要修正就发 `-rN+1`，细节见 `docs/agents/maintainer-ops.md` §6。
 
 ## 上游同步
 

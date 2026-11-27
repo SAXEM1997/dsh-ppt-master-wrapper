@@ -173,10 +173,12 @@ jobs:
       - name: Pack gate
         run: npm pack --dry-run >/dev/null
 
-      # 先打一次本地包并记下 sha1：后面与 registry 的 dist.shasum 比对，才能证明
-      # 「发布的字节 == 这个 tag 的树」。用 npm pack 从 registry 取回再比 registry
-      # 自己的 shasum 是同义反复，永远发现不了 tag 与产物不一致。
-      - name: Pack this tree and record its sha1
+      # 打一次本地包，供后面的「逐文件比对」使用；同时核对 vendor 文件数。
+      # 不按字节比：要证明的是「用户装到的文件 == 这个 tag 的树」，而 tar 元数据
+      # （文件模式、压缩实现）会让同一份内容在不同环境得到不同字节；逐文件 diff 才是
+      # 这个语义。首次真发（v6.10.0-r2）实际卡在 publish 前 npm view 的 E404 负缓存，
+      # 不是字节差异——所以下载侧同时用 --prefer-online 绕开缓存。
+      - name: Pack this tree for verification
         id: pack
         run: |
           set -euo pipefail
@@ -184,9 +186,7 @@ jobs:
           node -e '
             const fs = require("fs");
             const path = require("path");
-            const crypto = require("crypto");
             const [entry] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/pack.json", "utf8"));
-            const sha1 = crypto.createHash("sha1").update(fs.readFileSync(entry.filename)).digest("hex");
             const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true })
               .reduce((n, d) => n + (d.isDirectory() ? walk(path.join(dir, d.name)) : 1), 0);
             const onDisk = walk("skills");
@@ -196,7 +196,6 @@ jobs:
               process.exit(1);
             }
             console.log(`vendor files: on disk=${onDisk} in tarball=${inTarball}`);
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `sha1=${sha1}\n`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `file=${entry.filename}\n`);
           '
 
@@ -212,7 +211,7 @@ jobs:
             exit 0
           fi
           set +e
-          OUT=$(npm view "dsh-ppt-master-wrapper@$VERSION" version 2>&1)
+          OUT=$(npm view "dsh-ppt-master-wrapper@$VERSION" version --prefer-online 2>&1)
           RC=$?
           set -e
           if [ "$RC" -eq 0 ]; then
@@ -226,8 +225,7 @@ jobs:
           fi
 
       # tarball 不能按字节比：同一份内容在不同环境/时刻打出的 tar 元数据不同
-      # （实测 npm 11.19.1 下本地与 registry 的 sha1 不同，但解包后逐文件一致）。
-      # 真正要证明的是「用户装到的文件 == 这个 tag 的树」，所以解包后做内容 diff。
+      # 真正要证明的是「用户装到的文件 == 这个 tag 的树」，所以解包后做内容 diff；
       # --prefer-online 用来绕过 publish 之前那次 E404 留下的负缓存。
       - name: Verify the published contents match this tree
         if: github.event_name == 'push' || inputs.dry_run != true
@@ -266,8 +264,8 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.v.outputs.version }}"
           NOTES="docs/releases/v$VERSION.md"
-          # checkout 已经证明这个 tag 存在，不再用 --verify-tag（它依赖本地 tag 引用，
-          # actions/checkout 只取该 ref 时未必留下本地 tag）。
+          # checkout 已证明这个 tag 存在；--verify-tag 再向远端确认一次，避免在
+          # checkout 与建 Release 之间 tag 被删时 gh 用默认分支的提交补一个同名 tag。
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             gh release edit "v$VERSION" --notes-file "$NOTES" --draft=false
           else
